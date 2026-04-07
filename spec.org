@@ -1,0 +1,3448 @@
+#+TITLE: MASTER IMPLEMENTATION BLUEPRINT
+#+SUBTITLE: Enterprise LM Programming Platform for .NET 10 — Inspired by DSPy, Native to .NET
+#+AUTHOR: OpenAI
+#+STARTUP: overview
+#+OPTIONS: toc:2 num:t
+
+* 0. Document Status
+
+** Purpose
+This document is the canonical implementation blueprint for an MVP framework that brings
+LM program authoring, compilation, optimization, and runtime execution into the .NET
+ecosystem for enterprise use, inspired by DSPy's core insight that LM programs should
+be optimized programmatically rather than manually tuned.
+
+** Provenance Note
+This framework adopts DSPy's foundational concepts (Signatures, Predict, Retrieve,
+programmatic optimization) but extends well beyond them with .NET-native innovations.
+Major original contributions include: directed program graphs (DSPy uses flat Python
+modules), compile-time validation via Roslyn analyzers and source generators,
+constraint-based optimization (DSPy has no constraint model), three-tier data flow
+binding (convention → attributes → C# 14 interceptors), typed artifact serialization
+with hot-swap deployment, and enterprise observability via OpenTelemetry.
+Approximately 60% of the architecture described here has no direct DSPy equivalent.
+
+Target platform: .NET 10 LTS (C# 14), Aspire 13 GA, Microsoft.Extensions.AI (IChatClient).
+
+See Section 5 for per-concept provenance annotations.
+
+This document is intentionally over-specified so that:
+- a coding agent can derive more detailed design docs from it,
+- a junior developer can implement it phase by phase,
+- foundational architectural decisions do not need to be invented during implementation.
+
+** Source of Truth Rule
+If any downstream design doc, implementation note, or generated spec conflicts with this
+document, this document wins.
+
+** Intended Outcomes
+This document must enable a coding agent to produce:
+- a PRD,
+- a system architecture doc,
+- a public API spec,
+- an LM Program IR spec,
+- a source generator spec,
+- a runtime execution spec,
+- a compiler / optimizer spec,
+- a diagnostics spec,
+- an artifact format spec,
+- a testing strategy,
+- a repository layout plan,
+- and an MVP demo script.
+
+* 1. Product Thesis
+
+** One-Sentence Thesis
+We are building a .NET framework that turns enterprise AI workflows from prompt strings
+and notebook experiments into typed, compilable, testable, observable software artifacts.
+
+** Core Framing
+This project does not attempt to win because .NET is "more AI-native."
+This project wins because .NET is excellent at software engineering.
+
+The primary value is not:
+- more magical prompts,
+- more clever demos,
+- or more exotic model tricks.
+
+The primary value is:
+- stronger contracts,
+- better tooling,
+- better compile-time feedback,
+- better runtime observability,
+- safer optimization,
+- better deployment and governance.
+
+** What "Better" Means
+For this project, "better" means:
+- more analyzable,
+- more typed,
+- more governable,
+- more observable,
+- easier to optimize safely,
+- easier to version and ship,
+- easier to maintain in large enterprise codebases.
+
+** Product Category
+This framework is an enterprise LM programming platform for .NET.
+
+It combines:
+- authoring APIs,
+- source generation,
+- diagnostics,
+- runtime execution,
+- evaluation integration,
+- program compilation / optimization,
+- and compiled artifact versioning.
+
+** Relationship to DSPy
+This framework is /inspired by/ DSPy (Stanford NLP), not a port of it.
+
+From DSPy, we adopt:
+- the core insight that LM programs should be optimized programmatically,
+- the concept of typed Signatures as LM contracts,
+- the ~Predict~ and ~Retrieve~ step abstractions,
+- the idea of a compile loop that searches over program variants.
+
+Original to this framework (no DSPy equivalent):
+- directed program graphs (DSPy uses flat Python modules with ~forward()~),
+- compile-time validation via Roslyn analyzers and source generators,
+- expression-tree-based data flow inspection between steps,
+- constraint-based optimization with hard/soft constraint enforcement,
+- ~Evaluate~, ~If~, and ~Repair~ as first-class program steps,
+- model choice and temperature as tunable parameters,
+- typed artifact serialization with AOT safety and hot-swap deployment,
+- enterprise observability via OpenTelemetry with in-process trace feedback,
+- and the entire build-time architecture (analyzers, code fixes, diagnostics).
+
+DSPy's actual architecture (for accurate reference):
+- Programs are Python classes inheriting ~dspy.Module~ with a ~forward()~ method.
+- Optimizers (formerly "Teleprompters") include ~BootstrapFewShot~, ~COPRO~,
+  ~MIPROv2~, ~SIMBA~, ~GEPA~, ~KNNFewShot~, ~LabeledFewShot~.
+- Persistence is via ~Module.save()~/~.load()~ — no versioned artifacts.
+- There is no constraint model, no graph abstraction, no compile-time validation.
+
+* 1A. The Business Case for Compiled LM Programs
+
+** The Problem: Enterprise AI Is Bleeding Money
+
+Every enterprise deploying LLM-powered applications faces four compounding cost drivers
+that manual prompt engineering cannot solve:
+
+*** Pain 1: Prompt Drift — Silent Failure at Enterprise Scale
+When LLM behavior changes (model updates, prompt degradation, data distribution shift),
+production applications silently fail. Unlike traditional software bugs, LLMs continue
+to produce plausible outputs with degraded accuracy — failures go undetected until
+significant business impact arises [1]. A ticket-triage system that starts misrouting
+tickets triggers SLA violations, escalation labor, and customer churn.
+Enterprises report 3–5× more debugging time per incident and 20–40% of AI budgets
+wasted on unnecessary model swaps when root causes aren't systematically identified [2].
+Manual prompt engineering provides no reproducibility guarantee — each "fix" is ad hoc,
+untested against the original optimization criteria, and invisible to auditing.
+
+*** Pain 2: Manual Optimization — Unquantified but Substantial Labor Cost
+/LMP team estimate:/ A senior data scientist optimizing one LM program spends ~2 weeks
+per optimization cycle across 10+ cycles annually: prompt variants, few-shot examples,
+model selection, temperature tuning, evaluation runs. At blended rates ($150/hr ×
+80 hrs × 10 cycles + infrastructure), this yields ~$154K/year /per program/.
+This estimate is conservative — it excludes opportunity cost, review overhead, and
+the labor of rebuilding optimization from scratch after model updates. The key insight
+is not the specific dollar amount but that /this labor produces no reproducible artifact/
+and must be repeated whenever the underlying model changes.
+
+*** Pain 3: Governance Failure — EU AI Act Fines Up to 7% of Global Turnover
+The EU AI Act Article 99 (effective August 2025) establishes tiered penalties [3]:
+- Prohibited AI practices: up to €35M or 7% of global annual turnover (whichever is higher)
+- High-risk AI obligations: up to €15M or 3% of global annual turnover
+- Supplying incorrect information: up to €7.5M or 1% of global annual turnover
+AI system providers must maintain technical documentation, traceability of
+optimization decisions, and risk management systems with documented testing.
+Manual prompt engineering produces NO audit trail, NO versioned configuration,
+NO reproducible optimization history. Every manually tuned prompt is a compliance liability.
+
+*** Pain 4: Enterprise AI Failure Rate — 70–85%
+Enterprise AI investments show a consistent pattern of operational failure:
+- 70–85% of GenAI deployment efforts fail to meet ROI expectations [4]
+- Only ~25% of AI initiatives deliver expected ROI [5]
+- 88–95% of AI pilots never reach production deployment [6][7]
+- 42% of organizations abandoned most AI initiatives in 2025 (up from 17% in 2024) [8]
+- GenAI spending projected to grow from $16B (2023) to $143B+ by 2027 (73% CAGR) [9]
+- Most AI projects stall at "pilot purgatory" — technically functional but
+  operationally immature, unable to demonstrate sustained business value [7]
+The root cause is not technology inadequacy but /operational immaturity/: there is
+no engineering discipline for managing LM programs as software — no build/test/deploy
+lifecycle, no performance regression detection, no cost optimization automation [4].
+
+** The Solution: Compiled Prompts
+
+/Compiled prompts are to AI what compiled code was to software./
+
+Just as compilers transformed programming from manual assembly into a disciplined
+engineering practice — with type checking, optimization, reproducible builds,
+and versioned artifacts — LMP transforms LM program development:
+
+| Manual Prompt Engineering | Compiled LM Programs (LMP) |
+|---------------------------+----------------------------|
+| Ad hoc prompt tweaking    | Programmatic optimization with typed constraints |
+| No version history        | Versioned, hashable artifacts with provenance    |
+| "It worked on my machine" | Reproducible compilation against evaluation sets |
+| No cost visibility        | Per-trial cost tracking via OpenTelemetry        |
+| Compliance via documents  | Compliance via auditable optimization traces     |
+| Manual labor per program  | Automated compilation — run ~dotnet lmp compile~   |
+| Silent drift              | Regression detection via constrained recompilation |
+
+** Impact: Governance Saves $1.9M Per Breach
+Organizations with mature AI governance save an average of $1.9M per data breach
+and reduce breach response times by 80 days (IBM 2025 Cost of a Data Breach Report) [10].
+Shadow AI (unapproved AI use without governance) costs an additional $670K per
+breach versus governed environments [10]. Stanford's AI Index 2025 documents a
+56.4% year-over-year increase in AI-related incidents, underscoring the urgency [11].
+LMP provides governance by construction: every compiled artifact includes
+the optimization history, evaluation metrics, constraint satisfaction proof,
+and model configuration — all serialized as a single deployable unit.
+
+** Sources
+[1] InsightFinder, "The Hidden Cost of LLM Drift," 2024.
+    https://insightfinder.com/blog/hidden-cost-llm-drift-detection/
+[2] TrackAI, "Root Cause Analysis for LLM Quality Issues," 2025.
+    https://trackai.dev/tracks/evaluations/model-drift/root-cause/
+[3] EU AI Act, Article 99: Penalties. Official text.
+    https://artificialintelligenceact.eu/article/99/
+[4] NTT Data, "Between 70–85% of GenAI Deployment Efforts Are Failing," 2024.
+    https://www.nttdata.com/global/en/insights/focus/2024/between-70-85p-of-genai-deployment-efforts-are-failing
+[5] Multiple sources (Google Cloud ROI of AI 2025, Deloitte, McKinsey).
+    Only ~25–30% of AI initiatives deliver expected ROI.
+    https://services.google.com/fh/files/misc/google_cloud_roi_of_ai_2025.pdf
+[6] MIT NANDA program: up to 95% of GenAI pilots fail to deliver value.
+    https://mlq.ai/media/quarterly_decks/v0.1_State_of_AI_in_Business_2025_Report.pdf
+[7] McKinsey, "Most Companies Are Stuck in AI Pilot Purgatory."
+    https://aigazine.com/industry/mckinsey-most-companies-are-stuck-in-ai-pilot-purgatory--s
+[8] S&P Global / CIO Dive, "AI project failure rates are on the rise," 2025.
+    https://www.ciodive.com/news/AI-project-fail-data-SPGlobal/742590/
+[9] IDC, "GenAI Spending to Reach $143B in 2027" (73% CAGR).
+    https://www.computerworld.com/article/1637459/generative-ai-spending-to-reach-143b-in-2027-idc.html
+[10] IBM, "2025 Cost of a Data Breach Report: AI Governance Findings."
+     https://newsroom.ibm.com/2025-07-30-ibm-report-13-of-organizations-reported-breaches-of-ai-models-or-applications,-97-of-which-reported-lacking-proper-ai-access-controls
+[11] Stanford HAI, "2025 AI Index Report: Responsible AI."
+     https://hai.stanford.edu/ai-index/2025-ai-index-report/responsible-ai
+
+** Why This Matters for .NET Specifically
+.NET enterprises are the PRIMARY audience for this tool because:
+1. They already have compliance infrastructure (Azure, AD, RBAC, audit logging)
+2. They already have CI/CD pipelines that expect versioned artifacts
+3. They already have production observability (Application Insights, Prometheus)
+4. They have ZERO tools that bring this discipline to their LM programs
+5. Their Python-based data science teams cannot deliver enterprise-grade
+   governance — Python has no equivalent to source generators, analyzers,
+   typed artifacts, or compile-time validation
+
+* 2. Why .NET Is the Right Host
+
+** Thesis
+The system belongs in .NET not because .NET is inherently better at AI research,
+but because .NET is unusually strong at turning complicated behavior into disciplined software.
+
+** Platform Advantages
+The platform advantages this framework explicitly relies on are:
+
+*** Roslyn
+Used for:
+- semantic understanding of authored LM programs,
+- analyzers,
+- code fixes,
+- source generation.
+
+*** Source Generators
+Used for:
+- build-time lowering,
+- deterministic metadata generation,
+- reducing reflection,
+- making the framework more deployment-friendly.
+
+*** Strong Typing and Contracts
+Used for:
+- signatures,
+- structured outputs,
+- program graphs,
+- tunable parameter models,
+- artifacts.
+
+*** Middleware / Runtime Composition
+Used for:
+- model execution pipelines,
+- logging,
+- telemetry,
+- tool invocation,
+- provider abstraction.
+
+*** Observability
+Used for:
+- execution traces,
+- diagnostics,
+- evaluation reports,
+- artifact provenance.
+
+*** Deployment Discipline
+Used for:
+- explicit artifacts,
+- testable generated code,
+- deterministic structure,
+- cleaner separation of build-time, runtime, and compile-time concerns.
+
+** What .NET Is /Not/ Providing
+.NET is the /host platform/ and substrate.
+It is not, by itself, the full framework we are building.
+
+The framework must still provide:
+- the authoring model,
+- the LM Program IR,
+- the runtime engine,
+- the compiler,
+- the artifact model,
+- and the CLI.
+
+* 2A. Deep .NET Platform Primitive Map
+
+** Purpose
+This section maps specific .NET runtime, language, and SDK primitives to framework
+capabilities, organized by lifecycle phase. Every primitive listed here has been
+validated as GA (production-ready) unless marked otherwise.
+
+This section exists because the framework's competitive advantage comes not from any
+single .NET feature, but from how 50+ primitives /converge/ across the full lifecycle.
+These convergences create capabilities that Python fundamentally cannot replicate.
+
+** Phase 1: Build Time — Author, Validate, Generate
+
+*** IIncrementalGenerator (Roslyn)
+Discovers ~[LmpSignature]~ and ~[LmpProgram]~ types at compile time.
+Generates descriptor classes as ~.g.cs~ files.
+Python equivalent: None — runtime metaclass magic only.
+
+*** Roslyn Analyzers + CodeFixProvider
+LMP001-006 diagnostics surface errors in the IDE while typing.
+Lightbulb fixes for missing descriptions, invalid step names.
+Python equivalent: mypy/pylint (external, weaker, no semantic awareness).
+
+*** Three-Tier Data Flow Binding
+
+**** Tier 1: Convention-Based Auto-Binding (60% of cases)
+Source generator detects matching property names and types between step outputs
+and downstream step inputs. Auto-generates binding code with zero developer ceremony.
+Example: ~RetrieveOutput.Documents~ auto-binds to ~ClassifyInput.Documents~.
+
+**** Tier 2: Attribute-Based Explicit Binding (30% of cases)
+~[BindFrom("step-name", nameof(Output.Field))]~ on input record properties.
+Source generator reads attributes at compile time — zero runtime overhead.
+Trivially serializable to artifact JSON.
+Precedent: ~[FromBody]~, ~[Column]~, ~[JsonPropertyName]~, ~[BindProperty]~.
+
+**** Tier 3: Interceptor-Based Lambda Binding (10% of cases — C# 14)
+Developer writes natural C# lambdas for computed bindings:
+~.Bind(ctx => new ClassifyInput { Summary = $"{ctx.OutputOf(step1).Title}: ..." })~
+C# 14 interceptor reads the lambda's SYNTAX TREE at compile time (not expression tree),
+generates optimized binding code + serializable binding metadata.
+No expression tree limitations (can handle any lambda structure).
+
+**** Tier 4: Expression Trees — Runtime Fallback Only
+~Expression<Func<T>>~ for dynamically constructed graphs (e.g., deserialized from artifacts).
+Same pattern Entity Framework uses for LINQ→SQL translation.
+Limitation: single-expression lambdas only (no async, no statements).
+Python equivalent: None — lambdas are opaque bytecode.
+
+*** file class (C# 11)
+Generated descriptor types stay out of public API surface.
+Python equivalent: naming convention only.
+
+*** static abstract members in interfaces (C# 11)
+~ISignature.CreateDescriptor()~ — source generators implement factory methods.
+Python equivalent: static methods exist but interface enforcement does not.
+
+*** Partial Properties (C# 13)
+Source generators can now implement PROPERTIES, not just methods:
+~public static partial SignatureDescriptor Descriptor { get; }~
+Source generator generates the implementation. Reads more naturally than ~CreateDescriptor()~.
+Property access is cached (static readonly semantics).
+Python equivalent: None — no compile-time property generation.
+
+*** params ReadOnlySpan<T> (C# 13)
+~params ReadOnlySpan<IStep> steps~ — stack-allocated parameter arrays.
+~program.AddSteps(step1, step2, step3)~ — zero heap allocation, 30–50% faster
+in microbenchmarks (zero bytes allocated vs ~48 bytes per call with ~params T[]~).
+Source: Microsoft .NET Blog, "Calling methods is easier and faster with C# 13
+params collections," https://devblogs.microsoft.com/dotnet/csharp13-calling-methods-is-easier-and-faster/
+Used for all variadic APIs: ~AddSteps()~, ~AddConstraints()~, ~AddEvaluators()~.
+Python equivalent: ~*args~ (heap-allocated tuple).
+
+*** Raw string literals (C# 11)
+~"""..."""~ for multi-line prompt templates with zero escaping.
+~$$"""..."""~ enables interpolation in raw strings.
+Python equivalent: triple-quoted f-strings (similar, but no interpolation control).
+
+*** CallerArgumentExpression (C# 10)
+Auto-captures constraint expression text for diagnostics at zero runtime cost.
+Example: ~rules.Require(m => m.PolicyPassRate == 1.0)~ automatically generates
+diagnostic text containing the expression.
+Python equivalent: ~inspect~ module (fragile, runtime-only).
+
+*** required keyword (C# 11) + Nullable Reference Types
+Compile error if signature field not set. ~string?~ vs ~string~ for optional/required.
+Python equivalent: Runtime TypeError / ~Optional[str]~ (advisory only).
+
+*** C# 14 Features (.NET 10 LTS)
+
+**** Extension Members (C# 14)
+Extension properties, static methods, and operators — not just extension methods.
+Enables richer fluent APIs for graph construction without polluting framework types.
+Python equivalent: monkey-patching (runtime, no type safety).
+
+**** Field-Backed Properties (C# 14)
+~field~ keyword in property accessors provides direct access to auto-generated backing field.
+Enables validation/transformation in property setters without manual backing fields.
+Useful for signature field validation: ~set { field = value ?? throw new ArgumentNullException(); }~
+Python equivalent: ~@property~ with explicit ~_field~ (more boilerplate).
+
+**** Interceptors (C# 14 — STABLE)
+Source generators can intercept specific method calls at compile time and replace them
+with generated code. Used by ASP.NET Core Minimal APIs and OpenAPI.
+LMP uses interceptors for Tier 3 binding: intercept ~.Bind()~ calls, analyze the lambda's
+syntax tree at compile time, generate optimized binding code + serializable metadata.
+Python equivalent: None — no compile-time call interception exists.
+
+**** Implicit Span Conversions (C# 14)
+~ReadOnlySpan<char>~ parameters accept ~string~ without explicit conversion.
+Enables zero-allocation prompt assembly APIs without API surface complexity.
+Python equivalent: None (no zero-copy string views in Python).
+
+** Phase 2: Compile Time — Optimize, Select, Emit
+
+*** Records + with expressions
+Safe immutable variant generation: ~v2 = v1 with { Temperature = 0.3 }~.
+Compiler guarantees all fields are copied. Structural equality for comparison.
+Python equivalent: ~dataclasses.replace()~ (no compiler guarantee against field omission).
+
+*** FrozenDictionary / FrozenSet (.NET 8)
+Immutable, cache-line-optimized lookup collections for descriptor registries.
+~3x faster than Dictionary for read-heavy workloads.
+Python equivalent: ~types.MappingProxyType~ (read-only wrapper, not optimized).
+
+*** ImmutableArray<T>
+Structurally immutable — unlike ~IReadOnlyList<T>~, wrapping a mutable list is impossible.
+Python equivalent: ~tuple~ (limited composability).
+
+*** INumber<T> / Generic Math (C# 11)
+~WeightedAverage<T>() where T : INumber<T>~ — generic metric aggregation.
+Python equivalent: numpy (external dependency).
+
+*** System.Threading.RateLimiting (.NET 7+)
+~TokenBucketRateLimiter~ for API-safe optimization: prevents overwhelming LM APIs
+during multi-trial compile loops.
+Python equivalent: ~tenacity~ (external).
+
+*** Parallel.ForEachAsync (.NET 6+)
+Bounded-concurrency parallel trial execution with ~MaxDegreeOfParallelism~.
+Replaces ~Task.WhenAll(candidates.Select(...))~ which has zero concurrency control —
+50 candidates = 50 simultaneous API calls = rate limit errors.
+Cooperates with resilience pipeline for API safety.
+Python equivalent: ~asyncio.Semaphore~ (manual, GIL-limited for CPU work).
+
+*** AlternateLookup (.NET 9+)
+~FrozenDictionary<string, T>.GetAlternateLookup<ReadOnlySpan<char>>()~ enables
+zero-allocation dictionary lookups with Span keys.
+Critical for hot-path step/parameter resolution when parsing from JSON buffers.
+Source: https://learn.microsoft.com/dotnet/api/system.collections.frozen.frozendictionary-2.alternatelookup-1
+Python equivalent: none (all lookups allocate).
+
+*** PeriodicTimer + TimeProvider (.NET 6+, .NET 8+)
+Drift-free, testable periodic scheduling for long-running optimization services.
+Example: recompile every 24h against latest evaluation data.
+~FakeTimeProvider~ in tests: advance time without sleeping.
+Source: https://learn.microsoft.com/dotnet/api/system.threading.periodictimer
+Python equivalent: ~threading.Timer~ (manual drift management).
+
+*** HybridCache (.NET 9, enhanced .NET 10)
+Combined L1 (in-memory) + L2 (distributed) cache for LM response deduplication.
+Same prompt → cached response across optimization trials.
+.NET 10 adds tag-based eviction: tag entries with ~trial-{id}~ and ~step-{name}~,
+then ~RemoveByTagAsync("trial-42")~ to evict when prompt template changes.
+Python equivalent: ~functools.lru_cache~ + Redis (manual wiring, no tag eviction).
+
+*** TimeProvider (.NET 8)
+~FakeTimeProvider~ for deterministic trace timestamps in tests.
+Python equivalent: ~unittest.mock.patch~ on datetime.
+
+*** BackgroundService
+Long-running compile jobs with graceful Ctrl+C cancellation via ~CancellationToken~.
+Python equivalent: manual signal handling.
+
+*** Pattern matching + sealed hierarchies
+Exhaustive step dispatch: adding a new step kind causes compile errors everywhere.
+Python equivalent: isinstance chains (no exhaustiveness checking).
+
+*** SearchValues<T> (.NET 8)
+SIMD-optimized token boundary detection for prompt template parsing (~8x faster).
+Python equivalent: ~set~ (not SIMD-optimized).
+
+*** System.Numerics.Tensors.TensorPrimitives (.NET 9+)
+SIMD-accelerated math operations — zero external dependency:
+- ~TensorPrimitives.CosineSimilarity(span1, span2)~ — embedding similarity for Retrieve steps
+- ~TensorPrimitives.Sum()~, ~Average()~, ~Max()~ — metric aggregation in compiler
+- Hardware-accelerated (AVX 10.2 in .NET 10)
+- Works on ~ReadOnlySpan<float>~ — zero allocation
+Replaces custom ~INumber<T>~ generic math for most aggregation.
+Replaces TorchSharp for embedding similarity (no external dependency).
+Python equivalent: numpy (external dependency).
+
+** Phase 3: Runtime — Execute, Trace, Observe
+
+*** System.Threading.Tasks.Dataflow (TPL Dataflow)
+Battle-tested graph execution engine built into .NET:
+- ~TransformBlock<TInput, TOutput>~ — maps directly to Predict steps
+- ~ActionBlock<T>~ — for side-effect steps (evaluation, logging)
+- ~BroadcastBlock<T>~ — for fanout (one output → multiple downstream)
+- ~JoinBlock<T1, T2>~ — for merging parallel branches
+- Built-in backpressure, bounded capacity, cancellation, error propagation
+- Links between blocks with predicates (conditional routing = If step)
+The LMP runtime COMPILES the IR down to TPL Dataflow blocks rather than
+inventing a custom graph executor. This gives parallel execution,
+backpressure, and cancellation for free.
+Python equivalent: None — manual asyncio orchestration.
+
+*** IChatClient Middleware Pipeline (Microsoft.Extensions.AI)
+M.E.AI provides built-in middleware via ~ChatClientBuilder~:
+- ~UseOpenTelemetry()~ — automatic OTEL spans for every LM call
+- ~UseDistributedCache()~ — response caching via ~IDistributedCache~
+- ~UseLogging()~ — structured prompt/completion logging
+- ~UseFunctionInvocation()~ — automatic tool calling dispatch
+LMP provides ONLY 2 thin middleware (everything else is M.E.AI's job):
+- ~UseLmpStepContext()~ — enriches ~Activity.Current~ with LMP tags
+  (step name, trial ID, program name) so built-in OTEL traces carry context
+- ~UseLmpCostTracking()~ — reads ~ChatResponse.Usage~, accumulates
+  token cost per trial for budget constraint evaluation
+Python equivalent: None — no middleware pipeline for LLM calls.
+
+*** Keyed DI Services (.NET 8)
+~[FromKeyedServices("triage")] IChatClient client~ — multiple named model configs.
+One model per step: "gpt-4" for triage, "gpt-4-mini" for evaluation.
+Python equivalent: manual registry dictionary.
+
+*** True Parallelism (no GIL)
+~Task.WhenAll(retrieve1, retrieve2)~ runs BOTH LM calls concurrently on separate threads.
+Python's asyncio is limited by the GIL for CPU-bound scoring between calls.
+
+*** IAsyncEnumerable<T>
+Token streaming as first-class iteration: ~await foreach (var chunk in response)~.
+Python equivalent: library-specific streaming.
+
+*** System.Threading.Channels
+Lock-free, FIFO producer/consumer for pipeline step execution.
+Python equivalent: ~asyncio.Queue~ (limited).
+
+*** Span<T> / stackalloc
+Zero-allocation prompt assembly in tight optimization loops.
+Python equivalent: string concatenation (GC pressure).
+
+*** System.Threading.Lock (.NET 9+)
+Dedicated lock type — compiler generates optimized code (no monitor overhead).
+~private readonly Lock _lock = new(); lock (_lock) { ... }~
+Used for thread-safe descriptor registries, step caches, and metric accumulators.
+Python equivalent: ~threading.Lock~ (similar semantics, no compiler optimization).
+
+*** Microsoft.Extensions.Resilience (Polly-based)
+Composable resilience pipelines for LM API calls during compile loop:
+- Retry with exponential backoff + jitter (transient API failures)
+- Circuit breaker (prevent flooding overwhelmed APIs)
+- Timeout (cap per-call latency)
+Replaces raw ~TokenBucketRateLimiter~ for a more complete resilience story.
+Integrates with ~IChatClient~ middleware pipeline.
+Python equivalent: ~tenacity~ (retry only, no circuit breaker).
+
+*** ActivitySource + Activity (System.Diagnostics)
+Per-step distributed tracing with W3C Trace Context.
+Tags for model, tokens, cost. Automatic correlation IDs across steps.
+Python equivalent: manual dicts in DSPy.
+
+*** Meter + Histogram / Counter
+Custom metrics: ~lm.predict.latency_ms~, ~lm.cost.total_usd~, ~lm.tokens.input~.
+Export to Prometheus, Grafana, Azure Monitor.
+Python equivalent: manual instrumentation.
+
+*** InMemoryExporter
+In-process trace access — the compiler can READ runtime traces programmatically
+to feed back into optimization constraint evaluation. Closed feedback loop.
+Python equivalent: No standard equivalent.
+
+*** DataAnnotations + IParsable<T> + TypeConverter
+Parse chain for LM text→CLR type conversion:
+1. ~IParsable<T>.TryParse()~ (.NET 7+) — modern static abstract interface members.
+   Supports all built-in numeric types, ~bool~, ~DateTime~, etc.
+   Source: https://learn.microsoft.com/dotnet/standard/generics/math
+2. ~TypeConverter~ fallback — handles legacy types and custom converters.
+~[Required]~, ~[Range]~ for declarative LM output validation.
+Output types may implement ~IValidatableObject~ for structured self-validation.
+Python equivalent: Pydantic validators (functions) / manual parsing.
+
+*** [GeneratedRegex] (.NET 7+)
+AOT-safe, pre-compiled regular expressions via source generation.
+Used for JSON extraction from LM responses (stripping markdown code fences).
+Zero runtime compilation overhead; SIMD-accelerated on supported hardware.
+Source: https://learn.microsoft.com/dotnet/standard/base-types/regular-expression-source-generators
+Python equivalent: ~re.compile()~ (interpreted, not pre-compiled).
+
+*** ConcurrentDictionary
+Lock-free, thread-safe dictionary for execution context state.
+Replaces ~Dictionary<string, object>~ + manual ~lock~ for step outputs,
+scores, and branch results during parallel graph execution.
+Python equivalent: ~threading.Lock~ + ~dict~ (manual, GIL-dependent).
+
+*** Covariant/Contravariant generics
+~IStep<out TOutput>~ — compile-time verification that step A's output type
+matches step B's input type.
+Python equivalent: isinstance checks at runtime.
+
+** Phase 4: Deployment — Save, Load, Hot-Swap
+
+*** System.Text.Json + JsonSerializerContext
+AOT-safe artifact serialization with source-generated serializers. Zero reflection.
+Python equivalent: ~json.dumps~ (no AOT story) / ~pickle~ (security risk).
+
+*** [JsonDerivedType] discriminators
+Polymorphic step serialization: ~{"$type": "predict", ...}~.
+Handles PredictStep/RetrieveStep/EvaluateStep in artifacts safely.
+Python equivalent: pickle (arbitrary code execution vulnerability).
+
+*** AssemblyLoadContext (collectible)
+Hot-swap compiled artifacts WITHOUT restarting the service.
+Load v2 artifact, unload v1, memory reclaimed.
+Python equivalent: ~importlib.reload()~ (leaves old references, rarely used in production).
+
+*** IOptionsMonitor + IChangeToken
+Watch artifact files on disk, auto-reload when changed.
+Python equivalent: ~watchdog~ (external).
+
+*** System.IO.Hashing
+~XxHash128~ for fast artifact provenance hashing.
+~SHA256~ for verification.
+Python equivalent: ~hashlib~.
+
+*** Native AOT
+Compiled programs as native executables: ~50ms cold start vs 2-5s for Python.
+Source generators eliminate reflection for AOT compatibility.
+Python equivalent: No equivalent.
+
+*** ConfigurationBinder Source Generator (.NET 8+)
+~<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>~
+AOT-safe configuration binding — eliminates reflection-based ~IOptions<T>~ binding.
+Required for Native AOT deployment. Also enables ~.ValidateDataAnnotations().ValidateOnStart()~
+for fail-fast configuration validation at startup (not after 10 failed trials).
+Source: https://learn.microsoft.com/dotnet/core/extensions/configuration-generator
+Python equivalent: None (env var parsing is always dynamic).
+
+*** ZipFile.OpenAsync (.NET 10)
+Fully async artifact archive I/O when using multi-file bundle formats (e.g., ~.lmpa~).
+Avoids blocking the thread pool during CI/CD artifact packaging.
+Python equivalent: ~zipfile~ (synchronous only).
+
+** Phase 5: Tooling — CLI, Package, Orchestrate
+
+*** MSBuild Targets + buildTransitive/ (NuGet convention)
+MSBuild targets ship inside the LMP NuGet package via the ~buildTransitive/~ folder.
+Automatically imported by all consuming projects — zero manual configuration.
+~LmpEmitIr~ target emits IR JSON after ~CoreCompile~.
+~LmpValidateGraph~ target validates program graph completeness.
+~LmpEmbedArtifact~ target copies artifacts during ~dotnet publish~.
+Source: https://learn.microsoft.com/nuget/concepts/msbuild-props-and-targets
+Python equivalent: None (Python has no build pipeline integration for ML frameworks).
+
+*** Microsoft.Build.Utilities.Task
+Custom MSBuild tasks implemented as C# classes. ~EmitIrTask~ reads compiled assembly
+via ~MetadataLoadContext~, extracts ~ProgramDescriptor~, emits IR JSON.
+~ValidateGraphTask~ validates bindings and detects cycles.
+Precedent: EF Core ~OptimizeDbContext~ uses the same base class.
+Source: https://github.com/dotnet/efcore/blob/main/src/EFCore.Tasks/Tasks/OptimizeDbContext.cs
+Python equivalent: setuptools/poetry scripts (no typed task model).
+
+*** NuGet contentFiles/ for Artifact Distribution (post-MVP)
+Compiled LMP artifacts distributed as NuGet packages.
+~contentFiles/any/any/artifacts/~ holds the compiled artifact JSON.
+Auto-registration ~.targets~ file copies artifact to output and sets DI property.
+~dotnet lmp pack~ creates the package. ~dotnet nuget push~ distributes it.
+Enterprise teams use Azure Artifacts / GitHub Packages for private feeds.
+Source: https://learn.microsoft.com/azure/machine-learning/how-to-use-automl-onnx-model-dotnet
+Python equivalent: pip (no artifact versioning, no build integration, no private feeds).
+
+*** Custom MSBuild SDK (post-MVP)
+~<Project Sdk="LMP.Sdk/1.0.0">~ — one line replaces 3+ PackageReference entries.
+~Sdk/Sdk.props~ and ~Sdk/Sdk.targets~ wrap ~Microsoft.NET.Sdk~ with LMP defaults.
+Pin version globally in ~global.json~: ~{ "msbuild-sdks": { "LMP.Sdk": "1.0.0" } }~.
+Source: https://learn.microsoft.com/visualstudio/msbuild/how-to-use-project-sdk
+Python equivalent: None (no SDK abstraction in Python build tools).
+
+*** dotnet tool + PackAsTool
+Distribute ~dotnet lmp compile/run/eval~ as NuGet global tool.
+Same pattern as ~dotnet ef~ for Entity Framework.
+Python equivalent: pip install (different distribution model).
+
+*** System.CommandLine
+Strongly-typed CLI parsing with auto-generated help and tab completion.
+Python equivalent: argparse / click.
+
+*** Microsoft.Extensions.Hosting
+CLI uses identical DI/logging/config infrastructure as production services.
+Python equivalent: manual setup.
+
+*** .NET Aspire (GA — "Aspire 13.1")
+Dev-time orchestration: LM provider + vector DB + metrics dashboard + compile service.
+One ~dotnet run~, automatic OTEL dashboard at localhost:18888.
+Status: ✅ GA (Aspire 13.1, Dec 2025). Modern Lifecycle Policy (latest version supported).
+The ".NET" prefix was dropped — it is now just "Aspire."
+Python equivalent: Docker Compose (manual wiring).
+
+**** LMP Aspire Component (post-MVP)
+Ship ~LMP.Aspire.Hosting~ package with ~AddLmpCompiler()~ extension:
+#+begin_src csharp
+var builder = DistributedApplication.CreateBuilder(args);
+var openai = builder.AddConnectionString("openai");
+builder.AddLmpCompiler("triage-compiler")
+    .WithReference(openai)
+    .WithEnvironment("LMP_DATASET", "./data/triage-eval.jsonl");
+#+end_src
+Provisions: LM provider connection, evaluation dataset, OTEL dashboard.
+Design API surface during Phase 0; ship in Phase 4+.
+
+** Platform Convergences
+
+These primitives don't just add up — they /converge/ into capabilities no Python framework can replicate:
+
+*** Convergence 1: Errors Move From Production to Build Time
+Source generators + analyzers + required members + NRT + pattern matching + generic constraints
+= an LM program that CANNOT be misconfigured at compile time.
+
+*** Convergence 2: The Compiler Can Reason About Programs
+Source generators + three-tier binding (conventions → attributes → interceptors) +
+FrozenDictionary + ImmutableArray + records + partial properties
+= a complete, inspectable, immutable representation of every LM program at build time.
+
+*** Convergence 3: Optimization is Safe and Observable
+Records/with (variants) + Resilience pipelines (retry + circuit breaker) +
+HybridCache with tag eviction (dedup per trial) +
+TimeProvider (deterministic traces) + M.E.AI middleware (built-in OTEL + caching) +
+InMemoryExporter (feedback loop) + CallerArgumentExpression (diagnostics) +
+TensorPrimitives (SIMD metric aggregation)
+= an optimization pipeline that is observable, reproducible, cost-controlled, and debuggable.
+
+*** Convergence 4: Artifacts are First-Class Deployment Units
+JsonSerializerContext (AOT) + JsonDerivedType (polymorphism) +
+AssemblyLoadContext (hot-swap) + IOptionsMonitor (auto-reload) +
+System.IO.Hashing (provenance) + Native AOT (fast cold starts)
+= compiled LM programs as versioned, deployable, hot-swappable software artifacts.
+
+*** Convergence 5: Enterprise Infrastructure Comes Free
+Keyed DI (multi-model) + IHost (lifecycle) + BackgroundService (long jobs) +
+Aspire 13.1 GA (orchestration) + M.E.AI middleware (OTEL + caching + logging) +
+IOptions (validated config) + System.Threading.Lock (efficient concurrency)
+= production-grade infrastructure without building it.
+
+*** Convergence 6: Runtime Execution Is Already Solved
+TPL Dataflow (graph execution) + IChatClient middleware (cross-cutting) +
+params ReadOnlySpan (zero-alloc APIs) + System.Threading.Lock (concurrency) +
+Resilience pipelines (fault tolerance) + HybridCache tags (cache invalidation)
+= the LMP runtime is primarily COMPOSITION of existing .NET primitives, not invention.
+
+*** Convergence 7: Build Integration Is Already Solved
+MSBuild SDK (project integration) + MSBuild targets/props via NuGet buildTransitive/
+(automatic target import) + Microsoft.Build.Utilities.Task (custom build steps) +
+NuGet contentFiles/ (artifact distribution) + Source generators (compile-time code gen) +
+dotnet tool + PackAsTool (CLI distribution)
+= LMP integrates into the standard .NET build pipeline using THREE layers:
+1. Source generators run INSIDE the compiler (real-time IDE feedback).
+2. MSBuild targets run AFTER the compiler (IR emission, graph validation).
+3. CLI tool runs EXPLICITLY (optimization trials, artifact packaging).
+Precedent: EF Core uses the identical pattern:
+  - Source: https://github.com/dotnet/efcore/blob/main/src/EFCore.Tasks/buildTransitive/Microsoft.EntityFrameworkCore.Tasks.targets
+  - Source: https://learn.microsoft.com/nuget/concepts/msbuild-props-and-targets
+  - Source: https://learn.microsoft.com/visualstudio/msbuild/how-to-use-project-sdk
+Post-MVP: ~LMP.Sdk~ custom MSBuild SDK consolidates everything into ~<Project Sdk="LMP.Sdk/1.0.0">~.
+NuGet artifact packaging lets enterprises distribute compiled LM programs like libraries.
+
+* 3. Canonical MVP Story
+
+** Canonical Use Case
+The canonical MVP use case is /issue and ticket triage/ for enterprise support.
+
+** Business Scenario
+An enterprise receives support tickets from customers. The system must:
+- determine severity,
+- determine the owning team,
+- draft a grounded customer reply,
+- decide whether human escalation is required,
+- justify the decision,
+- comply with internal support policy,
+- and operate within cost / latency constraints.
+
+** Inputs
+The canonical input to the program is:
+- raw ticket text,
+- account tier,
+- relevant knowledge base snippets,
+- relevant policy snippets.
+
+** Outputs
+The canonical output is:
+- severity,
+- route-to team,
+- grounded reply draft,
+- rationale,
+- escalate flag.
+
+** Why This Story Was Chosen
+This story is the canonical MVP because it naturally exercises:
+- typed input / output contracts,
+- retrieval,
+- evaluation,
+- policy constraints,
+- optimization,
+- auditability,
+- and enterprise runtime concerns.
+
+It is broad enough to be compelling and narrow enough to implement.
+
+** The Pain in Current Workflows
+Typical notebook- or Python-style workflows start simple:
+- prompt string,
+- model call,
+- parser,
+- ad hoc eval.
+
+As the workflow becomes important, teams usually need:
+- stronger schemas,
+- more reliable parsing,
+- versioning,
+- traces,
+- repeatable evaluation,
+- safe optimization,
+- cost controls,
+- policy enforcement,
+- reproducibility.
+
+These needs are software engineering needs, not AI novelty needs.
+
+** MVP Story Arc
+The MVP must demonstrate this end-to-end story:
+1. a developer authors an AI triage program in C#,
+2. the build produces generated metadata and diagnostics,
+3. the runtime executes the program with trace output,
+4. an evaluator scores the program on a dataset,
+5. a compiler searches program variants,
+6. the system emits a compiled artifact,
+7. the runtime can execute a pinned compiled artifact in production.
+
+* 4. Product Scope
+
+** In Scope for MVP
+The MVP must include:
+- typed LM signatures,
+- a program graph abstraction,
+- source generation for signatures and program metadata,
+- Roslyn analyzers for a small set of high-value diagnostics,
+- runtime execution over ~IChatClient~,
+- evaluation integration over ~Microsoft.Extensions.AI.Evaluation~,
+- a compile / optimize loop,
+- artifact serialization and loading,
+- a CLI with a small number of commands,
+- a sample ticket triage program,
+- and automated tests.
+
+** Explicitly Out of Scope for MVP
+The MVP must /not/ include:
+- full DSPy feature parity (this framework is inspired by DSPy, not a port),
+- distributed optimization,
+- advanced probabilistic optimizers as the primary MVP backend,
+- a graphical UI,
+- full IDE extension UX beyond analyzers / generated files,
+- memory systems,
+- multimodal workflows beyond placeholder-friendly abstractions,
+- sandbox-grade code security,
+- full Native AOT optimization,
+- advanced agent loops,
+- production-grade persistence infrastructure.
+
+** Scope Principle
+When in doubt, prefer:
+- a simpler abstraction,
+- fewer steps,
+- deterministic behavior,
+- and visible artifacts,
+over completeness.
+
+* 5. User-Facing Mental Model
+
+** Signature
+A /Signature/ defines a typed LM task contract.
+/Provenance: Adopted from DSPy (~dspy.Signature~). DSPy uses Pydantic-based annotated/
+/schemas. This framework extends the concept with compile-time validation via source/
+/generators and analyzers — a capability DSPy cannot offer./
+
+A signature contains:
+- instructions,
+- typed input fields,
+- typed output fields,
+- field metadata.
+
+A signature is the smallest authorable unit that can map to an LM request / response contract.
+
+** Program
+A /Program/ is a directed graph of steps that together solve a business task.
+/Provenance: ORIGINAL. DSPy programs are Python classes with a ~forward()~ method —/
+/there is no graph abstraction. The directed graph model is a .NET-native invention/
+/that enables compile-time cycle detection, topological execution, and expression-tree/
+/data flow analysis./
+
+The canonical program for MVP is a ticket triage program.
+
+** Step
+A /Step/ is one node in a program graph.
+
+MVP step kinds:
+- ~Predict~ /— Adopted from DSPy (~dspy.Predict~)/
+- ~Retrieve~ /— Adopted from DSPy (~dspy.Retrieve~)/
+- ~Evaluate~ /— ORIGINAL. ~dspy.Evaluate~ is an external utility, not a program step/
+- ~If~ /— ORIGINAL. Does not exist in DSPy/
+- ~Repair~ (minimal form) /— ORIGINAL. Loosely inspired by ~dspy.Retry~ but substantially different/
+
+** Graph
+A /Graph/ defines control flow and data flow between steps.
+/Provenance: ORIGINAL. DSPy has no graph abstraction./
+
+The graph is the authored logical structure of the program.
+The graph is later lowered into an internal executable representation.
+
+** Evaluator
+An /Evaluator/ scores model outputs or overall program behavior.
+/Provenance: Adopted from DSPy (~dspy.Evaluate~). This framework integrates with/
+/~Microsoft.Extensions.AI.Evaluation~ which provides production-grade evaluators/
+/(groundedness, coherence, fluency, relevance) not available in DSPy./
+
+MVP uses existing evaluation libraries where possible and a framework wrapper where needed.
+
+** Compile Spec
+A /Compile Spec/ defines:
+- training set,
+- validation set,
+- tunable parameters,
+- metrics,
+- constraints,
+- optimizer choice.
+/Provenance: Partially adopted. DSPy's ~BootstrapFewShot~, ~MIPROv2~, etc. accept/
+/training data and metrics. The constraint model (hard/soft constraints with/
+/~CallerArgumentExpression~ diagnostics) is ENTIRELY ORIGINAL — DSPy has no/
+/constraint system./
+
+** Compiler
+The /Compiler/ runs candidate trials over a program and chooses the best valid variant.
+/Provenance: Adopted concept. DSPy calls these "Teleprompters" (recently "Optimizers")./
+/The ~.compile()~ method returns an optimized Module. This framework extends the concept/
+/with constraint enforcement, rate-limited trial execution, artifact provenance, and/
+/in-process observability feedback loops./
+
+** Compiled Artifact
+A /Compiled Artifact/ is a versioned, serializable representation of:
+- the base program,
+- selected variant parameters,
+- metrics,
+- provenance,
+- and deployment metadata.
+/Provenance: Extended from DSPy. DSPy has ~Module.save()~/~.load()~ for basic/
+/persistence. This framework's artifact model (AOT-safe JSON serialization,/
+/polymorphic step discriminators, hot-swap via ~AssemblyLoadContext~, provenance/
+/hashing) is substantially ORIGINAL./
+
+** Runtime Trace
+A /Runtime Trace/ is a structured record of:
+- executed steps,
+- timings,
+- model choices,
+- scores,
+- diagnostics,
+- and outputs.
+
+* 5A. Authoring-Time Architecture: Roslyn, Analyzers, and Source Generators
+
+** Purpose
+This section defines the build-time authoring architecture of the framework.
+
+This architecture is one of the main reasons this framework belongs in .NET.
+It is not optional polish.
+It is a core part of the product value proposition.
+
+The authoring-time architecture is responsible for turning ordinary C# source code into:
+- validated LM program definitions,
+- deterministic generated metadata,
+- and build-time artifacts that the runtime and compiler can consume safely.
+
+** Core Principle
+The framework has /three distinct compilation stages/:
+
+1. /C# compilation understanding/
+   - Roslyn parses and semantically understands authored source code.
+
+2. /Authoring-time lowering/
+   - analyzers validate the program shape,
+   - source generators emit descriptors, manifests, and boilerplate adapters.
+
+3. /LM program compilation/
+   - the framework compiler explores variants, evaluates them, and emits a compiled artifact.
+
+These stages must remain distinct.
+
+** Why This Matters
+This layer is the bridge between:
+- "developer-authored code"
+and
+- "machine-operable program structure."
+
+Without this layer, the framework would devolve into:
+- reflection-heavy discovery,
+- ad hoc runtime conventions,
+- weak IDE feedback,
+- and opaque program metadata.
+
+That would undermine one of the core advantages of doing this in .NET.
+
+** Build-Time Representation Pipeline
+#+begin_example
+C# source
+  -> Roslyn semantic model
+  -> analyzers
+  -> source generators
+  -> generated descriptors / manifests
+  -> LM Program IR
+#+end_example
+
+This pipeline must be treated as a first-class architectural flow, not as an implementation detail.
+
+** Roslyn Responsibilities
+Roslyn is the /authoring compiler substrate/ for this framework.
+
+Roslyn must provide:
+- semantic understanding of signatures and programs,
+- structural validation through analyzers,
+- code fixes for high-value authoring mistakes,
+- input to source generators.
+
+Roslyn owns:
+- source-level semantic validation,
+- developer-facing diagnostics,
+- code fix opportunities,
+- access to the semantic model used by generators.
+
+Roslyn must /not/ own:
+- runtime execution,
+- LM program compilation / optimization,
+- artifact emission for compiled variants,
+- business-task execution semantics.
+
+Roslyn exists to understand authored source and guide developers before runtime.
+
+** Analyzer Responsibilities
+Analyzers are part of the product UX.
+They are not secondary tooling.
+
+Analyzers must:
+- detect invalid or unsupported authoring shapes,
+- report framework-specific diagnostics,
+- prevent common architectural mistakes from reaching runtime,
+- improve onboarding for junior developers.
+
+Analyzers should target:
+- missing field descriptions,
+- missing or empty instructions,
+- duplicate step names,
+- non-deterministic step names,
+- unsupported field types,
+- unsupported graph shapes,
+- invalid use of step APIs.
+
+Analyzers must /not/:
+- generate descriptors,
+- execute model calls,
+- run optimizations,
+- substitute for runtime validation where live data is required.
+
+** Code Fix Responsibilities
+Code fixes are optional in breadth but important in principle.
+
+The MVP should include a small number of high-value fixes such as:
+- add missing description placeholder,
+- normalize invalid attribute usage,
+- suggest extracting a deterministic step name constant.
+
+Code fixes must remain narrowly scoped and safe.
+
+** Source Generator Responsibilities
+Source generators are the /authoring-time lowering layer/.
+
+They must:
+- discover framework-authored types,
+- lower authored declarations into deterministic generated outputs,
+- eliminate excessive runtime reflection needs,
+- generate metadata that becomes input to the LM Program IR and runtime/compiler layers.
+
+Source generators own:
+- signature descriptor generation,
+- program descriptor generation,
+- search-space descriptor generation,
+- registration helper generation,
+- optional manifest generation.
+
+Source generators must /not/:
+- run model calls,
+- run evaluation,
+- run optimization,
+- invent runtime behavior,
+- become the canonical home of program semantics.
+
+The source generators are responsible for /materialization/, not /execution/ or /selection/.
+
+** Generated Outputs Are Part of the Product
+Generated outputs are first-class framework artifacts.
+They are not incidental byproducts.
+
+The framework must treat generated outputs as:
+- deterministic,
+- inspectable,
+- testable,
+- and part of the developer experience.
+
+Expected generated outputs include:
+- ~<SignatureName>.g.cs~
+- ~<ProgramName>.g.cs~ (includes embedded metadata as C# constants/records)
+/Note: A separate ~.dspyinfo.json~ manifest is NOT recommended. Source generators/
+/cannot reliably flow non-.cs files into build outputs. Instead, generate metadata/
+/as C# records/constants inside the ~.g.cs~ file, using ~file class~ to keep them/
+/out of public API. This follows the precedent set by System.Text.Json source/
+/generation (~JsonSerializerContext~) which embeds all metadata in C#./
+- search-space metadata helpers
+- registration helpers
+
+These outputs should be visible in:
+- tests,
+- demos,
+- and documentation.
+
+** Signature Generation Contract
+For each ~[LmpSignature]~ type, generation must emit:
+- one deterministic signature descriptor,
+- one deterministic registration or metadata entry,
+- field metadata preserving names, descriptions, directions, and CLR type names,
+- generator diagnostics if the type cannot be safely lowered.
+
+The generated output must /not/ depend on runtime state.
+
+** Program Generation Contract
+For each ~[LmpProgram]~ type, generation must emit:
+- one deterministic program descriptor,
+- one deterministic search-space descriptor,
+- one deterministic metadata manifest or equivalent inspection output,
+- stable step identities derived from stable authored names.
+
+Program generation must preserve the authored logical structure without inventing hidden runtime-only behavior.
+
+** Build-Time vs Runtime Rule
+Build-time owns:
+- semantic understanding,
+- descriptor generation,
+- metadata generation,
+- structural diagnostics.
+
+Runtime owns:
+- execution,
+- binding,
+- model invocation,
+- trace capture,
+- evaluator invocation.
+
+Compiler owns:
+- variant generation,
+- trial orchestration,
+- scoring,
+- selection,
+- artifact emission.
+
+These boundaries must remain clean.
+
+** MVP Role
+In MVP, the authoring-time architecture must prove:
+- authored signatures can be discovered,
+- authored programs can be discovered,
+- deterministic descriptors can be generated,
+- high-value diagnostics can be surfaced.
+
+** Future Role
+After MVP, this layer may expand to include:
+- richer code fixes,
+- more expressive generated manifests,
+- stronger AOT-oriented generation,
+- better IDE integration,
+- stronger static graph validation,
+- richer authoring-time policy checks.
+
+** What This Layer Is Not
+This layer is not:
+- the runtime,
+- the optimizer,
+- the canonical internal IR,
+- or the deployment artifact system.
+
+It is the /build-time lowering and guidance layer/.
+
+* 6. Canonical Developer Experience
+
+** Goal
+The user experience must feel like:
+- defining software contracts,
+- composing software modules,
+- compiling and evaluating a program,
+- and deploying a versioned artifact.
+
+It must /not/ feel like:
+- editing raw prompt strings in random files,
+- hand-writing glue code,
+- or managing notebook experiments manually.
+
+** Canonical Authored Signature
+#+begin_src csharp
+using LMP;
+
+[LmpSignature(
+    Instructions = """
+    You are a senior enterprise support triage assistant.
+
+    Classify the issue severity, determine the owning team, and draft a grounded
+    customer reply using only the provided evidence and policy context.
+
+    If the evidence is insufficient, say so explicitly.
+    """
+)]
+public partial class TriageTicket
+{
+    [Input(Description = "Raw customer issue or support ticket text")]
+    public required string TicketText { get; init; }
+
+    [Input(Description = "Customer plan tier such as Free, Pro, Enterprise")]
+    public required string AccountTier { get; init; }
+
+    [Input(Description = "Relevant knowledge base snippets")]
+    public required IReadOnlyList<string> KnowledgeSnippets { get; init; }
+
+    [Input(Description = "Relevant support or compliance policy snippets")]
+    public required IReadOnlyList<string> PolicySnippets { get; init; }
+
+    [Output(Description = "Severity: Low, Medium, High, Critical")]
+    public required string Severity { get; init; }
+
+    [Output(Description = "Owning team name")]
+    public required string RouteToTeam { get; init; }
+
+    [Output(Description = "Grounded customer reply draft")]
+    public required string DraftReply { get; init; }
+
+    [Output(Description = "Reasoning for severity and routing")]
+    public required string Rationale { get; init; }
+
+    [Output(Description = "True if escalation to a human is required")]
+    public required bool Escalate { get; init; }
+}
+#+end_src
+
+** Canonical Authored Program
+#+begin_src csharp
+using LMP;
+
+[LmpProgram("support-triage")]
+public partial class SupportTriageProgram : LmpProgram<TicketInput, TriageResult>
+{
+    public override ProgramGraph Build()
+    {
+        var retrieveKb = Step.Retrieve(
+            name: "retrieve-kb",
+            from: input => input.TicketText,
+            topK: 5);
+
+        var retrievePolicy = Step.Retrieve(
+            name: "retrieve-policy",
+            from: input => input.TicketText,
+            topK: 3);
+
+        var triage = Step.Predict<TriageTicket>(
+            name: "triage",
+            bind: (input, ctx) => new TriageTicket
+            {
+                TicketText = input.TicketText,
+                AccountTier = input.AccountTier,
+                KnowledgeSnippets = ctx.OutputOf(retrieveKb).Documents,
+                PolicySnippets = ctx.OutputOf(retrievePolicy).Documents
+            });
+
+        var groundedness = Step.Evaluate(
+            name: "groundedness-check",
+            after: triage,
+            evaluator: new GroundednessEvaluator());
+            // Note: GroundednessEvaluator is a real class from
+            // Microsoft.Extensions.AI.Evaluation.Quality.
+            // BuiltInEvaluators factory does NOT exist — instantiate directly.
+
+        var policy = Step.Evaluate(
+            name: "policy-check",
+            after: triage,
+            evaluator: new CustomPolicyEvaluator("support-policy"));
+            // Note: PolicyCompliance evaluator does NOT exist in M.E.AI.
+            // Must be implemented as a custom evaluator for the framework.
+
+        var repair = Step.If(
+            name: "repair-if-needed",
+            condition: ctx =>
+                ctx.ScoreOf(groundedness) < 0.90 || !ctx.Passed(policy),
+            then: Step.Repair<TriageTicket>(
+                name: "repair-triage",
+                usingFeedbackFrom: new[] { groundedness, policy }));
+
+        return Graph
+            .StartWith(retrieveKb)
+            .Then(retrievePolicy)
+            .Then(triage)
+            .Then(groundedness)
+            .Then(policy)
+            .Then(repair)
+            .Return(ctx => new TriageResult
+            {
+                Severity = ctx.Latest<TriageTicket>().Severity,
+                RouteToTeam = ctx.Latest<TriageTicket>().RouteToTeam,
+                DraftReply = ctx.Latest<TriageTicket>().DraftReply,
+                Escalate = ctx.Latest<TriageTicket>().Escalate,
+                GroundednessScore = ctx.ScoreOf(groundedness),
+                PolicyPassed = ctx.Passed(policy)
+            });
+    }
+}
+
+public sealed record TicketInput(string TicketText, string AccountTier);
+
+public sealed record TriageResult(
+    string Severity,
+    string RouteToTeam,
+    string DraftReply,
+    bool Escalate,
+    double GroundednessScore,
+    bool PolicyPassed);
+#+end_src
+
+** Canonical Compile Spec
+/Provenance Note: The ~Optimize~ block below defines tunables that are mostly ORIGINAL/
+/to this framework. DSPy optimizes instructions and few-shot examples. Model choice,/
+/temperature, and retrieval topK as programmatic tunables are .NET-native extensions./
+/The constraint model (~Constrain~) is entirely original — DSPy has no constraint system./
+#+begin_src csharp
+using LMP.Compilation;
+
+var compileSpec = CompileSpec
+    .For<SupportTriageProgram>()
+    .WithTrainingSet("data/support-triage-train.jsonl")
+    .WithValidationSet("data/support-triage-val.jsonl")
+    .Optimize(search =>
+    {
+        search.Instructions(step: "triage");
+        search.FewShotExamples(step: "triage", min: 0, max: 6);
+        search.RetrievalTopK(step: "retrieve-kb", min: 3, max: 10);
+        search.RetrievalTopK(step: "retrieve-policy", min: 2, max: 6);
+        search.Model(step: "triage", allowed: ["gpt-4.1-mini", "gpt-4.1"]);
+        search.Temperature(step: "triage", min: 0.0, max: 0.7);
+    })
+    .ScoreWith(Metrics.Weighted(
+        ("routing_accuracy", 0.35),
+        ("severity_accuracy", 0.25),
+        ("groundedness", 0.20),
+        ("policy_pass_rate", 0.20)))
+    .Constrain(rules =>
+    {
+        rules.Require("policy_pass_rate == 1.0");
+        rules.Require("p95_latency_ms <= 2500");
+        rules.Require("avg_cost_usd <= 0.03");
+    })
+    .UseOptimizer(Optimizers.RandomSearch());
+#+end_src
+
+** Canonical Runtime Registration
+/Note: The ~IChatClient~ registration below uses the actual ~ChatClientBuilder~/
+/pattern from ~Microsoft.Extensions.AI~. The fluent ~AddChatClient().UseOpenAI()~/
+/pattern does NOT exist in the real API./
+#+begin_src csharp
+var services = new ServiceCollection();
+
+services.AddLogging();
+services.AddOpenTelemetry();
+
+// Register IChatClient using ChatClientBuilder (real API pattern)
+// Keyed DI (.NET 8) enables per-step model routing
+services.AddKeyedSingleton<IChatClient>("triage", (sp, _) =>
+    new ChatClientBuilder(new OpenAIChatClient("gpt-4.1-mini", sp.GetRequiredService<OpenAIClient>()))
+        .UseFunctionInvocation()
+        .UseOpenTelemetry()
+        .Build());
+
+services.AddLmpPrograms()
+    .AddProgram<SupportTriageProgram>();
+
+var provider = services.BuildServiceProvider();
+#+end_src
+
+** Canonical Program Execution
+#+begin_src csharp
+var program = provider.GetRequiredService<SupportTriageProgram>();
+
+var result = await program.RunAsync(new TicketInput(
+    TicketText: """
+    Since the latest release, SSO login intermittently fails for 300+ users in our EU tenant.
+    This is blocking our support operations. Please advise ASAP.
+    """,
+    AccountTier: "Enterprise"));
+#+end_src
+
+** Canonical Compile Command
+#+begin_src bash
+dotnet lmp compile \
+  --project samples/LMP.Samples.SupportTriage \
+  --program support-triage \
+  --train data/support-triage-train.jsonl \
+  --validate data/support-triage-val.jsonl \
+  --output artifacts/support-triage
+#+end_src
+
+** Canonical Runtime Trace Output
+#+begin_example
+Program: support-triage
+ProgramVersion: 0.1.0-compiled
+VariantId: triage-v7
+
+[retrieve-kb]
+  Retrieved: 5 docs
+  LatencyMs: 35
+
+[retrieve-policy]
+  Retrieved: 3 docs
+  LatencyMs: 18
+
+[triage]
+  Signature: TriageTicket
+  Model: gpt-4.1-mini
+  Temperature: 0.1
+  FewShotExamples: 4
+  PromptTokens: 2104
+  CompletionTokens: 262
+  CostUsd: 0.017
+  LatencyMs: 1480
+
+[groundedness-check]
+  Score: 0.96
+
+[policy-check]
+  Passed: True
+
+Final:
+  TotalLatencyMs: 1642
+  TotalCostUsd: 0.017
+#+end_example
+
+** Canonical Compiled Artifact
+#+begin_src json
+{
+  "program": "support-triage",
+  "compiledVersion": "0.1.0",
+  "variantId": "triage-v7",
+  "baseProgramHash": "sha256:abc123",
+  "selectedParameters": {
+    "triage.instructionsVariant": "inst-3",
+    "triage.fewShotExampleIds": ["ex-12", "ex-44", "ex-78", "ex-121"],
+    "triage.model": "gpt-4.1-mini",
+    "triage.temperature": 0.1,
+    "retrieve-kb.topK": 6,
+    "retrieve-policy.topK": 3
+  },
+  "validationMetrics": {
+    "routing_accuracy": 0.89,
+    "severity_accuracy": 0.83,
+    "groundedness": 0.96,
+    "policy_pass_rate": 1.0,
+    "p95_latency_ms": 2210,
+    "avg_cost_usd": 0.021
+  },
+  "approved": true
+}
+#+end_src
+
+* 6A. Architectural Responsibility Map
+
+** Purpose
+This section defines /what goes where/ in the system.
+
+This is a normative responsibility-allocation section.
+It exists to remove implementation guesswork.
+
+Every major subsystem must have:
+- clear ownership,
+- explicit non-ownership,
+- clearly defined inputs and outputs,
+- and a clearly stated reason for existence.
+
+** Architectural Center of Gravity
+The central architectural facts are:
+
+1. The /LM Program IR/ is the canonical internal representation.
+2. The /Compiler/ is the orchestration engine for program optimization.
+3. The /Runtime/ executes programs but does not decide which variant is best.
+4. /Roslyn + analyzers + source generators/ are the authoring-time differentiator.
+5. /Microsoft.Extensions.AI/ is the runtime substrate for model execution.
+6. /Microsoft.Extensions.AI.Evaluation/ is the scoring substrate.
+7. /Optimizer backends/ are pluggable proposal engines, not the core framework identity.
+
+** Host Platform vs Framework Layer
+*** Host Platform
+The framework relies on these platform capabilities:
+- Roslyn
+- source generators
+- analyzers
+- ~Microsoft.Extensions.AI~
+- ~Microsoft.Extensions.AI.Evaluation~
+- DI / logging / OpenTelemetry
+- optionally later: AutoML, Infer.NET, Z3, TorchSharp
+
+/Ecosystem note: Microsoft Semantic Kernel is now in MAINTENANCE MODE (no/
+/new features, critical bug and security fixes only). Its successor is the/
+/Microsoft Agent Framework (MAF = SK + AutoGen merged), which provides/
+/multi-agent orchestration, conversational agents, and tool calling./
+/Neither SK nor MAF is competitive with this framework — they orchestrate/
+/agents; this framework optimizes LM programs. The architectural layering is:/
+/  Layer 1: Microsoft.Extensions.AI (IChatClient) — LLM abstraction/
+/  Layer 2: LMP — LM program compilation and optimization/
+/  Layer 3: MAF — Agent orchestration, multi-agent workflows (optional consumer)/
+/LMP depends ONLY on ~IChatClient~ from ~Microsoft.Extensions.AI~. It does/
+/not require SK, MAF, or any orchestration framework. A MAF agent COULD/
+/use an LMP-compiled program as a tool — complementary, not dependent./
+
+*** Framework Layer
+The framework itself is responsible for:
+- authoring model,
+- LM Program IR,
+- runtime execution engine,
+- compiler,
+- artifact model,
+- diagnostics specific to this framework,
+- generator outputs specific to this framework,
+- CLI,
+- samples,
+- tests.
+
+The framework must reuse host-platform capabilities rather than reimplement them.
+
+** Representation Pipeline
+#+begin_example
+Authored C# source
+  -> Roslyn semantic model
+  -> analyzer diagnostics / code fixes
+  -> generated descriptors / manifests
+  -> LM Program IR
+  -> runtime execution plan
+  -> evaluated candidate trial
+  -> compiled artifact
+#+end_example
+
+Each stage must have a clear owner.
+
+** Responsibility Table
+#+begin_example
+Concern / Capability                  Owner Layer
+--------------------------------------------------------------
+Authoring syntax                      C# + framework attributes / APIs
+Semantic validation                   Roslyn analyzers
+Code fixes                            Roslyn code fixes
+Descriptor generation                 Source generators
+Search-space extraction metadata      Source generators + compiler
+Canonical internal program model      LM Program IR
+Execution semantics                   Runtime
+Model invocation                      Microsoft.Extensions.AI / Runtime
+Prompt assembly from descriptors      Runtime
+Evaluation scoring                    Evaluation layer
+Candidate proposal                    Optimizer backend
+Trial orchestration                   Compiler
+Constraint enforcement                Compiler (using constraint model)
+Selection of winning variant          Compiler
+Compiled artifact emission            Compiler
+Artifact loading and application      Runtime
+Trace capture                         Runtime
+CLI workflow                          CLI
+#+end_example
+
+** Responsibility Definitions by Layer
+
+*** Authoring Layer
+The authoring layer consists of:
+- C# source,
+- attributes,
+- base classes,
+- fluent APIs,
+- and authored program declarations.
+
+Owns:
+- the developer-facing syntax and concepts.
+
+Must not own:
+- runtime execution internals,
+- compiler selection logic,
+- generated descriptor internals.
+
+Inputs:
+- developer-authored source code.
+
+Outputs:
+- compilable framework-annotated source code.
+
+Why it exists:
+- to provide a clear, typed, idiomatic .NET developer experience.
+
+MVP role:
+- make ticket triage programs authorable in a clean, typed way.
+
+Future role:
+- richer domain-specific APIs and additional step kinds.
+
+*** Roslyn / Analyzer Layer
+Owns:
+- semantic validation,
+- diagnostics,
+- code fixes,
+- support for generation via semantic understanding.
+
+Must not own:
+- runtime semantics,
+- optimization trials,
+- artifact emission,
+- the canonical IR.
+
+Inputs:
+- syntax trees,
+- semantic model,
+- framework attributes and APIs.
+
+Outputs:
+- diagnostics,
+- code fixes,
+- inputs to source generation.
+
+Why it exists:
+- to make the IDE/compiler understand LM programs.
+
+MVP role:
+- detect common authoring mistakes early.
+
+Future role:
+- richer graph validation, richer code actions, stronger guidance.
+
+*** Source Generator Layer
+Owns:
+- generated descriptors,
+- generated manifests,
+- generated registration helpers,
+- generated search-space metadata.
+
+Must not own:
+- runtime execution,
+- optimization policy,
+- candidate selection,
+- artifact selection.
+
+Inputs:
+- Roslyn semantic information,
+- authored types and APIs.
+
+Outputs:
+- deterministic generated source,
+- deterministic metadata.
+
+Why it exists:
+- to lower authored code into explicit build-time artifacts.
+
+MVP role:
+- generate signature and program descriptors.
+
+Future role:
+- richer generation, better AOT friendliness, richer generated adapters.
+
+*** LM Program IR Layer
+Owns:
+- the canonical internal representation of LM programs.
+
+Must not own:
+- Roslyn syntax representation,
+- runtime object identity,
+- optimizer-specific algorithms,
+- transport-specific model invocation details.
+
+Inputs:
+- generated descriptors,
+- authored structure lowered from generation,
+- compiler/runtime metadata.
+
+Outputs:
+- a stable program model consumable by runtime and compiler.
+
+Why it exists:
+- to separate authoring syntax from executable / optimizable structure.
+
+MVP role:
+- represent signatures, steps, graphs, tunables, evaluators, variants, traces, and artifacts structurally.
+
+Future role:
+- richer step kinds, richer branch semantics, richer metadata and provenance.
+
+*** Runtime Layer
+Owns:
+- program execution,
+- step context,
+- step ordering,
+- step bindings,
+- model invocation integration,
+- trace capture,
+- artifact application.
+
+Must not own:
+- search strategy,
+- candidate selection,
+- final optimization decisions,
+- source-level diagnostics.
+
+Inputs:
+- LM Program IR,
+- runtime services,
+- live input,
+- optional compiled artifact.
+
+Outputs:
+- program outputs,
+- runtime traces,
+- evaluator inputs/results.
+
+Why it exists:
+- to execute programs deterministically and observably.
+
+MVP role:
+- execute the canonical ticket triage flow end to end.
+
+Future role:
+- richer execution policies, more providers, more step kinds.
+
+*** Evaluation Layer
+Owns:
+- evaluator interfaces,
+- metric calculation,
+- score aggregation,
+- score/result objects.
+
+Must not own:
+- search policy,
+- artifact selection,
+- runtime graph semantics,
+- authoring-time validation.
+
+Inputs:
+- runtime outputs,
+- dataset examples,
+- evaluation configuration.
+
+Outputs:
+- scores,
+- pass/fail signals,
+- evaluation diagnostics.
+
+Why it exists:
+- to provide the scoring substrate for compile-time selection.
+
+MVP role:
+- support the triage metrics required by compile/reporting.
+
+Future role:
+- richer evaluators, richer score aggregation, richer safety metrics.
+
+*** Compiler Layer
+Owns:
+- search-space construction,
+- objective model,
+- constraint model,
+- trial orchestration,
+- valid candidate selection,
+- compile reports,
+- artifact emission.
+
+Must not own:
+- raw model transport,
+- source-level authoring semantics,
+- IDE diagnostics,
+- provider-specific execution internals.
+
+Inputs:
+- LM Program IR,
+- datasets,
+- evaluators,
+- optimizer backend,
+- compile spec.
+
+Outputs:
+- compile report,
+- selected best valid variant,
+- compiled artifact.
+
+Why it exists:
+- to transform authored programs into optimized, versioned deployable variants.
+
+MVP role:
+- bounded search + scoring + hard constraints + artifact emission.
+
+Future role:
+- orchestrate more advanced backends and richer selection modes.
+
+*** Optimizer Backend Layer
+Owns:
+- candidate proposal strategy.
+
+Must not own:
+- execution,
+- evaluation,
+- final artifact emission,
+- global compiler orchestration,
+- runtime semantics.
+
+Inputs:
+- search space,
+- objective signals,
+- constraint signals,
+- trial history.
+
+Outputs:
+- candidate proposals,
+- optional backend diagnostics.
+
+Why it exists:
+- to make candidate search pluggable.
+
+MVP role:
+- simple bounded proposal strategy.
+
+Future role:
+- AutoML, Z3-assisted, probabilistic, learned backends.
+
+*** Artifact Layer
+Owns:
+- serialized compiled artifacts,
+- artifact compatibility checks,
+- artifact save/load contracts.
+
+Must not own:
+- optimization,
+- source generation,
+- authoring-time semantics,
+- live runtime execution rules.
+
+Inputs:
+- compiler outputs.
+
+Outputs:
+- versioned deployable artifact files.
+
+Why it exists:
+- to make optimized programs explicit, portable, and versioned.
+
+MVP role:
+- save and load one compiled variant format.
+
+Future role:
+- richer provenance, compatibility migration, approval metadata.
+
+*** CLI Layer
+Owns:
+- user entry points for compile / run / eval / inspect workflows.
+
+Must not own:
+- core business logic,
+- runtime internals,
+- compiler internals.
+
+Inputs:
+- commands and options.
+
+Outputs:
+- user-readable results,
+- file outputs,
+- exit codes.
+
+Why it exists:
+- to make the framework usable and demoable.
+
+MVP role:
+- expose the canonical triage flow and compile flow.
+
+Future role:
+- richer inspection and automation workflows.
+
+** What Does Not Go Where
+The following guardrails are mandatory:
+
+- Roslyn is /not/ the LM Program IR.
+- Roslyn is /not/ the runtime.
+- Source generators are /not/ the optimizer.
+- Source generators are /not/ the runtime.
+- The LM Program IR is /not/ just generated code.
+- The LM Program IR is /not/ expression trees.
+- Runtime is /not/ the compiler.
+- Runtime is /not/ responsible for best-variant selection.
+- Evaluation is /not/ the optimizer.
+- Optimizer backends are /not/ the compiler.
+- Artifacts are /not/ authored source.
+- ~Microsoft.Extensions.AI~ is /not/ the whole framework; it is the runtime substrate.
+
+** Where the Value Proposition Physically Lives
+*** Strong typing and contracts
+Lives in:
+- authoring APIs,
+- source-generated descriptors,
+- LM Program IR.
+
+*** Better IDE and authoring experience
+Lives in:
+- Roslyn analyzers,
+- code fixes,
+- source generators,
+- generated metadata.
+
+*** Safer optimization
+Lives in:
+- LM Program IR,
+- compiler,
+- evaluation layer,
+- constraint model.
+
+*** Better observability
+Lives in:
+- runtime execution engine,
+- runtime trace model,
+- artifact provenance.
+
+*** Better deployability
+Lives in:
+- source generation,
+- explicit metadata,
+- artifact model,
+- clear runtime/compiler separation.
+
+** MVP Guidance
+The MVP should prioritize proving:
+- the ownership boundaries are real,
+- generated outputs are real,
+- runtime/compiler separation is real,
+- the IR is the center of gravity,
+- the compiler selects variants without collapsing into runtime code.
+
+* 7. System Architecture
+
+** Architecture Principle
+The architecture must separate:
+- authoring-time structure,
+- internal representation,
+- runtime execution,
+- and compile-time optimization.
+
+** Components
+*** 7.1 Authoring Layer
+This is the user-facing C# programming model.
+
+Responsibilities:
+- define signatures,
+- define programs,
+- define compile specs,
+- provide a clear and typed developer experience.
+
+Inputs:
+- C# source code.
+
+Outputs:
+- compilable source,
+- metadata for analyzers and source generators.
+
+*** 7.2 Roslyn Analyzer Layer
+Responsibilities:
+- validate common authoring mistakes,
+- surface diagnostic messages,
+- optionally provide code fixes.
+
+Examples of analyzer responsibility:
+- missing field description,
+- unstable step names,
+- invalid output types,
+- unsupported step graph shapes.
+
+*** 7.3 Source Generator Layer
+Responsibilities:
+- inspect authoring types,
+- generate descriptors,
+- generate metadata,
+- generate boilerplate adapters,
+- avoid excessive runtime reflection.
+
+Generated outputs must include:
+- signature descriptors,
+- program descriptors,
+- search-space descriptors,
+- registration helpers,
+- optional metadata manifests.
+
+*** 7.4 LM Program IR Layer
+This is the central internal representation.
+
+Responsibilities:
+- represent the program independently of C# syntax,
+- provide a stable substrate for runtime and compilation,
+- serialize program structure and variants,
+- model tunable parameters and evaluation attachments.
+
+*** 7.5 Runtime Layer
+Responsibilities:
+- execute the graph,
+- bind data between steps,
+- invoke models through ~IChatClient~,
+- collect traces,
+- handle evaluators,
+- manage branching,
+- support compiled artifacts.
+
+*** 7.6 Evaluation Layer
+Responsibilities:
+- define dataset format,
+- run evaluators,
+- aggregate scores,
+- expose metrics to the compiler.
+
+The MVP should integrate with existing .NET AI evaluation interfaces rather than reinvent them.
+
+*** 7.7 Compiler / Optimizer Layer
+Responsibilities:
+- enumerate or sample candidate variants,
+- run trials on train / validation data,
+- apply constraints,
+- score candidates,
+- select the best valid variant,
+- produce reports and artifacts.
+
+*** 7.8 Artifact Layer
+Responsibilities:
+- save compiled artifacts,
+- load compiled artifacts,
+- validate compatibility,
+- supply selected parameters to runtime.
+
+*** 7.9 CLI Layer
+Responsibilities:
+- expose simple user workflows,
+- compile,
+- evaluate,
+- inspect,
+- run sample scenarios.
+
+* 8. LM Program IR Definition
+
+** IR Design Principle
+The IR must be:
+- serializable,
+- stable,
+- explicit,
+- independent from Roslyn syntax trees,
+- and independent from runtime object identity.
+
+** Core Types
+*** 8.1 SignatureDescriptor
+Represents one authored signature.
+
+Required fields:
+- ~Id~
+- ~Name~
+- ~Instructions~
+- ~Inputs~
+- ~Outputs~
+
+Optional fields:
+- ~SourceTypeName~
+- ~AssemblyName~
+- ~Metadata~
+
+Example:
+#+begin_src csharp
+public sealed record SignatureDescriptor(
+    string Id,
+    string Name,
+    string Instructions,
+    IReadOnlyList<FieldDescriptor> Inputs,
+    IReadOnlyList<FieldDescriptor> Outputs,
+    string? SourceTypeName = null,
+    string? AssemblyName = null,
+    IReadOnlyDictionary<string, string>? Metadata = null);
+#+end_src
+
+*** 8.2 FieldDescriptor
+Represents an input or output field.
+
+Required fields:
+- ~Name~
+- ~Direction~ ("Input" or "Output")
+- ~ClrTypeName~
+- ~Description~
+
+Optional fields:
+- ~Required~
+- ~Metadata~
+
+*** 8.3 ProgramDescriptor
+Represents one authored program.
+
+Required fields:
+- ~Id~
+- ~Name~
+- ~InputTypeName~
+- ~OutputTypeName~
+- ~Steps~
+- ~Edges~
+
+Optional fields:
+- ~Metadata~
+
+*** 8.4 StepDescriptor
+Represents one step in a program.
+
+Required fields:
+- ~Id~
+- ~Name~
+- ~Kind~
+- ~Bindings~
+
+Optional fields:
+- ~SignatureId~
+- ~EvaluatorId~
+- ~TunableParameters~
+- ~ConditionExpressionDescriptor~
+- ~Metadata~
+
+Allowed MVP ~Kind~ values:
+- ~Retrieve~
+- ~Predict~
+- ~Evaluate~
+- ~If~
+- ~Repair~
+
+*** 8.5 EdgeDescriptor
+Represents graph flow.
+
+Required fields:
+- ~FromStepId~
+- ~ToStepId~
+- ~EdgeKind~
+
+Allowed ~EdgeKind~ values:
+- ~Sequence~
+- ~ConditionalTrue~
+- ~ConditionalFalse~
+
+*** 8.6 TunableParameterDescriptor
+Represents one compiler-visible tunable parameter.
+
+Required fields:
+- ~Id~
+- ~StepId~
+- ~ParameterKind~
+- ~Name~
+
+Optional fields:
+- ~MinValue~
+- ~MaxValue~
+- ~AllowedValues~
+- ~DefaultValue~
+
+Allowed MVP ~ParameterKind~ values:
+- ~Instruction~
+- ~FewShotCount~
+- ~FewShotSelection~
+- ~RetrievalTopK~
+- ~Model~
+- ~Temperature~
+
+*** 8.7 EvaluationAttachmentDescriptor
+Represents an evaluator bound to a step or program.
+
+Required fields:
+- ~Id~
+- ~Name~
+- ~Scope~
+- ~MetricNames~
+
+Allowed ~Scope~ values:
+- ~Step~
+- ~Program~
+
+*** 8.8 VariantDescriptor
+Represents one candidate compiled program configuration.
+
+Required fields:
+- ~VariantId~
+- ~ProgramId~
+- ~SelectedParameters~
+
+Optional fields:
+- ~TrialMetadata~
+
+*** 8.9 TrialResultDescriptor
+Represents one optimization trial result.
+
+Required fields:
+- ~VariantId~
+- ~Metrics~
+- ~ConstraintResults~
+- ~Succeeded~
+- ~ElapsedMs~
+
+*** 8.10 CompileReportDescriptor
+Represents the compiler output summary.
+
+Required fields:
+- ~ProgramId~
+- ~BestVariantId~
+- ~TrialsExecuted~
+- ~BestMetrics~
+- ~ConstraintSummary~
+
+*** 8.11 RuntimeTraceDescriptor
+Represents one program execution trace.
+
+Required fields:
+- ~ProgramId~
+- ~VariantId~
+- ~Steps~
+- ~TotalLatencyMs~
+
+*** 8.12 RuntimeTraceStepDescriptor
+Represents one trace entry.
+
+Required fields:
+- ~StepId~
+- ~StepName~
+- ~Kind~
+- ~StartedAtUtc~
+- ~EndedAtUtc~
+- ~Outcome~
+
+Optional fields:
+- ~Model~
+- ~PromptTokens~
+- ~CompletionTokens~
+- ~CostUsd~
+- ~Scores~
+- ~Diagnostics~
+
+** IR Invariants
+The following invariants must hold:
+- every step id must be stable and deterministic,
+- every program id must be deterministic,
+- step names must be unique within a program,
+- graph must be acyclic in MVP,
+- all edges must reference valid step ids,
+- all tunable parameters must reference valid step ids,
+- all signature-backed predict / repair steps must reference a valid signature descriptor.
+
+** Stable Identity Rules
+IDs must be deterministic.
+MVP rule:
+- program id = normalized program name,
+- signature id = normalized signature type name,
+- step id = normalized step name.
+
+No GUID-based step identities are allowed in authored source for MVP.
+
+* 9. Build-Time Responsibilities
+
+** Build-Time Principle
+Compile-time facilities must produce structure and diagnostics.
+They must not attempt to perform runtime optimization.
+
+** Three-Layer Build Architecture
+
+LMP uses three build layers, mirroring how EF Core, Razor, Blazor, and Protobuf integrate with ~dotnet build~.
+
+*** Layer 1: Source Generator (inside Roslyn — during ~dotnet build~)
+Runs inside the C# compiler. Discovers ~[LmpSignature]~ and ~[LmpProgram]~ types,
+validates structure, emits descriptors and binding code, reports diagnostics (LMP001–LMP007).
+Provides real-time IDE feedback (red squiggles). Cannot access filesystem or run tools.
+
+*** Layer 2: MSBuild Targets (after CoreCompile — during ~dotnet build~)
+Runs after the C# compiler finishes, before build completes.
+Three targets:
+- ~LmpEmitIr~ (AfterCompile) — reads compiled assembly, extracts ProgramDescriptor instances,
+  emits IR JSON to ~obj/lmp/~. This is the "program graph as data" step.
+- ~LmpValidateGraph~ (AfterCompile, after LmpEmitIr) — validates IR completeness:
+  all bindings resolved, no dangling step references, constraint predicates type-check.
+- ~LmpEmbedArtifact~ (PrepareForPublish) — during ~dotnet publish~, copies compiled
+  artifact to output directory or embeds as resource.
+
+Implemented as ~Microsoft.Build.Utilities.Task~ subclasses, shipped via ~buildTransitive/~
+folder in the NuGet package. Automatically imported when consuming project references LMP.
+
+Precedent: EF Core
+- Source: https://github.com/dotnet/efcore/blob/main/src/EFCore.Tasks/buildTransitive/Microsoft.EntityFrameworkCore.Tasks.targets
+- ~CoreCompileDependsOn~ → ~_EFPrepareForCompile~ (pre-compile)
+- ~TargetsTriggeredByCompilation~ → ~_EFGenerateFilesAfterBuild~ (post-compile)
+
+*** Layer 3: CLI Tool (explicit ~dotnet lmp compile~ — costs $$$)
+Runs only when developer explicitly invokes. Calls LM APIs (costs real dollars),
+runs optimization trials, is non-deterministic, takes minutes to hours.
+Must NEVER run during ~dotnet build~.
+
+Precedent: EF Core separates the same way:
+- ~dotnet build~ → compiles DbContext (implicit, free, deterministic)
+- ~dotnet ef dbcontext optimize~ → generates compiled models (explicit, expensive)
+
+** Why Layer 2 Matters
+Without MSBuild targets, developers must run ~dotnet lmp compile~ (calling LM APIs,
+costing money, taking minutes) just to discover a typo in a step name. With Layer 2,
+~dotnet build~ catches ALL structural errors instantly — the CLI is only needed for
+optimization.
+
+** Analyzer Responsibilities
+MVP analyzers must include:
+- missing field description,
+- missing or invalid signature instructions,
+- unstable / non-constant step names,
+- duplicate step names,
+- unsupported cyclic graph authoring patterns,
+- unsupported output field types.
+
+** Source Generator Responsibilities
+The source generator must:
+- discover ~[LmpSignature]~ types,
+- discover ~[LmpProgram]~ types,
+- generate signature descriptors,
+- generate program descriptors,
+- generate search-space descriptors,
+- generate minimal registration helpers,
+- generate optional diagnostic-friendly manifests.
+
+** MSBuild Target Responsibilities
+The MSBuild targets must:
+- emit IR JSON from compiled assembly metadata,
+- validate program graph structural completeness,
+- embed compiled artifacts during publish,
+- report warnings/errors via MSBuild diagnostic infrastructure,
+- ship via ~buildTransitive/~ in the NuGet package.
+
+** Build-Time Outputs
+Expected generated artifacts:
+- ~<SignatureName>.g.cs~ (source generator)
+- ~<ProgramName>.g.cs~ (source generator)
+- ~obj/lmp/<ProgramName>.ir.json~ (MSBuild target)
+- ~obj/lmp/validation-results.json~ (MSBuild target)
+- metadata helper classes (source generator)
+
+** What Must Not Happen at Build Time
+Build time must not:
+- run optimization trials,
+- call language models,
+- require online services,
+- mutate datasets,
+- emit runtime-specific prompt variants.
+
+* 10. Runtime Responsibilities
+
+** Runtime Principle
+The runtime executes authored or compiled LM programs against live inputs.
+
+** Runtime Inputs
+The runtime consumes:
+- authored program metadata,
+- generated descriptors,
+- runtime services,
+- optional compiled artifact,
+- program input.
+
+** Step Execution Semantics
+*** Retrieve Step
+A retrieve step:
+- takes a query from input or prior context,
+- calls a retrieval provider abstraction,
+- returns a document list.
+
+MVP may implement retrieval with a stub or pluggable interface.
+
+*** Predict Step
+A predict step:
+- binds data to a signature input object,
+- assembles a prompt from descriptor + active variant,
+- calls ~IChatClient~,
+- parses structured output,
+- stores output in context.
+
+*** Evaluate Step
+An evaluate step:
+- consumes a prior output,
+- runs an evaluator,
+- stores scores and pass/fail metadata in context.
+
+*** If Step
+An if step:
+- reads scores or context values,
+- determines whether to execute the nested branch.
+
+*** Repair Step
+A repair step:
+- reuses the same signature as a predict-like step,
+- includes evaluation feedback in the prompt context,
+- emits a replacement candidate output.
+
+** Context Model
+The runtime context must support:
+- reading prior step outputs,
+- reading latest output of a type,
+- reading evaluator scores,
+- reading pass/fail results,
+- trace accumulation,
+- cancellation propagation.
+
+** Error Handling
+MVP error rules:
+- step exceptions fail the program unless explicitly handled,
+- evaluation failures are recorded in trace,
+- parsing failures surface as structured exceptions,
+- failed repair does not silently replace original output.
+
+** Trace Collection
+Every step execution must produce a trace record.
+Trace must capture enough information for:
+- debugging,
+- evaluation review,
+- and compile report provenance.
+
+* 10A. Optimization and Constraint Architecture
+
+** Purpose
+This section defines the architecture of program optimization and constraint enforcement.
+
+This section exists to make the compile story precise and to remove ambiguity about:
+- what is being optimized,
+- how constraints apply,
+- what the compiler owns,
+- and what optimizer backends do.
+
+** Core Principle
+The optimizer backend is /not/ the compiler.
+
+The compiler owns:
+- search-space construction,
+- objective definition,
+- constraint enforcement,
+- trial execution orchestration,
+- selection of the best valid variant,
+- compile report generation,
+- artifact emission.
+
+The optimizer backend only owns:
+- candidate proposal.
+
+This separation is mandatory.
+
+** Optimization Pipeline
+#+begin_example
+LM Program IR
+  -> Search Space Extraction
+  -> Constraint Model
+  -> Objective Model
+  -> Candidate Proposal (optimizer backend)
+  -> Trial Execution
+  -> Evaluation
+  -> Constraint Checking
+  -> Selection
+  -> Compiled Artifact
+#+end_example
+
+This is the canonical compile pipeline.
+
+** What Is Being Optimized
+The MVP optimizes /program variants/, not raw prompt strings in isolation.
+
+A program variant is a complete assignment over a defined tunable subset of the LM program.
+
+In MVP, tunables may include:
+- instruction variant,
+- few-shot example count,
+- few-shot example selection,
+- retrieval ~topK~,
+- model choice,
+- temperature.
+
+The compiler must treat these as /program-level tunables/, not ad hoc runtime options.
+
+** Optimization Layers
+There are three conceptual optimization layers in the architecture.
+
+*** 1. Structural Tuning
+This changes explicit program parameters.
+
+Examples:
+- choose instruction variant,
+- choose few-shot examples,
+- choose retrieval top-k,
+- choose model,
+- choose temperature.
+
+This is the core MVP optimization layer.
+
+*** 2. Feasibility / Constraint Enforcement
+This ensures that candidates satisfy required limits and rules.
+
+Examples:
+- policy pass rate must be 1.0,
+- latency budget must not be exceeded,
+- cost must not exceed threshold,
+- incompatible choices must not be allowed together.
+
+This is first-class in MVP.
+
+*** 3. Search Guidance
+This determines which candidate to try next.
+
+Examples:
+- random search,
+- bounded grid search,
+- hybrid search,
+- later: AutoML, probabilistic, learned, symbolic-assisted strategies.
+
+This layer is intentionally simple in MVP.
+
+** Candidate / Trial / Compile / Artifact Semantics
+
+*** Candidate
+A candidate is a provisional assignment of tunable parameter values for one program.
+
+A candidate is not yet selected or deployable.
+
+*** Trial
+A trial is the execution of one candidate on a dataset slice or evaluation set, producing:
+- metrics,
+- constraint outcomes,
+- diagnostics,
+- timing / cost data.
+
+*** Compile
+A compile is a bounded series of trials followed by:
+- valid-candidate selection,
+- report generation,
+- artifact generation.
+
+*** Compiled Artifact
+A compiled artifact is the selected, versioned, deployable result of compilation.
+
+** Constraint Model
+Constraints are first-class framework concepts.
+They must not be treated as ad hoc strings internally.
+
+The public API may allow a compact DSL-like authoring experience, but internally constraints must lower into a typed model.
+
+** Typed Constraint Shape
+Conceptual model:
+#+begin_src csharp
+public sealed record ConstraintDescriptor(
+    string Id,
+    string MetricName,
+    ConstraintOperator Operator,
+    double Threshold,
+    ConstraintSeverity Severity,
+    ConstraintScope Scope,
+    string? Message = null);
+#+end_src
+
+Example enums:
+#+begin_src csharp
+public enum ConstraintOperator
+{
+    Equal,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual
+}
+
+public enum ConstraintSeverity
+{
+    Hard,
+    Soft
+}
+
+public enum ConstraintScope
+{
+    Compile,
+    Trial,
+    Program
+}
+#+end_src
+
+** Constraint Categories
+*** Hard Constraints
+Hard constraints must pass for a candidate to remain valid.
+
+If a hard constraint fails:
+- the candidate is invalid,
+- it cannot be selected as best valid,
+- and the report must record the violation.
+
+Examples:
+- ~policy_pass_rate == 1.0~
+- ~p95_latency_ms <= 2500~
+- ~avg_cost_usd <= 0.03~
+
+*** Soft Constraints
+Soft constraints are optional in MVP.
+They may be recorded but need not influence selection in MVP unless explicitly supported.
+
+Examples:
+- prefer lower cost if primary score ties,
+- prefer lower latency if quality remains comparable.
+
+MVP may omit soft-constraint-driven ranking logic, but the architecture should preserve room for it.
+
+** Constraint Timing
+Constraints may act in multiple phases.
+
+*** Static / Pre-Execution Constraints
+These are checked before a trial runs.
+
+Examples:
+- parameter ranges,
+- incompatible combinations,
+- invalid candidate shapes.
+
+MVP support:
+- yes, but narrow in scope.
+
+*** Runtime / Post-Execution Constraints
+These are checked after metrics are collected.
+
+Examples:
+- latency,
+- cost,
+- policy pass rate,
+- groundedness threshold.
+
+MVP support:
+- required.
+
+** Framework Constraints vs Business Constraints
+The architecture must distinguish:
+
+*** Framework Constraints
+These govern the validity of authored or compiled program structure.
+
+Examples:
+- stable step ids required,
+- graph must be acyclic in MVP,
+- tunable parameter must reference a valid step,
+- unsupported output types are invalid.
+
+These are not business optimization rules.
+They are system-validity rules.
+
+*** Business Constraints
+These define the user’s optimization boundaries.
+
+Examples:
+- policy pass rate must equal 1.0,
+- p95 latency <= 2500,
+- avg cost <= 0.03.
+
+These are compile-time decision rules over candidate behavior.
+
+** Objective Model
+The objective model defines what "better" means among /valid/ candidates.
+
+MVP objective model:
+- weighted metric aggregation.
+
+Conceptual example:
+#+begin_src csharp
+public sealed record WeightedObjective(
+    IReadOnlyList<(string MetricName, double Weight)> Metrics);
+#+end_src
+
+Example metrics:
+- routing accuracy,
+- severity accuracy,
+- groundedness,
+- policy pass rate.
+
+** Selection Semantics
+The MVP compiler must use the following decision order:
+
+1. reject candidates that violate hard constraints,
+2. rank remaining candidates by objective score,
+3. break ties deterministically,
+4. select the best valid candidate,
+5. if no valid candidate exists, emit a failure report and no approved artifact.
+
+This order is mandatory.
+
+** Tie-Breaking
+MVP tie-breaking should be deterministic and simple.
+Recommended tie-break order:
+1. lower cost,
+2. lower latency,
+3. lexicographically smaller variant id.
+
+This prevents unstable compile results.
+
+** Trial Budget Model
+Optimization itself consumes time and money.
+The compiler must therefore support a bounded optimization budget.
+
+MVP required budget controls:
+- maximum number of trials.
+
+MVP recommended budget controls:
+- maximum elapsed time.
+
+Future budget controls may include:
+- maximum optimization cost,
+- dynamic early stopping.
+
+** Optimizer Backend Role
+The optimizer backend only proposes candidates.
+It does not own:
+- trial execution,
+- evaluation,
+- constraint enforcement,
+- final selection,
+- artifact generation.
+
+Conceptual interface:
+#+begin_src csharp
+public interface IOptimizerBackend
+{
+    ValueTask<CandidateProposal> ProposeNextAsync(
+        SearchSpaceDescriptor searchSpace,
+        ObjectiveDescriptor objective,
+        IReadOnlyList<ConstraintDescriptor> constraints,
+        IReadOnlyList<TrialResultDescriptor> priorTrials,
+        CancellationToken cancellationToken = default);
+}
+#+end_src
+
+This interface is conceptual and may evolve, but the ownership boundary must remain.
+
+** MVP Backend Strategy
+The MVP backend should be intentionally simple.
+
+Accepted MVP strategies:
+- bounded random search,
+- bounded grid search,
+- simple hybrid search.
+
+The purpose of the MVP backend is to prove:
+- search space extraction,
+- candidate application,
+- trial execution,
+- scoring,
+- constraint enforcement,
+- selection,
+- artifact emission.
+
+It is /not/ intended to prove state-of-the-art search.
+
+** Why the MVP Backend Is Intentionally Boring
+The architecture must first prove compiler legitimacy:
+- the IR is real,
+- the runtime is real,
+- the evaluation loop is real,
+- constraints are real,
+- artifact emission is real.
+
+A sophisticated optimizer built on a weak architecture would be misleading.
+Therefore the MVP backend is intentionally boring so the architecture can be validated first.
+
+** Z3 Position in the Architecture
+Z3 is relevant for advanced scenarios, but is OVERKILL for the MVP.
+
+MVP constraints are simple threshold checks:
+- ~GroundednessScore >= 0.8~ (metric threshold)
+- ~AvgLatency <= 2000ms~ (latency bound)
+- ~CostPerCall <= 0.05~ (budget cap)
+
+These are evaluable with lambda predicates — basic ~if~ statements.
+Z3 is an SMT solver designed for SAT problems and theorem proving.
+It should NOT be a core dependency for the MVP.
+
+The recommended MVP approach:
+- Constraints are ~Func<TrialMetrics, bool>~ predicates
+- Evaluated at runtime after each trial
+- Simple, debuggable, zero external dependency
+
+The recommended post-MVP role for Z3 is:
+- constraint co-processor for multi-constraint interaction analysis,
+- static feasibility checker (is this constraint set satisfiable?),
+- Pareto frontier computation (which constraints conflict?),
+- optional candidate pruning engine.
+
+The right early framing is:
+
+#+begin_example
+Compiler orchestration
+  + simple optimizer backend
+  + optional Z3-assisted feasibility pruning
+#+end_example
+
+This is powerful while keeping the architecture stable.
+
+** Future Optimizer Backend Roadmap
+The architecture must preserve room for richer backends.
+
+*** Random / Hybrid Search Backend
+Role:
+- MVP backend.
+
+*** Z3-Assisted Constraint Backend
+Role:
+- early post-MVP enhancement,
+- static pruning,
+- combinatorial feasibility support,
+- candidate repair.
+
+*** AutoML Backend
+Role:
+- structured mixed-parameter search.
+/Note: ~Microsoft.ML.AutoML~ v0.23.0 uses SMAC-based Bayesian search over/
+/numeric, categorical, and ordinal parameters. Genuine fit for hyperparameter/
+/optimization over model choice, temperature, topK, and few-shot count./
+
+*** Infer.NET-Guided Backend
+Role:
+- uncertainty-aware or probabilistic proposal guidance.
+/Note: ~Microsoft.ML.Probabilistic~ (Infer.NET) is a Bayesian inference engine./
+/It does NOT generate proposals or guide search directly. Realistic use:/
+/posterior estimation over which parameter configurations are likely to satisfy/
+/constraints, given observed trial results. This is Bayesian optimization,/
+/not proposal generation. Framing should be corrected to "Bayesian surrogate/
+/for trial outcome estimation" rather than "proposal guidance."/
+
+*** TorchSharp Surrogate Backend
+Role:
+- learned ranking,
+- learned proposal,
+- surrogate-assisted search.
+/Note: ~TorchSharp~ v0.106.1 provides PyTorch bindings for .NET. It does NOT/
+/include built-in surrogate model implementations. To use TorchSharp here,/
+/you would need to IMPLEMENT a surrogate model (e.g., a small MLP trained on/
+/trial metrics to predict candidate quality). This is feasible but non-trivial./
+/Framing should acknowledge that TorchSharp provides the SUBSTRATE, not/
+/ready-made surrogates./
+
+These future backends must remain pluggable behind the same compiler contract.
+
+** Constraint Explainability and Reporting
+Constraint-driven explainability is a major enterprise value proposition.
+
+Compile reports must include:
+- total trials executed,
+- valid trial count,
+- rejected trial count,
+- rejection counts by constraint,
+- best invalid candidate summary,
+- best valid candidate summary.
+
+Canonical report shape:
+#+begin_example
+Trials executed: 84
+Valid trials: 51
+Rejected trials: 33
+
+Rejected by:
+  policy_pass_rate: 12
+  p95_latency_ms: 14
+  avg_cost_usd: 7
+
+Best invalid candidate:
+  variant: triage-v12
+  score: 0.94
+  violated: p95_latency_ms <= 2500
+
+Best valid candidate:
+  variant: triage-v17
+  score: 0.91
+#+end_example
+
+** What This Layer Must Not Become
+This layer must not become:
+- a solver-only project,
+- a notebook experiment system,
+- a backend-specific framework,
+- or an optimizer whose contracts leak into the public authoring model.
+
+The framework identity remains:
+- compiler-oriented LM programming platform,
+not
+- search toolkit for prompts.
+
+** MVP Guidance
+The MVP must prove:
+- candidates can be proposed,
+- constraints can invalidate them,
+- objective scoring can rank them,
+- one best valid variant can be selected,
+- and a compiled artifact can be emitted.
+
+The MVP does /not/ need:
+- advanced Bayesian search,
+- learned surrogates,
+- large-scale distributed search.
+
+** Demo Guidance
+The demo should ideally show:
+- at least one constraint-aware compile scenario,
+- and optionally a narrow Z3-assisted pruning example,
+so the framework does not appear to be merely brute-force prompt tuning.
+
+* 11. Artifact Model
+
+** Artifact Purpose
+The artifact is the deployable output of compilation.
+
+** Artifact Requirements
+An artifact must contain:
+- program id,
+- compiled version,
+- variant id,
+- base program hash,
+- selected parameters,
+- validation metrics,
+- provenance metadata,
+- approval state.
+
+** Artifact Compatibility
+MVP compatibility rule:
+- an artifact is valid only for the same authored program identity and compatible generator/runtime version.
+
+** Artifact Loading
+The runtime must be able to:
+- load an artifact from disk,
+- validate it,
+- apply selected parameters,
+- execute the program using artifact-selected settings.
+
+* 12. Public API Shape
+
+** Namespace Targets
+Public surface should be organized under:
+- ~LMP~
+- ~LMP.Compilation~
+- ~LMP.Runtime~
+- ~LMP.Evaluation~
+
+** Public Types Required for MVP
+The framework must expose at least:
+- ~LmpSignatureAttribute~
+- ~InputAttribute~
+- ~OutputAttribute~
+- ~LmpProgramAttribute~
+- ~abstract class LmpProgram<TIn, TOut>~
+- ~ProgramGraph~
+- ~static class Step~
+- ~CompileSpec~
+- ~IProgramCompiler~
+- ~CompileReport~
+- ~ICompiledArtifactLoader~
+- ~ILmpProgramRunner~ (optional if ~LmpProgram~ owns execution)
+- ~IDocumentRetriever~ (minimal abstraction)
+
+** Canonical Base Class
+#+begin_src csharp
+public abstract class LmpProgram<TIn, TOut>
+{
+    public abstract ProgramGraph Build();
+    public virtual Task<TOut> RunAsync(TIn input, CancellationToken ct = default);
+}
+#+end_src
+
+** Canonical Compiler Interface
+#+begin_src csharp
+public interface IProgramCompiler
+{
+    Task<CompileReport> CompileAsync(
+        CompileSpec spec,
+        CancellationToken cancellationToken = default);
+}
+#+end_src
+
+* 13. Diagnostics and Code Fixes
+
+** Diagnostic Philosophy
+Diagnostics are part of the product value proposition.
+
+They must be:
+- specific,
+- actionable,
+- and tied to framework semantics.
+
+** Required MVP Diagnostics
+*** LMP001
+Missing field description.
+
+*** LMP002
+Missing or empty signature instructions.
+
+*** LMP003
+Duplicate step name in program.
+
+*** LMP004
+Non-deterministic step name.
+
+*** LMP005
+Unsupported output type.
+
+*** LMP006
+Invalid graph cycle or unsupported self-reference.
+
+** Example Diagnostic
+#+begin_example
+LMP004: Step names must be deterministic compile-time constants.
+Reason: compiled variants, traces, and optimizer metadata require stable step identities.
+#+end_example
+
+** Code Fix Scope
+MVP code fixes may be minimal.
+High-value fixes:
+- add missing description placeholder,
+- normalize invalid attribute usage,
+- suggest constant step name extraction.
+
+* 14. CLI
+
+** CLI Purpose
+The CLI exists to make the framework demonstrable and usable without hand-written tooling.
+
+** Required Commands
+*** Compile
+#+begin_src bash
+dotnet lmp compile --project <path> --program <name> --train <file> --validate <file> --output <dir>
+#+end_src
+
+*** Run
+#+begin_src bash
+dotnet lmp run --project <path> --program <name> --input <json-file>
+#+end_src
+
+*** Eval
+#+begin_src bash
+dotnet lmp eval --project <path> --program <name> --dataset <file>
+#+end_src
+
+*** Inspect Artifact
+#+begin_src bash
+dotnet lmp inspect-artifact --artifact <file>
+#+end_src
+
+** CLI Scope Rule
+The CLI must remain thin.
+Core logic must live in reusable library projects.
+
+* 15. Repository Layout
+
+** Solution Layout
+#+begin_example
+/src
+  /LMP.Abstractions
+  /LMP.Runtime
+  /LMP.Compiler
+  /LMP.Roslyn
+  /LMP.Evaluation
+  /LMP.Cli
+  /LMP.Samples.SupportTriage
+
+/tests
+  /LMP.Abstractions.Tests
+  /LMP.Runtime.Tests
+  /LMP.Compiler.Tests
+  /LMP.Roslyn.Tests
+  /LMP.E2E.Tests
+
+/docs
+  /00-product
+  /01-architecture
+  /02-developer-experience
+  /03-implementation
+  /04-demo
+#+end_example
+
+** Dependency Rules
+- ~LMP.Abstractions~ must contain shared contracts and no Roslyn code.
+- ~LMP.Runtime~ may depend on ~Abstractions~.
+- ~LMP.Compiler~ may depend on ~Abstractions~, ~Runtime~, and ~Evaluation~.
+- ~LMP.Roslyn~ may depend on ~Abstractions~ but not on runtime implementation internals.
+- ~LMP.Cli~ may depend on runtime and compiler.
+- Sample projects must depend only on public APIs.
+- Tests must target the smallest necessary surface.
+
+* 16. Phased Implementation Plan
+
+** Phase 0: Repository Skeleton
+Deliverables:
+- solution created,
+- projects created,
+- build passes,
+- test projects wired,
+- sample project placeholder exists.
+
+Done when:
+- solution restores and builds cleanly,
+- a sample app can run "hello world."
+
+** Phase 1: Core Abstractions
+Deliverables:
+- attributes,
+- base program type,
+- descriptor contracts,
+- basic graph object model.
+
+Done when:
+- signature and program example compile,
+- abstractions are test-covered.
+
+** Phase 2: Minimal Runtime
+Deliverables:
+- one predict step execution,
+- structured output parsing abstraction,
+- context and trace basics.
+
+Done when:
+- a simple one-step triage program can run.
+
+** Phase 3: Source Generator for Signatures
+Deliverables:
+- discover signatures,
+- generate signature descriptors,
+- generated-file tests.
+
+Done when:
+- authored signatures produce deterministic generated descriptors.
+
+** Phase 4: Program Metadata Generation + Analyzers
+Deliverables:
+- program descriptor generation,
+- high-value analyzers,
+- minimal code fixes.
+
+Done when:
+- canonical sample produces generated metadata and analyzer output.
+
+** Phase 5: Multi-Step Runtime
+Deliverables:
+- retrieve,
+- evaluate,
+- if,
+- repair step support,
+- context addressing between steps.
+
+Done when:
+- canonical support-triage graph runs end-to-end.
+
+** Phase 6: Evaluation Integration
+Deliverables:
+- dataset format,
+- evaluation runner,
+- score aggregation.
+
+Done when:
+- sample program can be evaluated on JSONL dataset.
+
+** Phase 7: Compiler MVP
+Deliverables:
+- compile spec,
+- simple optimizer,
+- trial execution,
+- constraints,
+- compile report.
+
+Done when:
+- at least one metric improves on demo data.
+
+** Phase 8: Artifact Save / Load
+Deliverables:
+- compiled artifact schema,
+- save/load logic,
+- runtime variant application.
+
+Done when:
+- runtime can execute a pinned artifact.
+
+** Phase 9: CLI + Demo Polish
+Deliverables:
+- compile/run/eval commands,
+- demo script,
+- clean sample repo story.
+
+Done when:
+- canonical demo can be shown without custom scaffolding.
+
+* 17. Acceptance Criteria
+
+** Core Acceptance Criteria
+The MVP is successful when all of the following are true:
+1. a developer can author a signature using attributes,
+2. source generation emits a deterministic signature descriptor,
+3. a developer can author a multi-step triage program,
+4. the runtime executes the program using ~IChatClient~,
+5. evaluators can score outputs on a dataset,
+6. a compile loop can search over at least 3 tunable dimensions,
+7. the compiler emits a best valid variant and a report,
+8. a compiled artifact can be saved and loaded,
+9. at least 3 meaningful diagnostics exist,
+10. the sample ticket triage demo works end to end.
+
+** Demo Acceptance Criteria
+The sample demo must visibly show:
+- authored source,
+- generated source / metadata,
+- runtime trace,
+- evaluation results,
+- compiler report,
+- compiled artifact.
+
+* 18. Testing Strategy Summary
+
+** Test Categories
+The system must include:
+- unit tests for abstractions,
+- unit tests for runtime step execution,
+- golden tests for source generator output,
+- analyzer tests,
+- compiler tests,
+- artifact snapshot tests,
+- end-to-end tests for the support-triage sample.
+
+** Golden Test Requirement
+Generated source and artifact output must be snapshot-tested where practical.
+
+** End-to-End Requirement
+One full test must:
+- build sample program,
+- compile it,
+- save artifact,
+- reload artifact,
+- run input through artifact-backed runtime.
+
+* 19. Documentation Derivation Plan
+
+** Purpose
+This blueprint must be expanded into more detailed downstream docs before or alongside implementation.
+
+** Required Derived Docs
+The coding agent must derive these docs:
+
+*** 19.1 PRD
+Derived from:
+- sections 1, 2, 3, 4.
+
+*** 19.2 System Architecture Doc
+Derived from:
+- sections 5A, 6A, 7, 8, 9, 10, 10A, 11.
+
+*** 19.3 Public API Spec
+Derived from:
+- sections 5, 6, 12.
+
+*** 19.4 LM Program IR Spec
+Derived from:
+- section 8.
+
+*** 19.5 Source Generator Spec
+Derived from:
+- sections 5A and 9.
+
+*** 19.6 Runtime Execution Spec
+Derived from:
+- section 10.
+
+*** 19.7 Compiler / Optimizer Spec
+Derived from:
+- section 10A.
+
+*** 19.8 Artifact Format Spec
+Derived from:
+- section 11.
+
+*** 19.9 Diagnostics Spec
+Derived from:
+- sections 5A and 13.
+
+*** 19.10 CLI Spec
+Derived from:
+- section 14.
+
+*** 19.11 Repository Layout Plan
+Derived from:
+- section 15.
+
+*** 19.12 Testing Strategy
+Derived from:
+- sections 16, 17, 18.
+
+*** 19.13 MVP Demo Script
+Derived from:
+- sections 3, 6, 17.
+
+** Derivation Rule
+All derived docs must:
+- preserve the decisions in this blueprint,
+- add implementation detail,
+- avoid introducing contradictory architecture,
+- and mark any unresolved detail explicitly rather than inventing major design changes.
+
+* 20. Appendix A: Minimal Data Formats
+
+** JSONL Dataset Shape
+MVP training and validation data should use one JSON object per line.
+
+Example:
+#+begin_src json
+{"ticketText":"SSO login fails for 300 EU users after latest release","accountTier":"Enterprise","expectedSeverity":"Critical","expectedRouteToTeam":"Identity Platform","expectedEscalate":true}
+{"ticketText":"Billing export CSV is missing headers","accountTier":"Pro","expectedSeverity":"Medium","expectedRouteToTeam":"Billing Experience","expectedEscalate":false}
+#+end_src
+
+** Dataset Rule
+The MVP dataset format may be simple and task-specific.
+Do not overgeneralize the dataset schema in V1.
+
+* 21. Appendix B: Generated Code Example
+
+#+begin_src csharp
+// <auto-generated />
+namespace Demo.Generated;
+
+internal static class TriageTicket_Descriptor
+{
+    public static readonly SignatureDescriptor Instance = new(
+        Id: "triageticket",
+        Name: "TriageTicket",
+        Instructions: """
+        You are a senior enterprise support triage assistant.
+        Classify the issue severity, determine the owning team, and draft a grounded
+        customer reply using only the provided evidence and policy context.
+        If the evidence is insufficient, say so explicitly.
+        """,
+        Inputs: new[]
+        {
+            new FieldDescriptor("TicketText", "Input", "System.String", "Raw customer issue or support ticket text", true),
+            new FieldDescriptor("AccountTier", "Input", "System.String", "Customer plan tier such as Free, Pro, Enterprise", true),
+            new FieldDescriptor("KnowledgeSnippets", "Input", "System.Collections.Generic.IReadOnlyList<System.String>", "Relevant knowledge base snippets", true),
+            new FieldDescriptor("PolicySnippets", "Input", "System.Collections.Generic.IReadOnlyList<System.String>", "Relevant support or compliance policy snippets", true),
+        },
+        Outputs: new[]
+        {
+            new FieldDescriptor("Severity", "Output", "System.String", "Severity: Low, Medium, High, Critical", true),
+            new FieldDescriptor("RouteToTeam", "Output", "System.String", "Owning team name", true),
+            new FieldDescriptor("DraftReply", "Output", "System.String", "Grounded customer reply draft", true),
+            new FieldDescriptor("Rationale", "Output", "System.String", "Reasoning for severity and routing", true),
+            new FieldDescriptor("Escalate", "Output", "System.Boolean", "True if escalation to a human is required", true),
+        });
+}
+#+end_src
+
+* 22. Appendix C: MVP Non-Negotiables
+
+The following are non-negotiable:
+- use a custom LM Program IR,
+- use source generation for structural metadata,
+- use analyzers for core authoring diagnostics,
+- use ~IChatClient~ as the LM runtime substrate,
+- integrate evaluation into the system rather than leaving it external,
+- compile into a versioned artifact,
+- preserve stable identifiers,
+- keep the MVP story centered on ticket triage.
+
+* 23. Appendix D: Platform Gaps and .NET Team Recommendations
+
+** Purpose
+This section documents platform-level gaps discovered during validation.
+Where .NET primitives are insufficient for the framework's needs, these gaps
+represent potential feature requests or design-around strategies.
+
+** Gap 1: Expression Tree Async Support
+Expression trees (~Expression<Func<T>>~) cannot capture async lambdas or
+statement bodies. This limits their use to single-expression data bindings.
+Recommendation: if the C# team ever extends ~Expression<T>~ to support async
+or statement bodies, the framework could use expression trees for richer
+program structure inspection. Until then, use expression trees for data
+binding ONLY and fluent builders for graph structure.
+
+** Gap 2: Discriminated Union Types
+Sealed abstract records + pattern matching work for step kind dispatch,
+but are verbose (requires separate ~record~ declarations for each variant).
+First-class ~union~ types in C# would make step algebra cleaner:
+~type Step = Predict | Retrieve | Evaluate | If | Repair~
+Recommendation: track the C# discriminated unions proposal.
+
+** Gap 3: Source Generator Debugging
+Debugging source generators is painful — no simple attach-and-step workflow.
+Structured logging inside generators is ad hoc.
+Recommendation: the framework should include a diagnostic dump mode that
+writes generator intermediate state to disk for troubleshooting.
+
+** Gap 4: Z3 NuGet Freshness
+~Microsoft.Z3~ v4.12.2 lags Z3 v4.15.4 significantly.
+Recommendation: pin to the available version and abstract behind an interface
+so that future Z3 versions (or alternative solvers) can be swapped.
+
+** Gap 5: IChatClient Observability
+~IChatClient~ does NOT automatically emit OpenTelemetry traces.
+The framework must wrap calls with explicit ~ActivitySource~ instrumentation.
+Recommendation: file a feature request on ~dotnet/extensions~ for built-in
+OTEL trace emission in ~ChatClientBuilder~.
+
+** Gap 6: Interceptors — NOW STABLE in C# 14 / .NET 10
+Interceptors graduated from experimental (C# 12) to fully stable in C# 14 / .NET 10.
+They are now production-ready and used by ASP.NET Core Minimal APIs and OpenAPI.
+LMP should use interceptors for Tier 3 binding analysis: intercept ~.Bind()~ calls,
+read the lambda's syntax tree at compile time, and generate optimized binding code
++ serializable metadata. This eliminates expression tree limitations for compile-time
+scenarios. Expression trees remain as a Tier 4 runtime-only fallback.
+See Section 7.3 of the validation plan for the full three-tier binding architecture.
+
+** Where Python Genuinely Wins (Honest Assessment)
+| Area                        | Impact | Mitigation                                |
+|-----------------------------+--------+-------------------------------------------|
+| Broader ML ecosystem        | LOW    | Framework calls APIs, not training        |
+| Notebook-first exploration  | LOW    | Production software; .NET Interactive exists |
+| REPL feedback speed         | MEDIUM | Analyzers provide IDE-time feedback       |
+| Community momentum for ML   | MEDIUM | First-mover advantage in .NET             |
+| Runtime flexibility         | LOW    | Inflexibility is a FEATURE for enterprise |
+
+* 24. Final Instruction to Implementers
+
+Do not begin by building the most advanced optimizer.
+Do not begin by building the prettiest CLI.
+Do not begin by building an IDE extension.
+
+Begin by making the canonical ticket triage story real with:
+- typed signatures,
+- a working multi-step runtime,
+- generated descriptors,
+- evaluation,
+- a simple compile loop,
+- and a versioned artifact.
+
+That is the MVP.
