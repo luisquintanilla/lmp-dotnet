@@ -128,7 +128,9 @@ src/
 └── LMP.Aspire.Hosting/     # Aspire dashboard integration for optimization runs
 test/                       # xUnit tests for each project (865 tests)
 samples/
-└── LMP.Samples.TicketTriage/  # End-to-end demo with mock client
+├── LMP.Samples.TicketTriage/  # End-to-end: classify → draft → evaluate → optimize → save/load
+├── LMP.Samples.Rag/           # RAG: IRetriever + Predictor composition with evaluation
+└── LMP.Samples.Agent/         # ReAct agent: tool-calling with Think → Act → Observe loop
 ```
 
 ## Getting Started
@@ -155,6 +157,49 @@ Reference LMP in your project:
   <PackageReference Include="LMP.Optimizers" />     <!-- Optional: evaluation & optimization -->
 </ItemGroup>
 ```
+
+> **Source generator note:** When referencing via project references (not NuGet), you must also add the source generator as an analyzer to your consuming project:
+> ```xml
+> <ProjectReference Include="path/to/LMP.SourceGen.csproj"
+>                   OutputItemType="Analyzer"
+>                   ReferenceOutputAssembly="false" />
+> ```
+
+## Connecting a Real LLM
+
+The samples use `MockChatClient` so they run without API keys. To use a real LLM, install one of the `IChatClient` provider packages:
+
+```bash
+# OpenAI
+dotnet add package Microsoft.Extensions.AI.OpenAI
+
+# Azure OpenAI
+dotnet add package Microsoft.Extensions.AI.AzureAIInference
+
+# Ollama (local)
+dotnet add package Microsoft.Extensions.AI.Ollama
+```
+
+Then replace the mock client in your code:
+
+```csharp
+using Microsoft.Extensions.AI;
+
+// OpenAI
+IChatClient client = new OpenAI.OpenAIClient("your-api-key")
+    .AsChatClient("gpt-4o-mini");
+
+// Azure OpenAI
+IChatClient client = new Azure.AI.Inference.ChatCompletionsClient(
+    new Uri("https://your-resource.openai.azure.com/"),
+    new Azure.AzureKeyCredential("your-key"))
+    .AsChatClient("gpt-4o-mini");
+
+// Ollama (local, no key needed)
+IChatClient client = new OllamaChatClient(new Uri("http://localhost:11434"), "llama3.2");
+```
+
+All LMP modules, predictors, and optimizers work identically regardless of which provider you use — they only depend on `IChatClient`.
 
 ## Diagnostics
 

@@ -5,7 +5,17 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <IsRoslynComponent>true</IsRoslynComponent>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <!-- NuGet packaging: include as analyzer so consumers get the source generator -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pack the analyzer DLL into the analyzers/dotnet/cs folder -->
+    <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true"
+          PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
