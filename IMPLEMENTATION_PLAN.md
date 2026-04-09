@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 4.4 complete — 535 tests passing. Next: Phase 4.5 (SaveAsync / LoadAsync Round-Trip Integration).
+> **Status:** Phase 4.5 complete — 575 tests passing. Next: Phase 4.6 (JSONL Dataset Loader).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -31,10 +31,10 @@
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
 | `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.3 (Refine) complete |
-| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :construction: Phase 4.4 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch) |
+| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :white_check_mark: Phase 4.4 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
-| Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 535 tests passing (Phases 1–4.4) |
+| Artifact save/load (JSON) | `artifact-format.md` | :white_check_mark: Complete (Phase 4.5) |
+| Test projects | `AGENTS.md` | :white_check_mark: 575 tests passing (Phases 1–4.5) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -796,18 +796,19 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Completion criteria:** `BootstrapRandomSearch` runs N trials and returns the best module by evaluation score.
 
-### 4.5 — SaveAsync / LoadAsync Round-Trip Integration
+### 4.5 — SaveAsync / LoadAsync Round-Trip Integration ✅ COMPLETE
 
 **Spec:** `artifact-format.md` §4–5
 
 **Tasks:**
-- [ ] Verify `SaveAsync` writes JSON matching `artifact-format.md` schema:
+- [x] Verify `SaveAsync` writes JSON matching `artifact-format.md` schema:
   - Contains `version: "1.0"`, `module`, `predictors` map
   - Each predictor has `instructions`, `demos` array, optional `config`
   - Atomic write (temp file -> rename)
-- [ ] Verify `LoadAsync` reads JSON and populates predictor state correctly
-- [ ] Integration test: optimize -> save -> load into fresh module -> predict produces same results
-- [ ] Test forward compatibility: unknown JSON properties are ignored
+- [x] Verify `LoadAsync` reads JSON and populates predictor state correctly
+- [x] Integration test: optimize -> save -> load into fresh module -> predict produces same results
+- [x] Test forward compatibility: unknown JSON properties are ignored
+- [x] Fixed `Predictor.LoadState` to handle "value" wrapper for non-object types (string, int, etc.)
 
 **Completion criteria:** Full round-trip: optimize -> save -> load -> predict.
 

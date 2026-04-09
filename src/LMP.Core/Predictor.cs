@@ -178,13 +178,35 @@ public class Predictor<TInput, TOutput> : IPredictor
         Demos.Clear();
         foreach (var entry in state.Demos)
         {
-            var inputJson = JsonSerializer.Serialize(entry.Input);
-            var outputJson = JsonSerializer.Serialize(entry.Output);
-            var input = JsonSerializer.Deserialize<TInput>(inputJson);
-            var output = JsonSerializer.Deserialize<TOutput>(outputJson);
+            var input = DeserializeFromDictionary<TInput>(entry.Input);
+            var output = DeserializeFromDictionary<TOutput>(entry.Output);
             if (input is not null && output is not null)
                 Demos.Add((input, output));
         }
+    }
+
+    /// <summary>
+    /// Deserializes a value from a <see cref="DemoEntry"/> dictionary, handling the
+    /// "value" wrapper that <see cref="JsonElementFromObject{T}"/> creates for non-object types.
+    /// </summary>
+    private static T? DeserializeFromDictionary<T>(Dictionary<string, JsonElement> dict)
+    {
+        // GetState wraps non-object types (string, int, etc.) as { "value": <element> }.
+        // Unwrap single "value" keys back to the original value.
+        if (dict.Count == 1 && dict.TryGetValue("value", out var valueElement))
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<T>(valueElement.GetRawText());
+            }
+            catch (JsonException)
+            {
+                // Fall through: "value" was a real object property, not a wrapper
+            }
+        }
+
+        var json = JsonSerializer.Serialize(dict);
+        return JsonSerializer.Deserialize<T>(json);
     }
 
     /// <inheritdoc />

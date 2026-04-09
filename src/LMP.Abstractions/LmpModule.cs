@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace LMP;
 
 /// <summary>
@@ -60,17 +62,54 @@ public abstract class LmpModule
 
     /// <summary>
     /// Serializes all learnable parameters (demos, instructions, config) to a JSON file.
+    /// Uses atomic write (temp file → rename) for safety.
     /// </summary>
     /// <param name="path">The file path to write the artifact to.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    public virtual Task SaveAsync(string path, CancellationToken cancellationToken = default)
-        => throw new NotImplementedException("SaveAsync will be implemented in Phase 4.");
+    public virtual async Task SaveAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var state = new ModuleState
+        {
+            Version = "1.0",
+            Module = GetType().Name,
+            Predictors = GetPredictors().ToDictionary(
+                p => p.Name,
+                p => p.Predictor.GetState())
+        };
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            state,
+            ModuleStateSerializerContext.Default.ModuleState);
+
+        // Atomic write: temp file → rename.
+        string tempPath = path + ".tmp";
+        await File.WriteAllBytesAsync(tempPath, json, cancellationToken);
+        File.Move(tempPath, path, overwrite: true);
+    }
 
     /// <summary>
     /// Loads learnable parameters from a previously saved JSON file.
+    /// Predictors not found in the file are left unchanged.
+    /// Unknown JSON properties are silently ignored for forward compatibility.
     /// </summary>
     /// <param name="path">The file path to read the artifact from.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    public virtual Task LoadAsync(string path, CancellationToken cancellationToken = default)
-        => throw new NotImplementedException("LoadAsync will be implemented in Phase 4.");
+    public virtual async Task LoadAsync(string path, CancellationToken cancellationToken = default)
+    {
+        byte[] bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+
+        var state = JsonSerializer.Deserialize(
+            bytes,
+            ModuleStateSerializerContext.Default.ModuleState)
+            ?? throw new InvalidOperationException(
+                $"Failed to deserialize module state from '{path}'.");
+
+        foreach (var (name, predictor) in GetPredictors())
+        {
+            if (state.Predictors.TryGetValue(name, out var predictorState))
+            {
+                predictor.LoadState(predictorState);
+            }
+        }
+    }
 }
