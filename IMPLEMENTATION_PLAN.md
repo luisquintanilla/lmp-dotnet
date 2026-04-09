@@ -180,7 +180,7 @@ Create the repository structure, solution file, and build infrastructure.
 
 **Status:** ✅ Skeleton complete. Phase 1 types implemented.
 
-### 1.2 — LmpSignatureAttribute
+### 1.2 — LmpSignatureAttribute ✅ COMPLETE
 
 The source generator's entry point. Placed on `partial record` output types only.
 
@@ -196,7 +196,7 @@ The source generator's entry point. Placed on `partial record` output types only
 
 **Completion criteria:** A consumer can write `[LmpSignature("Classify tickets")]` on a partial record and compile.
 
-### 1.3 — IPredictor Interface and Artifact Records
+### 1.3 — IPredictor Interface and Artifact Records ✅ COMPLETE
 
 The non-generic interface exposed to optimizers for predictor discovery and artifact round-trip.
 
@@ -224,7 +224,7 @@ The non-generic interface exposed to optimizers for predictor discovery and arti
 
 **Completion criteria:** `IPredictor` compiles with all members; `ModuleState` serializes/deserializes correctly.
 
-### 1.4 — Example Base Class and Example\<TInput, TLabel\>
+### 1.4 — Example Base Class and Example\<TInput, TLabel\> ✅ COMPLETE
 
 Training data types used by optimizers and evaluators.
 
@@ -245,7 +245,7 @@ Training data types used by optimizers and evaluators.
 
 **Completion criteria:** `new Example<TicketInput, ClassifyTicket>(input, label)` works; `WithInputs()` returns input; `GetLabel()` returns label.
 
-### 1.5 — Trace and TraceEntry
+### 1.5 — Trace and TraceEntry ✅ COMPLETE
 
 Execution recording for optimizer trace collection.
 
@@ -262,7 +262,7 @@ Execution recording for optimizer trace collection.
 
 **Completion criteria:** `trace.Record("classify", input, output)` appends; `trace.Entries[0].PredictorName == "classify"`.
 
-### 1.6 — Demo Record
+### 1.6 — Demo Record ✅ COMPLETE
 
 Non-generic demo type used by optimizers when filling predictor Demos.
 
@@ -274,7 +274,7 @@ Non-generic demo type used by optimizers when filling predictor Demos.
 
 **Completion criteria:** `new Demo(inputObj, outputObj)` works and compares by value.
 
-### 1.7 — Predictor\<TInput, TOutput\> Class Shell
+### 1.7 — Predictor\<TInput, TOutput\> Class Shell ✅ COMPLETE
 
 The core primitive. Shell only in Phase 1 — `PredictAsync` wired in Phase 2.
 
@@ -297,7 +297,7 @@ The core primitive. Shell only in Phase 1 — `PredictAsync` wired in Phase 2.
 
 **Completion criteria:** `new Predictor<TicketInput, ClassifyTicket>(client)` compiles; casting to `IPredictor` exposes `Name`, `Instructions`, `Demos`, `Config`.
 
-### 1.8 — LmpModule Base Class
+### 1.8 — LmpModule Base Class ✅ COMPLETE
 
 Abstract base class for composable LM programs with save/load.
 
@@ -324,7 +324,7 @@ Abstract base class for composable LM programs with save/load.
 
 **Completion criteria:** `module.SaveAsync("test.json")` writes JSON; `module.LoadAsync("test.json")` restores predictor state.
 
-### 1.9 — LmpAssert / LmpSuggest / Exceptions
+### 1.9 — LmpAssert / LmpSuggest / Exceptions ✅ COMPLETE
 
 Runtime assertions for LM output validation.
 
@@ -351,7 +351,7 @@ Runtime assertions for LM output validation.
 
 **Completion criteria:** Assert throws on failure with correct exception type; Suggest never throws.
 
-### 1.10 — IRetriever and IOptimizer Interfaces
+### 1.10 — IRetriever and IOptimizer Interfaces ✅ COMPLETE
 
 Contracts for RAG and optimization.
 
@@ -675,7 +675,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Completion criteria:** ✅ `BestOfN` with N=5 makes 5 parallel calls, scores each, returns the best.
 
-### 3.3 — Refine\<TInput, TOutput\>
+### 3.3 — Refine\<TInput, TOutput\> ✅ COMPLETE
 
 **Spec:** `runtime-execution.md` §4.3
 
@@ -730,7 +730,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Completion criteria:** ✅ `Evaluator.EvaluateAsync` runs module on dev set and returns correct aggregate score.
 
-### 4.2 — Module Cloning
+### 4.2 — Module Cloning ✅ COMPLETE
 
 **Spec:** `compiler-optimizer.md` §4 (Clone)
 
@@ -780,7 +780,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Completion criteria:** `BootstrapFewShot.CompileAsync` fills `predictor.Demos` from successful traces.
 
-### 4.4 — BootstrapRandomSearch
+### 4.4 — BootstrapRandomSearch ✅ COMPLETE
 
 **Spec:** `compiler-optimizer.md` §5
 
