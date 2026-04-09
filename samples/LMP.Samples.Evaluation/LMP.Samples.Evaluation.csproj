@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LMP.Samples.Evaluation</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LMP.Extensions.Evaluation\LMP.Extensions.Evaluation.csproj" />
+    <ProjectReference Include="..\..\src\LMP.Modules\LMP.Modules.csproj" />
+    <ProjectReference Include="..\..\src\LMP.Optimizers\LMP.Optimizers.csproj" />
+    <ProjectReference Include="..\..\src\LMP.SourceGen\LMP.SourceGen.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI.Evaluation" />
+    <PackageReference Include="Microsoft.Extensions.AI.Evaluation.Quality" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

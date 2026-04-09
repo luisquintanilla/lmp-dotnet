@@ -4,6 +4,7 @@
     <Project Path="src/LMP.Aspire.Hosting/LMP.Aspire.Hosting.csproj" />
     <Project Path="src/LMP.Cli/LMP.Cli.csproj" />
     <Project Path="src/LMP.Core/LMP.Core.csproj" />
+    <Project Path="src/LMP.Extensions.Evaluation/LMP.Extensions.Evaluation.csproj" />
     <Project Path="src/LMP.Modules/LMP.Modules.csproj" />
     <Project Path="src/LMP.Optimizers/LMP.Optimizers.csproj" />
     <Project Path="src/LMP.SourceGen/LMP.SourceGen.csproj" />
@@ -18,6 +19,7 @@
     <Project Path="test/LMP.SourceGen.Tests/LMP.SourceGen.Tests.csproj" />
   </Folder>
   <Folder Name="/samples/">
+    <Project Path="samples/LMP.Samples.Evaluation/LMP.Samples.Evaluation.csproj" />
     <Project Path="samples/LMP.Samples.Middleware/LMP.Samples.Middleware.csproj" />
     <Project Path="samples/LMP.Samples.MIPROv2/LMP.Samples.MIPROv2.csproj" />
     <Project Path="samples/LMP.Samples.TicketTriage/LMP.Samples.TicketTriage.csproj" />
