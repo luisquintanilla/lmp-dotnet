@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace LMP;
 
 /// <summary>
@@ -7,6 +9,15 @@ namespace LMP;
 /// </summary>
 public abstract record Example
 {
+    /// <summary>
+    /// Default <see cref="JsonSerializerOptions"/> used by <see cref="LoadFromJsonl{TInput,TLabel}(string,JsonSerializerOptions?)"/>
+    /// when no options are provided. Uses case-insensitive property matching.
+    /// </summary>
+    private static readonly JsonSerializerOptions s_defaultJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     /// <summary>
     /// Returns the input portion of this example as an untyped object.
     /// Used by optimizers to feed inputs into <see cref="LmpModule.ForwardAsync"/>.
@@ -18,6 +29,84 @@ public abstract record Example
     /// Used by metric functions to compare against module output.
     /// </summary>
     public abstract object GetLabel();
+
+    /// <summary>
+    /// Loads typed examples from a JSONL (JSON Lines) file.
+    /// Each line must be a JSON object with <c>"input"</c> and <c>"label"</c> properties.
+    /// </summary>
+    /// <typeparam name="TInput">The type to deserialize each line's <c>"input"</c> into.</typeparam>
+    /// <typeparam name="TLabel">The type to deserialize each line's <c>"label"</c> into.</typeparam>
+    /// <param name="path">Path to the JSONL file.</param>
+    /// <param name="options">
+    /// Optional <see cref="JsonSerializerOptions"/> for deserializing the inner <c>"input"</c> and <c>"label"</c> objects.
+    /// When <c>null</c>, uses case-insensitive property matching.
+    /// Pass options with a source-generated <see cref="System.Text.Json.Serialization.JsonSerializerContext"/> for AOT-safe deserialization.
+    /// </param>
+    /// <returns>A read-only list of typed examples.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="path"/> is <c>null</c>.</exception>
+    /// <exception cref="FileNotFoundException">The file at <paramref name="path"/> does not exist.</exception>
+    /// <exception cref="FormatException">A line is not a valid JSON object, or is missing required properties.</exception>
+    public static IReadOnlyList<Example<TInput, TLabel>> LoadFromJsonl<TInput, TLabel>(
+        string path,
+        JsonSerializerOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException($"JSONL file not found: {path}", path);
+        }
+
+        var jsonOptions = options ?? s_defaultJsonOptions;
+        var examples = new List<Example<TInput, TLabel>>();
+        int lineNumber = 0;
+
+        foreach (var line in File.ReadLines(path))
+        {
+            lineNumber++;
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                throw new FormatException(
+                    $"Line {lineNumber}: Expected a JSON object but found {root.ValueKind}.");
+            }
+
+            var inputElement = GetRequiredProperty(root, "input", lineNumber);
+            var labelElement = GetRequiredProperty(root, "label", lineNumber);
+
+            var input = inputElement.Deserialize<TInput>(jsonOptions)
+                ?? throw new FormatException(
+                    $"Line {lineNumber}: 'input' deserialized to null.");
+            var label = labelElement.Deserialize<TLabel>(jsonOptions)
+                ?? throw new FormatException(
+                    $"Line {lineNumber}: 'label' deserialized to null.");
+
+            examples.Add(new Example<TInput, TLabel>(input, label));
+        }
+
+        return examples;
+    }
+
+    /// <summary>
+    /// Gets a required property from a <see cref="JsonElement"/>, checking both camelCase and PascalCase.
+    /// </summary>
+    private static JsonElement GetRequiredProperty(JsonElement root, string camelCaseName, int lineNumber)
+    {
+        if (root.TryGetProperty(camelCaseName, out var element))
+            return element;
+
+        var pascalCaseName = char.ToUpperInvariant(camelCaseName[0]) + camelCaseName[1..];
+        if (root.TryGetProperty(pascalCaseName, out element))
+            return element;
+
+        throw new FormatException(
+            $"Line {lineNumber}: Missing required property '{camelCaseName}'.");
+    }
 }
 
 /// <summary>

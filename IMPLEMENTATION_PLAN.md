@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 4.5 complete — 575 tests passing. Next: Phase 4.6 (JSONL Dataset Loader).
+> **Status:** Phase 4.6 complete — 593 tests passing. Next: Phase 5.1 (ReActAgent).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -812,16 +812,19 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Completion criteria:** Full round-trip: optimize -> save -> load -> predict.
 
-### 4.6 — JSONL Dataset Loader
+### 4.6 — JSONL Dataset Loader ✅ COMPLETE
 
 **Spec:** `compiler-optimizer.md` §3 (metric usage patterns)
 
 **Tasks:**
-- [ ] Implement `Example.LoadFromJsonl<TInput, TLabel>(string path)` static utility
-  - Parse each line as `{"input": {...}, "label": {...}}`
-  - Uses STJ source gen for deserialization
+- [x] Implement `Example.LoadFromJsonl<TInput, TLabel>(string path, JsonSerializerOptions? options)` static utility
+  - Parses each line as `{"input": {...}, "label": {...}}` (case-insensitive outer keys)
+  - Uses `JsonDocument` for outer parsing, `JsonElement.Deserialize<T>` for typed inner objects
+  - Supports custom `JsonSerializerOptions` for source-gen/AOT contexts
+  - Default options use `PropertyNameCaseInsensitive = true`
+  - Skips blank lines, reports line numbers in errors
   - Returns `IReadOnlyList<Example<TInput, TLabel>>`
-- [ ] Unit test: load sample JSONL file -> correct typed Example list
+- [x] Unit tests: 18 tests covering simple types, complex records, empty files, blank lines, PascalCase keys, custom options, error cases (null path, file not found, missing properties, invalid JSON, non-object lines, line number reporting), numeric types, large files
 
 **Completion criteria:** JSONL training data loads into typed `Example` records.
 
