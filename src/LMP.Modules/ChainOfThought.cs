@@ -71,8 +71,11 @@ public class ChainOfThought<TInput, TOutput> : Predictor<TInput, TOutput>
                 ?? throw new InvalidOperationException(
                     $"ChainOfThought '{Name}': structured output Result field was null.");
 
-            // Record the full extended result (with Reasoning) in trace
-            trace?.Record(Name, input!, extended);
+            // Record the unwrapped result (TOutput) in trace, not the extended
+            // ChainOfThoughtResult<TOutput>. Optimizers call AddDemo(input, output)
+            // which casts output to TOutput — recording the wrapper would cause
+            // InvalidCastException during BootstrapFewShot optimization.
+            trace?.Record(Name, input!, result);
 
             if (validate is null)
                 return result;

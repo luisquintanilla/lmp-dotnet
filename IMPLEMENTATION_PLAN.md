@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 complete + samples + CLI `run` command — 864 tests passing. All phases done.
+> **Status:** Phase 8 complete + samples + CLI `run` command — 865 tests passing. All phases done. CoT optimization bug fixed.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -986,7 +986,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 - Mock client classifies tickets by keyword matching (billing/technical/account/general) and drafts responses by category
 - `metricThreshold: 0.3f` on BootstrapFewShot so demos are collected with the deterministic mock
 - Predictor `Name` properties must match `GetPredictors()` keys for demo collection to work
-- ChainOfThought records `ChainOfThoughtResult<T>` in trace (not `T`), so `AddDemo` cast fails when optimizing CoT predictors — sample uses plain Predictor in module, CoT shown standalone
+- ChainOfThought records the unwrapped `TOutput` (not `ChainOfThoughtResult<T>`) in trace, so `AddDemo` works correctly during optimization
 
 ---
 

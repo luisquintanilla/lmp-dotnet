@@ -61,7 +61,7 @@ public class ChainOfThoughtTests
     }
 
     [Fact]
-    public async Task PredictAsync_RecordsExtendedResultInTrace()
+    public async Task PredictAsync_RecordsUnwrappedOutputInTrace()
     {
         var fakeClient = new FakeChatClient();
         fakeClient.EnqueueResponse(new ChainOfThoughtResult<ClassifyTicket>
@@ -81,10 +81,10 @@ public class ChainOfThoughtTests
         Assert.Equal("classify_cot", entry.PredictorName);
         Assert.IsType<TicketInput>(entry.Input);
 
-        // The trace output should be the extended result with reasoning
-        var output = Assert.IsType<ChainOfThoughtResult<ClassifyTicket>>(entry.Output);
-        Assert.Contains("Step 1", output.Reasoning);
-        Assert.Equal("Billing", output.Result.Category);
+        // The trace output should be the unwrapped TOutput (not ChainOfThoughtResult)
+        // so that optimizers can add it as a demo via AddDemo(input, output)
+        var output = Assert.IsType<ClassifyTicket>(entry.Output);
+        Assert.Equal("Billing", output.Category);
     }
 
     [Fact]
@@ -362,5 +362,36 @@ public class ChainOfThoughtTests
         // Should have: system, demo user, demo assistant, current user = 4 messages
         Assert.True(messages.Count >= 4,
             $"Expected at least 4 messages (system + demo pair + input), got {messages.Count}");
+    }
+
+    [Fact]
+    public async Task PredictAsync_TraceOutputIsCompatibleWithAddDemo()
+    {
+        // Regression test: ChainOfThought trace entries must be usable as demos
+        // by optimizers via IPredictor.AddDemo(input, output). Previously, the
+        // trace recorded ChainOfThoughtResult<T> which caused InvalidCastException.
+        var fakeClient = new FakeChatClient();
+        fakeClient.EnqueueResponse(new ChainOfThoughtResult<ClassifyTicket>
+        {
+            Reasoning = "It mentions billing, so...",
+            Result = new ClassifyTicket { Category = "Billing", Urgency = 3 }
+        });
+
+        var teacher = new ChainOfThought<TicketInput, ClassifyTicket>(fakeClient);
+        teacher.Name = "classify";
+
+        var trace = new Trace();
+        await teacher.PredictAsync(new TicketInput("Bill", "Overcharged"), trace);
+
+        // Simulate what BootstrapFewShot does: take trace entries and add as demos
+        var student = new ChainOfThought<TicketInput, ClassifyTicket>(fakeClient);
+        var entry = trace.Entries[0];
+
+        // This must not throw InvalidCastException
+        IPredictor studentPredictor = student;
+        studentPredictor.AddDemo(entry.Input, entry.Output);
+
+        Assert.Single(student.Demos);
+        Assert.Equal("Billing", student.Demos[0].Output.Category);
     }
 }
