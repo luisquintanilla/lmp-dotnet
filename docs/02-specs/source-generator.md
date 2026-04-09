@@ -1,214 +1,39 @@
 # Source Generator Specification
 
-> **Derived from:** spec.org §5A (Authoring-Time Architecture) and §9 (Build-Time Responsibilities)
->
+> **Target:** .NET 10 / C# 14  
+> **Generator API:** `IIncrementalGenerator`  
 > **Audience:** Implementer — a junior developer should be able to build the generators from this document alone.
 
 ---
 
-## 1. Why Source Generators (for Non-Experts)
+## 1. Overview
 
-### What Source Generators Are
+The LMP source generator reads user-defined `TInput` and `TOutput` types at compile time and emits five categories of artifact:
 
-Source generators are **code that writes code at compile time**. They are a Roslyn compiler feature (shipped since .NET 5) that lets you inspect the developer's source code during compilation and emit additional `.g.cs` files into the build. Those generated files are compiled alongside hand-written code — no runtime reflection needed.
+| # | Artifact | Purpose |
+|---|----------|---------|
+| 1 | `PromptBuilder<TInput, TOutput>` | Assembles `ChatMessage[]` from instructions, field metadata, demos, and current input |
+| 2 | `JsonTypeInfo<TOutput>` | Zero-reflection, AOT-safe JSON serialization context for structured output |
+| 3 | `GetPredictors()` on `LmpModule` subclasses | Returns all `Predictor<,>` fields — no runtime reflection |
+| 4 | ChainOfThought extended output | Internal record adding a `Reasoning` field to `TOutput` |
+| 5 | Diagnostics (LMP001–LMP003) | IDE red squiggles for missing descriptions, non-serializable types, non-partial records |
 
-### Why LMP Needs Them
+**What is NOT generated:** No graph IR, no program descriptors, no step/edge descriptors, no binding generators, no MSBuild tasks, no DI registration helpers.
 
-The LMP framework uses attributed C# types to define LM program signatures and programs. At some point, the runtime needs structured metadata about those types: which properties are inputs, which are outputs, what the instructions say, what steps a program defines. There are two ways to get that metadata:
+### Why Source Generators
 
-| Approach | Startup Cost | AOT Support | IDE Feedback | Deployment |
-|---|---|---|---|---|
-| **Reflection at runtime** | Slow (scan assemblies) | ❌ Breaks AOT | ❌ None | Fragile |
-| **Source generators at build time** | Zero | ✅ Full AOT | ✅ Compile errors | Deterministic |
+| Approach | Startup Cost | AOT Support | IDE Feedback |
+|---|---|---|---|
+| **Reflection at runtime** | Slow | ❌ Breaks AOT | ❌ None |
+| **Source generators at build time** | Zero | ✅ Full AOT | ✅ Compile errors |
 
-Source generators give us:
-
-1. **No reflection** — descriptor records are emitted as plain C# at compile time.
-2. **AOT compatibility** — no `Type.GetProperties()` or `Activator.CreateInstance` at runtime.
-3. **IDE feedback** — diagnostics appear as squiggly underlines while typing.
-4. **Deterministic output** — generated code is inspectable, testable, and version-controllable.
-
-### Precedent
-
-This pattern is well-established in .NET:
-
-- **System.Text.Json** — `JsonSerializerContext` generates serialization metadata at compile time.
-- **gRPC / Protobuf** — service stubs are generated from `.proto` files.
-- **Entity Framework** — compiled models are generated for startup performance.
-
-### What Happens WITHOUT Generators
-
-Without generators the framework would rely on runtime reflection to discover `[LmpSignature]` types, scan properties for `[Input]`/`[Output]` attributes, and build descriptors on first use. This means slower startup, no AOT, no IDE-time validation, and opaque metadata that cannot be snapshot-tested.
+Precedent: `System.Text.Json` source gen, gRPC stub generation, EF compiled models.
 
 ---
 
 ## 2. Generator Architecture
 
-### The IIncrementalGenerator Pipeline
-
-All LMP generators implement `IIncrementalGenerator` (not the older `ISourceGenerator`). The incremental API lets Roslyn cache intermediate models and re-run generation only when the relevant source actually changes.
-
-```csharp
-using Microsoft.CodeAnalysis;
-
-[Generator(LanguageNames.CSharp)]
-public sealed class LmpSignatureGenerator : IIncrementalGenerator
-{
-    public void Initialize(IncrementalGeneratorInitializationContext context)
-    {
-        // 1. Discover candidate types
-        var pipeline = context.SyntaxProvider
-            .ForAttributeWithMetadataName(
-                fullyQualifiedMetadataName: "LMP.LmpSignatureAttribute",
-                predicate: static (node, _) => node is ClassDeclarationSyntax,
-                transform: static (ctx, ct) => ExtractModel(ctx, ct))
-            .Where(static m => m is not null);
-
-        // 2. Register output
-        context.RegisterSourceOutput(pipeline, static (spc, model) =>
-        {
-            var source = GenerateSource(model!);
-            spc.AddSource($"{model!.TypeName}.g.cs", source);
-        });
-    }
-}
-```
-
-> **Junior Dev Note:** `ForAttributeWithMetadataName` is the preferred discovery API. It tells Roslyn to only call your transform when a type actually carries the named attribute, skipping everything else. This is far more efficient than scanning every syntax node.
-
-### Incremental Model Requirements
-
-The model objects flowing through the pipeline **must** implement `IEquatable<T>` (or be `record` types, which do so automatically). Roslyn uses equality checks to decide whether to re-run downstream stages. If equality is broken, the generator re-runs on every keystroke.
-
-```csharp
-// Records give you structural equality for free
-public sealed record SignatureDescriptorModel(
-    string Namespace,
-    string TypeName,
-    string NormalizedId,
-    string Instructions,
-    EquatableArray<FieldModel> Inputs,
-    EquatableArray<FieldModel> Outputs);
-
-public sealed record FieldModel(
-    string Name,
-    string Direction,      // "Input" or "Output"
-    string ClrTypeName,
-    string Description,
-    bool IsRequired);
-```
-
-> **Junior Dev Note:** `ImmutableArray<T>` does NOT have structural equality — `default == default` is `true`, but two arrays with the same elements are NOT equal. Wrap it in an `EquatableArray<T>` helper (a thin struct that implements element-wise equality). This is the #1 incremental-generator cache bug.
-
-### How Generated Files Appear
-
-Generated files are added to the compilation with a hint name like `TriageTicket.g.cs`. They appear in the IDE under **Dependencies → Analyzers → LMP.Generators → LMP.Generators.LmpSignatureGenerator**. They are never written to disk in the source tree.
-
----
-
-## 3. Signature Generator
-
-### 3.1 What It Discovers
-
-The Signature Generator finds every type decorated with `[LmpSignature]` and extracts:
-
-| Data | Source |
-|---|---|
-| Type name + namespace | The class declaration's semantic symbol |
-| Normalized ID | Type name lower-cased (e.g., `"triageticket"`) |
-| Instructions text | `LmpSignatureAttribute.Instructions` constructor argument |
-| Input fields | Properties decorated with `[Input]` |
-| Output fields | Properties decorated with `[Output]` |
-| Field descriptions | `Description` property on each `[Input]`/`[Output]` attribute |
-| Field CLR type | Fully qualified type name from the semantic model |
-| Field required flag | Presence of `required` modifier on the property |
-
-### 3.2 What It Generates
-
-For the canonical `TriageTicket` signature, the generator emits the following `TriageTicket.g.cs`:
-
-```csharp
-// <auto-generated />
-// Generated by LMP.Generators.LmpSignatureGenerator
-#nullable enable
-
-using System;
-using System.CodeDom.Compiler;
-using System.Collections.Generic;
-using System.Collections.Immutable;
-using LMP;
-
-namespace Demo;
-
-[GeneratedCode("LMP.Generators", "1.0.0")]
-file static class TriageTicketDescriptor
-{
-    public static readonly SignatureDescriptor Instance = new(
-        Id: "triageticket",
-        Name: "TriageTicket",
-        Instructions: """
-            You are a senior enterprise support triage assistant.
-
-            Classify the issue severity, determine the owning team, and draft a grounded
-            customer reply using only the provided evidence and policy context.
-
-            If the evidence is insufficient, say so explicitly.
-            """,
-        Inputs: ImmutableArray.Create(
-            new FieldDescriptor("TicketText", "Input", "System.String",
-                "Raw customer issue or support ticket text", true),
-            new FieldDescriptor("AccountTier", "Input", "System.String",
-                "Customer plan tier such as Free, Pro, Enterprise", true),
-            new FieldDescriptor("KnowledgeSnippets", "Input",
-                "System.Collections.Generic.IReadOnlyList<System.String>",
-                "Relevant knowledge base snippets", true),
-            new FieldDescriptor("PolicySnippets", "Input",
-                "System.Collections.Generic.IReadOnlyList<System.String>",
-                "Relevant support or compliance policy snippets", true)),
-        Outputs: ImmutableArray.Create(
-            new FieldDescriptor("Severity", "Output", "System.String",
-                "Severity: Low, Medium, High, Critical", true),
-            new FieldDescriptor("RouteToTeam", "Output", "System.String",
-                "Owning team name", true),
-            new FieldDescriptor("DraftReply", "Output", "System.String",
-                "Grounded customer reply draft", true),
-            new FieldDescriptor("Rationale", "Output", "System.String",
-                "Reasoning for severity and routing", true),
-            new FieldDescriptor("Escalate", "Output", "System.Boolean",
-                "True if escalation to a human is required", true)));
-}
-
-// Partial class extension: wire the descriptor into the user's type
-[GeneratedCode("LMP.Generators", "1.0.0")]
-partial class TriageTicket : ISignature
-{
-    static partial SignatureDescriptor Descriptor { get; }
-        = TriageTicketDescriptor.Instance;
-}
-
-// DI registration helper
-[GeneratedCode("LMP.Generators", "1.0.0")]
-file static class TriageTicketRegistration
-{
-    public static IServiceCollection AddTriageTicketSignature(
-        this IServiceCollection services)
-    {
-        services.AddSingleton(TriageTicketDescriptor.Instance);
-        return services;
-    }
-}
-```
-
-Key patterns in the generated code:
-
-- **`file class`** (C# 11) — `TriageTicketDescriptor` and `TriageTicketRegistration` use the `file` modifier so they are invisible outside the generated file. This prevents polluting the user's namespace.
-- **`[GeneratedCode]`** — marks all generated types for tooling (code coverage exclusion, static analysis suppression).
-- **`ISignature.Descriptor`** — a `static partial` property (C# 14) that the generator implements on the user's `partial class`. The runtime reads this property to obtain metadata without reflection. The partial property pattern replaces the previous `CreateDescriptor()` method — it is more idiomatic, discoverable via IntelliSense, and cannot be accidentally shadowed.
-- **`ImmutableArray`** — field lists are immutable, matching the framework's determinism requirement.
-
-### 3.3 Step-by-Step Implementation
-
-#### Step 1 — Create the Generator Project
+### Project Setup
 
 The generator lives in its own project targeting `netstandard2.0` (Roslyn requirement):
 
@@ -228,197 +53,206 @@ The generator lives in its own project targeting `netstandard2.0` (Roslyn requir
 </Project>
 ```
 
-#### Step 2 — Register the ForAttributeWithMetadataName Pipeline
+### IIncrementalGenerator Pipeline
+
+All LMP generators implement `IIncrementalGenerator` (not the older `ISourceGenerator`). The incremental API caches intermediate models and re-runs generation only when relevant source changes.
 
 ```csharp
 [Generator(LanguageNames.CSharp)]
-public sealed class LmpSignatureGenerator : IIncrementalGenerator
+public sealed class LmpGenerator : IIncrementalGenerator
 {
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        var signatures = context.SyntaxProvider
+        // 1. Output types with [LmpSignature]
+        var outputTypes = context.SyntaxProvider
             .ForAttributeWithMetadataName(
-                fullyQualifiedMetadataName: "LMP.LmpSignatureAttribute",
-                predicate: static (node, _) => node is ClassDeclarationSyntax,
-                transform: static (ctx, ct) => ExtractSignatureModel(ctx, ct))
+                "LMP.LmpSignatureAttribute",
+                predicate: static (node, _) => node is RecordDeclarationSyntax,
+                transform: static (ctx, ct) => ExtractOutputModel(ctx, ct))
             .Where(static m => m is not null)
             .Select(static (m, _) => m!);
 
-        context.RegisterSourceOutput(signatures, static (spc, model) =>
-            Emitter.EmitSignature(spc, model));
-    }
-}
-```
-
-#### Step 3 — Extract Metadata from the Semantic Model
-
-```csharp
-private static SignatureDescriptorModel? ExtractSignatureModel(
-    GeneratorAttributeSyntaxContext ctx, CancellationToken ct)
-{
-    ct.ThrowIfCancellationRequested();
-
-    if (ctx.TargetSymbol is not INamedTypeSymbol typeSymbol)
-        return null;
-
-    // Read [LmpSignature(Instructions = "...")]
-    var attr = ctx.Attributes.FirstOrDefault(a =>
-        a.AttributeClass?.ToDisplayString() == "LMP.LmpSignatureAttribute");
-    if (attr is null)
-        return null;
-
-    var instructions = attr.NamedArguments
-        .FirstOrDefault(kvp => kvp.Key == "Instructions")
-        .Value.Value as string ?? "";
-
-    // Scan properties for [Input] / [Output]
-    var inputs = new List<FieldModel>();
-    var outputs = new List<FieldModel>();
-
-    foreach (var member in typeSymbol.GetMembers().OfType<IPropertySymbol>())
-    {
-        ct.ThrowIfCancellationRequested();
-
-        foreach (var propAttr in member.GetAttributes())
+        context.RegisterSourceOutput(outputTypes, static (spc, model) =>
         {
-            var attrName = propAttr.AttributeClass?.ToDisplayString();
-            string? direction = attrName switch
-            {
-                "LMP.InputAttribute" => "Input",
-                "LMP.OutputAttribute" => "Output",
-                _ => null
-            };
-            if (direction is null) continue;
+            PromptBuilderEmitter.Emit(spc, model);
+            JsonContextEmitter.Emit(spc, model);
+        });
 
-            var desc = propAttr.NamedArguments
-                .FirstOrDefault(kvp => kvp.Key == "Description")
-                .Value.Value as string ?? "";
+        // 2. LmpModule subclasses → GetPredictors()
+        var modules = context.SyntaxProvider
+            .ForAttributeWithMetadataName(
+                "LMP.LmpModuleAttribute",   // or discovered via base-type check
+                predicate: static (node, _) => node is ClassDeclarationSyntax,
+                transform: static (ctx, ct) => ExtractModuleModel(ctx, ct))
+            .Where(static m => m is not null)
+            .Select(static (m, _) => m!);
 
-            bool isRequired = member.IsRequired;
-            var clrType = member.Type.ToDisplayString(
-                SymbolDisplayFormat.FullyQualifiedFormat)
-                .Replace("global::", "");
+        context.RegisterSourceOutput(modules, static (spc, model) =>
+            ModuleEmitter.EmitGetPredictors(spc, model));
 
-            var field = new FieldModel(member.Name, direction, clrType, desc, isRequired);
+        // 3. ChainOfThought<TIn, TOut> usages → extended output types
+        var cotUsages = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, _) => IsCotGenericName(node),
+                transform: static (ctx, ct) => ExtractCotModel(ctx, ct))
+            .Where(static m => m is not null)
+            .Select(static (m, _) => m!);
 
-            if (direction == "Input") inputs.Add(field);
-            else outputs.Add(field);
-        }
+        context.RegisterSourceOutput(cotUsages, static (spc, model) =>
+            CotEmitter.EmitExtendedOutput(spc, model));
     }
-
-    var ns = typeSymbol.ContainingNamespace.IsGlobalNamespace
-        ? ""
-        : typeSymbol.ContainingNamespace.ToDisplayString();
-
-    return new SignatureDescriptorModel(
-        Namespace: ns,
-        TypeName: typeSymbol.Name,
-        NormalizedId: typeSymbol.Name.ToLowerInvariant(),
-        Instructions: instructions,
-        Inputs: new EquatableArray<FieldModel>(inputs.ToImmutableArray()),
-        Outputs: new EquatableArray<FieldModel>(outputs.ToImmutableArray()));
 }
 ```
 
-> **Junior Dev Note:** Always call `ct.ThrowIfCancellationRequested()` in loops. Roslyn cancels generators frequently during typing — not checking the token makes the IDE sluggish.
+> **Junior Dev Note:** `ForAttributeWithMetadataName` is the preferred discovery API. Roslyn only calls your transform when a type carries the named attribute — far more efficient than scanning every syntax node.
 
-#### Step 4 — Build the SignatureDescriptorModel
+### Incremental Model Requirements
 
-The model record (shown in §2) is the single data structure flowing through the pipeline. It must be:
-
-- A `record` (for structural equality).
-- Free of Roslyn symbols (symbols are not equatable and hold compilation references that prevent caching).
-- Composed of primitives, strings, and `EquatableArray<T>`.
-
-#### Step 5 — Generate the .g.cs File
+Model objects flowing through the pipeline **must** implement `IEquatable<T>` (or be `record` types). Roslyn uses equality checks to decide whether to re-run downstream stages.
 
 ```csharp
-internal static class Emitter
-{
-    public static void EmitSignature(
-        SourceProductionContext spc, SignatureDescriptorModel model)
-    {
-        var ns = string.IsNullOrEmpty(model.Namespace)
-            ? "" : $"namespace {model.Namespace};\n";
+public sealed record OutputTypeModel(
+    string Namespace,
+    string TypeName,
+    string Instructions,
+    EquatableArray<InputFieldModel> InputFields,
+    EquatableArray<OutputFieldModel> OutputFields);
 
-        var inputFields = string.Join(",\n            ",
-            model.Inputs.Select(FormatField));
-        var outputFields = string.Join(",\n            ",
-            model.Outputs.Select(FormatField));
+public sealed record InputFieldModel(
+    string Name,
+    string ClrTypeName,
+    string Description);
 
-        var source = $$"""
-            // <auto-generated />
-            #nullable enable
-            
-            using System;
-            using System.CodeDom.Compiler;
-            using System.Collections.Immutable;
-            using LMP;
-            
-            {{ns}}
-            [GeneratedCode("LMP.Generators", "1.0.0")]
-            file static class {{model.TypeName}}Descriptor
-            {
-                public static readonly SignatureDescriptor Instance = new(
-                    Id: "{{model.NormalizedId}}",
-                    Name: "{{model.TypeName}}",
-                    Instructions: """
-                        {{model.Instructions}}
-                        """,
-                    Inputs: ImmutableArray.Create(
-                        {{inputFields}}),
-                    Outputs: ImmutableArray.Create(
-                        {{outputFields}}));
-            }
-            
-            [GeneratedCode("LMP.Generators", "1.0.0")]
-            partial class {{model.TypeName}} : ISignature
-            {
-                static partial SignatureDescriptor Descriptor { get; }
-                    = {{model.TypeName}}Descriptor.Instance;
-            }
-            
-            [GeneratedCode("LMP.Generators", "1.0.0")]
-            file static class {{model.TypeName}}Registration
-            {
-                public static IServiceCollection Add{{model.TypeName}}Signature(
-                    this IServiceCollection services)
-                {
-                    services.AddSingleton({{model.TypeName}}Descriptor.Instance);
-                    return services;
-                }
-            }
-            """;
-
-        spc.AddSource($"{model.TypeName}.g.cs", source);
-    }
-
-    private static string FormatField(FieldModel f)
-        => $"""new FieldDescriptor("{f.Name}", "{f.Direction}", "{f.ClrTypeName}", "{f.Description}", {(f.IsRequired ? "true" : "false")})""";
-}
+public sealed record OutputFieldModel(
+    string Name,
+    string ClrTypeName,
+    string Description,
+    bool IsRequired);
 ```
+
+> **Junior Dev Note:** `ImmutableArray<T>` does NOT have structural equality. Wrap it in an `EquatableArray<T>` helper — a thin struct with element-wise equality. This is the #1 incremental-generator cache bug.
+
+### How Generated Files Appear
+
+Generated files are added with hint names like `ClassifyTicket.PromptBuilder.g.cs`. They appear in the IDE under **Dependencies → Analyzers → LMP.Generators**. They are never written to disk in the source tree.
 
 ---
 
-## 4. Program Generator
+## 3. Artifact 1 — `PromptBuilder<TInput, TOutput>`
 
-### 4.1 What It Discovers
+### What It Does
 
-The Program Generator finds types decorated with `[LmpProgram]` that inherit `LmpProgram<TIn, TOut>`. It inspects the `Build()` method to extract:
+`PromptBuilder` is a generated class that assembles `ChatMessage[]` from:
+
+1. **Instructions** — from `[LmpSignature("...")]` on `TOutput`
+2. **Input field metadata** — names, types, descriptions from `TInput`
+3. **Output field metadata** — names, types, descriptions from `TOutput` properties
+4. **Few-shot demos** — from `predictor.Demos`
+5. **Current input values** — the actual `TInput` instance at call time
+
+No output parsing is needed — `IChatClient.GetResponseAsync<TOutput>()` handles structured output via JSON schema negotiation with the provider.
+
+### Input Field Description Sources
+
+The source generator reads input descriptions from three sources, in priority order:
+
+1. **XML doc comments** — `/// <param name="X">...</param>`
+2. **`[Description]` on constructor parameters** — `[Description("...")] string X`
+3. **`[Description]` on properties** — for property-based input records
+
+No `property:` prefix is needed. The generator handles all three transparently.
+
+```csharp
+// Option A: [Description] on constructor parameters
+public record TicketInput(
+    [Description("The raw ticket text")] string TicketText,
+    [Description("Customer plan tier")] string AccountTier);
+
+// Option B: XML doc comments
+/// <param name="TicketText">The raw ticket text</param>
+/// <param name="AccountTier">Customer plan tier</param>
+public record TicketInput(string TicketText, string AccountTier);
+
+// Option C: [Description] on properties
+public record TicketInput
+{
+    [Description("The raw ticket text")]
+    public required string TicketText { get; init; }
+}
+```
+
+### Prompt Format
+
+The generated `PromptBuilder` creates `ChatMessage[]` in this format:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ SYSTEM MESSAGE                                              │
+│                                                             │
+│ {Instructions from [LmpSignature]}                          │
+│                                                             │
+│ Input Fields:                                               │
+│ - TicketText (string): The raw ticket text                  │
+│ - AccountTier (string): Customer plan tier                  │
+│                                                             │
+│ Output Fields:                                              │
+│ - Category (string): Category: billing, technical, account  │
+│ - Urgency (int): Urgency from 1 (low) to 5 (critical)      │
+├─────────────────────────────────────────────────────────────┤
+│ USER MESSAGE (demo 1 input)                                 │
+│                                                             │
+│ TicketText: I was charged twice last month                  │
+│ AccountTier: Pro                                            │
+├─────────────────────────────────────────────────────────────┤
+│ ASSISTANT MESSAGE (demo 1 output)                           │
+│                                                             │
+│ {"Category": "billing", "Urgency": 3}                       │
+├─────────────────────────────────────────────────────────────┤
+│ USER MESSAGE (current input)                                │
+│                                                             │
+│ TicketText: My API key stopped working after migration      │
+│ AccountTier: Enterprise                                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key insight:** DSPy's `ChatAdapter` uses `[[ ## field_name ## ]]` delimiters and parses output text. LMP uses `GetResponseAsync<TOutput>()` for structured output — M.E.AI handles JSON schema negotiation with the provider natively. No output delimiters or parsing needed.
+
+### What the Generator Discovers
+
+For a given `Predictor<TInput, TOutput>`, the generator needs metadata from both types:
 
 | Data | Source |
 |---|---|
-| Program name | `[LmpProgram("support-triage")]` attribute argument |
-| Input/Output types | Generic type arguments of `LmpProgram<TIn, TOut>` |
-| Steps | `Step.Predict`, `Step.Retrieve`, `Step.Evaluate`, `Step.If`, `Step.Repair` calls |
-| Step names | The `name:` argument of each step call |
-| Graph edges | `StartWith().Then()` chain order |
-| Signature references | Generic argument of `Step.Predict<T>` / `Step.Repair<T>` |
-| Tunable parameters | Step properties like `topK`, model, temperature |
+| Instructions text | `[LmpSignature("...")]` constructor argument on `TOutput` |
+| Input field names | Properties (or constructor parameters) of `TInput` |
+| Input field types | Fully qualified type names from the semantic model |
+| Input field descriptions | XML doc comments, `[Description]` on params, or `[Description]` on properties |
+| Output field names | Properties of `TOutput` |
+| Output field types | Fully qualified type names from the semantic model |
+| Output field descriptions | `[Description]` on each `TOutput` property |
+| Output field required flag | Presence of `required` modifier |
 
-### 4.2 What It Generates
+### Generated Code
 
-For `SupportTriageProgram`, the generator emits `SupportTriageProgram.g.cs`:
+For user types:
+
+```csharp
+public record TicketInput(
+    [Description("The raw ticket text")] string TicketText,
+    [Description("Customer plan tier")] string AccountTier);
+
+[LmpSignature("Classify a support ticket by category and urgency")]
+public partial record ClassifyTicket
+{
+    [Description("Category: billing, technical, account")]
+    public required string Category { get; init; }
+
+    [Description("Urgency from 1 (low) to 5 (critical)")]
+    public required int Urgency { get; init; }
+}
+```
+
+The generator emits `ClassifyTicket.PromptBuilder.g.cs`:
 
 ```csharp
 // <auto-generated />
@@ -426,416 +260,530 @@ For `SupportTriageProgram`, the generator emits `SupportTriageProgram.g.cs`:
 
 using System;
 using System.CodeDom.Compiler;
-using System.Collections.Immutable;
+using System.Collections.Generic;
+using System.ComponentModel;
+using Microsoft.Extensions.AI;
+
+namespace Demo;
+
+[GeneratedCode("LMP.Generators", "1.0.0")]
+file static class ClassifyTicketPromptBuilder
+{
+    private const string Instructions =
+        "Classify a support ticket by category and urgency";
+
+    private const string FieldDescriptions =
+        """
+        Input Fields:
+        - TicketText (string): The raw ticket text
+        - AccountTier (string): Customer plan tier
+
+        Output Fields:
+        - Category (string): Category: billing, technical, account
+        - Urgency (int): Urgency from 1 (low) to 5 (critical)
+        """;
+
+    public static IList<ChatMessage> BuildMessages(
+        TicketInput input,
+        IReadOnlyList<(TicketInput Input, ClassifyTicket Output)>? demos = null)
+    {
+        var messages = new List<ChatMessage>();
+
+        // System message: instructions + field descriptions
+        messages.Add(new ChatMessage(ChatRole.System,
+            Instructions + "\n\n" + FieldDescriptions));
+
+        // Few-shot demo pairs
+        if (demos is not null)
+        {
+            foreach (var (demoInput, demoOutput) in demos)
+            {
+                messages.Add(new ChatMessage(ChatRole.User, FormatInput(demoInput)));
+                messages.Add(new ChatMessage(ChatRole.Assistant, FormatOutput(demoOutput)));
+            }
+        }
+
+        // Current input
+        messages.Add(new ChatMessage(ChatRole.User, FormatInput(input)));
+
+        return messages;
+    }
+
+    private static string FormatInput(TicketInput input)
+        => $"""
+            TicketText: {input.TicketText}
+            AccountTier: {input.AccountTier}
+            """;
+
+    private static string FormatOutput(ClassifyTicket output)
+        => System.Text.Json.JsonSerializer.Serialize(output,
+            ClassifyTicketJsonContext.Default.ClassifyTicket);
+}
+```
+
+### Implementation — Extract Metadata
+
+```csharp
+private static OutputTypeModel? ExtractOutputModel(
+    GeneratorAttributeSyntaxContext ctx, CancellationToken ct)
+{
+    ct.ThrowIfCancellationRequested();
+
+    if (ctx.TargetSymbol is not INamedTypeSymbol typeSymbol)
+        return null;
+
+    // Read [LmpSignature("instructions text")]
+    var attr = ctx.Attributes.FirstOrDefault(a =>
+        a.AttributeClass?.ToDisplayString() == "LMP.LmpSignatureAttribute");
+    if (attr is null)
+        return null;
+
+    var instructions = attr.ConstructorArguments.FirstOrDefault().Value as string ?? "";
+
+    // Collect output fields from TOutput properties
+    var outputFields = new List<OutputFieldModel>();
+    foreach (var member in typeSymbol.GetMembers().OfType<IPropertySymbol>())
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var desc = GetDescriptionFromAttribute(member) ?? "";
+        var clrType = member.Type.ToDisplayString(
+            SymbolDisplayFormat.FullyQualifiedFormat)
+            .Replace("global::", "");
+
+        outputFields.Add(new OutputFieldModel(
+            member.Name, clrType, desc, member.IsRequired));
+    }
+
+    var ns = typeSymbol.ContainingNamespace.IsGlobalNamespace
+        ? ""
+        : typeSymbol.ContainingNamespace.ToDisplayString();
+
+    return new OutputTypeModel(
+        Namespace: ns,
+        TypeName: typeSymbol.Name,
+        Instructions: instructions,
+        InputFields: default, // populated when Predictor<TIn, TOut> is resolved
+        OutputFields: new EquatableArray<OutputFieldModel>(
+            outputFields.ToImmutableArray()));
+}
+
+private static string? GetDescriptionFromAttribute(IPropertySymbol prop)
+{
+    // Check for [Description("...")] from System.ComponentModel
+    var descAttr = prop.GetAttributes().FirstOrDefault(a =>
+        a.AttributeClass?.ToDisplayString() ==
+            "System.ComponentModel.DescriptionAttribute");
+    return descAttr?.ConstructorArguments.FirstOrDefault().Value as string;
+}
+```
+
+> **Junior Dev Note:** Always call `ct.ThrowIfCancellationRequested()` in loops. Roslyn cancels generators frequently during typing — not checking the token makes the IDE sluggish.
+
+---
+
+## 4. Artifact 2 — `JsonTypeInfo<TOutput>`
+
+### What It Does
+
+Emits a `System.Text.Json` source-generated serialization context for the output type. This enables zero-reflection, AOT-safe serialization — required by `GetResponseAsync<TOutput>()`.
+
+### Generated Code
+
+For `ClassifyTicket`, the generator emits `ClassifyTicket.JsonContext.g.cs`:
+
+```csharp
+// <auto-generated />
+#nullable enable
+
+using System.CodeDom.Compiler;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace Demo;
+
+[GeneratedCode("LMP.Generators", "1.0.0")]
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(ClassifyTicket))]
+file partial class ClassifyTicketJsonContext : JsonSerializerContext;
+```
+
+The `JsonSerializerContext` source generator (built into `System.Text.Json`) picks this up and emits the actual `JsonTypeInfo<ClassifyTicket>` metadata. LMP's generator only needs to emit the `[JsonSerializable]` declaration — the STJ generator does the heavy lifting.
+
+### Why This Matters
+
+| Without source gen | With source gen |
+|---|---|
+| `JsonSerializer.Serialize<T>()` uses reflection | `JsonSerializer.Serialize(value, Context.Default.T)` — no reflection |
+| Breaks AOT compilation | Full AOT support |
+| Slower first-call (JIT type analysis) | Zero startup cost |
+
+---
+
+## 5. Artifact 3 — `GetPredictors()` on `LmpModule`
+
+### What It Does
+
+For every class that extends `LmpModule`, the generator emits a `GetPredictors()` method that returns all `Predictor<,>` fields. This replaces Python's `named_predictors()`, which walks `__dict__` at runtime.
+
+### What the Generator Discovers
+
+| Data | Source |
+|---|---|
+| Module type name + namespace | The class declaration |
+| Predictor fields | Fields whose type is `Predictor<TIn, TOut>` or a subclass (e.g., `ChainOfThought<TIn, TOut>`) |
+| Field names | The field identifier (used as predictor name for optimization) |
+| Generic type arguments | `TInput` and `TOutput` from `Predictor<TIn, TOut>` |
+
+### User Code
+
+```csharp
+public class TicketTriageModule : LmpModule
+{
+    private readonly Predictor<TicketInput, ClassifyTicket> _classify;
+    private readonly Predictor<ClassifyTicket, DraftReply> _draft;
+
+    public TicketTriageModule(IChatClient client)
+    {
+        _classify = new Predictor<TicketInput, ClassifyTicket>(client);
+        _draft = new Predictor<ClassifyTicket, DraftReply>(client);
+    }
+
+    public async Task<DraftReply> ForwardAsync(TicketInput input)
+    {
+        var classification = await _classify.PredictAsync(input);
+        return await _draft.PredictAsync(classification);
+    }
+}
+```
+
+### Generated Code
+
+`TicketTriageModule.Predictors.g.cs`:
+
+```csharp
+// <auto-generated />
+#nullable enable
+
+using System.CodeDom.Compiler;
+using System.Collections.Generic;
 using LMP;
 
 namespace Demo;
 
 [GeneratedCode("LMP.Generators", "1.0.0")]
-file static class SupportTriageProgramDescriptor
+partial class TicketTriageModule
 {
-    public static readonly ProgramDescriptor Instance = new(
-        Id: "support-triage",
-        Name: "SupportTriageProgram",
-        InputType: "Demo.TicketInput",
-        OutputType: "Demo.TriageResult",
-        Steps: ImmutableArray.Create(
-            new StepDescriptor("retrieve-kb", StepKind.Retrieve, SignatureRef: null),
-            new StepDescriptor("retrieve-policy", StepKind.Retrieve, SignatureRef: null),
-            new StepDescriptor("triage", StepKind.Predict, SignatureRef: "triageticket"),
-            new StepDescriptor("groundedness-check", StepKind.Evaluate, SignatureRef: null),
-            new StepDescriptor("policy-check", StepKind.Evaluate, SignatureRef: null),
-            new StepDescriptor("repair-if-needed", StepKind.If, SignatureRef: null),
-            new StepDescriptor("repair-triage", StepKind.Repair, SignatureRef: "triageticket")),
-        Edges: ImmutableArray.Create(
-            new EdgeDescriptor("retrieve-kb", "retrieve-policy"),
-            new EdgeDescriptor("retrieve-policy", "triage"),
-            new EdgeDescriptor("triage", "groundedness-check"),
-            new EdgeDescriptor("groundedness-check", "policy-check"),
-            new EdgeDescriptor("policy-check", "repair-if-needed")),
-        Tunables: ImmutableArray.Create(
-            new TunableDescriptor("retrieve-kb", "TopK", "System.Int32", "5"),
-            new TunableDescriptor("retrieve-policy", "TopK", "System.Int32", "3")));
-}
-
-[GeneratedCode("LMP.Generators", "1.0.0")]
-partial class SupportTriageProgram : IProgram
-{
-    static partial ProgramDescriptor Descriptor { get; }
-        = SupportTriageProgramDescriptor.Instance;
-}
-
-[GeneratedCode("LMP.Generators", "1.0.0")]
-file static class SupportTriageProgramRegistration
-{
-    public static IServiceCollection AddSupportTriageProgram(
-        this IServiceCollection services)
-    {
-        services.AddSingleton(SupportTriageProgramDescriptor.Instance);
-        services.AddTransient<SupportTriageProgram>();
-        return services;
-    }
+    public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()
+        =>
+        [
+            ("_classify", _classify),
+            ("_draft", _draft),
+        ];
 }
 ```
 
-### 4.3 Step-by-Step Implementation
+### Why This Matters
 
-#### Step 1 — Generator Class
+Optimizers (`BootstrapFewShot`, `BootstrapRandomSearch`) need to enumerate a module's predictors to:
+- Collect traces during optimization
+- Fill `predictor.Demos` with bootstrapped few-shot examples
+- Save/load learnable state
 
-```csharp
-[Generator(LanguageNames.CSharp)]
-public sealed class LmpProgramGenerator : IIncrementalGenerator
-{
-    public void Initialize(IncrementalGeneratorInitializationContext context)
-    {
-        var programs = context.SyntaxProvider
-            .ForAttributeWithMetadataName(
-                fullyQualifiedMetadataName: "LMP.LmpProgramAttribute",
-                predicate: static (node, _) => node is ClassDeclarationSyntax,
-                transform: static (ctx, ct) => ExtractProgramModel(ctx, ct))
-            .Where(static m => m is not null)
-            .Select(static (m, _) => m!);
+In DSPy, `named_predictors()` walks `self.__dict__` at runtime. LMP does this at compile time — zero reflection, AOT-safe, and visible in IntelliSense.
 
-        context.RegisterSourceOutput(programs, static (spc, model) =>
-            ProgramEmitter.Emit(spc, model));
-    }
-}
-```
-
-#### Step 2 — Extract Program Metadata
-
-The `Build()` method is analyzed via the semantic model. The generator walks method invocations looking for `Step.*` factory calls and `Graph` builder chains:
+### Implementation
 
 ```csharp
-private static ProgramDescriptorModel? ExtractProgramModel(
+private static ModuleModel? ExtractModuleModel(
     GeneratorAttributeSyntaxContext ctx, CancellationToken ct)
 {
     if (ctx.TargetSymbol is not INamedTypeSymbol typeSymbol)
         return null;
 
-    // Read [LmpProgram("support-triage")]
-    var attr = ctx.Attributes.First();
-    var programId = attr.ConstructorArguments.FirstOrDefault().Value as string ?? "";
+    // Find all fields of type Predictor<,> or derived
+    var predictorFields = new List<PredictorFieldModel>();
 
-    // Resolve TIn / TOut from LmpProgram<TIn, TOut>
-    var baseType = typeSymbol.BaseType;
-    var inputType = baseType?.TypeArguments[0].ToDisplayString() ?? "object";
-    var outputType = baseType?.TypeArguments[1].ToDisplayString() ?? "object";
-
-    // Walk the Build() method body for Step.* invocations
-    var buildMethod = typeSymbol.GetMembers("Build")
-        .OfType<IMethodSymbol>().FirstOrDefault();
-    if (buildMethod is null)
-        return null;
-
-    var syntaxRef = buildMethod.DeclaringSyntaxReferences.FirstOrDefault();
-    if (syntaxRef is null)
-        return null;
-
-    var methodSyntax = syntaxRef.GetSyntax(ct) as MethodDeclarationSyntax;
-    var semanticModel = ctx.SemanticModel;
-
-    var steps = new List<StepModel>();
-    var edges = new List<EdgeModel>();
-
-    // Collect Step.* invocations
-    foreach (var invocation in methodSyntax!.DescendantNodes()
-        .OfType<InvocationExpressionSyntax>())
+    foreach (var member in typeSymbol.GetMembers().OfType<IFieldSymbol>())
     {
         ct.ThrowIfCancellationRequested();
 
-        if (semanticModel.GetSymbolInfo(invocation, ct).Symbol
-            is not IMethodSymbol methodSymbol)
+        if (!IsPredictorType(member.Type))
             continue;
 
-        if (methodSymbol.ContainingType.Name != "Step")
-            continue;
-
-        var stepKind = methodSymbol.Name; // Predict, Retrieve, etc.
-        var nameArg = GetNamedArgument(invocation, "name");
-        var sigRef = methodSymbol.IsGenericMethod
-            ? methodSymbol.TypeArguments[0].Name.ToLowerInvariant()
-            : null;
-
-        if (nameArg is not null)
-            steps.Add(new StepModel(nameArg, stepKind, sigRef));
+        predictorFields.Add(new PredictorFieldModel(
+            FieldName: member.Name,
+            InputType: GetTypeArg(member.Type, 0),
+            OutputType: GetTypeArg(member.Type, 1)));
     }
 
-    // Collect graph edges from .Then() chain
-    foreach (var invocation in methodSyntax.DescendantNodes()
-        .OfType<InvocationExpressionSyntax>())
-    {
-        ct.ThrowIfCancellationRequested();
-        // Parse Graph.StartWith().Then() chains into ordered edges
-        // (implementation depends on how the Graph builder API is shaped)
-    }
+    if (predictorFields.Count == 0)
+        return null;
 
-    return new ProgramDescriptorModel(
+    return new ModuleModel(
         Namespace: typeSymbol.ContainingNamespace.ToDisplayString(),
         TypeName: typeSymbol.Name,
-        ProgramId: programId,
-        InputType: inputType,
-        OutputType: outputType,
-        Steps: new EquatableArray<StepModel>(steps.ToImmutableArray()),
-        Edges: new EquatableArray<EdgeModel>(edges.ToImmutableArray()));
+        Predictors: new EquatableArray<PredictorFieldModel>(
+            predictorFields.ToImmutableArray()));
+}
+
+private static bool IsPredictorType(ITypeSymbol type)
+{
+    // Walk the base type chain looking for Predictor<,>
+    var current = type;
+    while (current is not null)
+    {
+        if (current is INamedTypeSymbol { IsGenericType: true } named &&
+            named.ConstructedFrom.ToDisplayString() == "LMP.Predictor<TInput, TOutput>")
+            return true;
+        current = current.BaseType;
+    }
+    return false;
 }
 ```
-
-> **Junior Dev Note:** Extracting step metadata from method bodies is harder than reading attributes. The semantic model gives you `IMethodSymbol` for each call site. Focus on the `Step.*` factory methods and their `name:` arguments first — graph edge extraction can be iterated on.
 
 ---
 
-## 4A. Binding Generator
+## 6. Artifact 4 — ChainOfThought Extended Output
 
-The Binding Generator resolves how data flows between steps at compile time. It implements the three-tier binding model, emitting zero-overhead generated code for Tiers 1–3 and leaving Tier 4 (expression trees) as a runtime-only fallback.
+### What It Does
 
-### 4A.1 Three-Tier Binding Model
+When a user writes `ChainOfThought<TIn, TOut>`, the source generator creates an **internal extended record** that adds a `Reasoning` field to `TOut`. The LM produces step-by-step reasoning before the final answer, then the framework strips the reasoning and returns the original `TOut`.
 
-| Tier | Mechanism | Generator Responsibility |
-|------|-----------|------------------------|
-| **Tier 1** — Convention-based auto-binding | Matching property names and types between upstream outputs and downstream inputs | Generator scans upstream step output types and downstream input types, emitting direct property assignments for unambiguous name+type matches |
-| **Tier 2** — `[BindFrom]` attribute | Developer applies `[BindFrom("stepName.Property")]` to an input property | Generator reads the attribute, validates the source path exists, and emits a direct property assignment |
-| **Tier 3** — C# 14 interceptor-based lambda binding | Developer writes a `bind:` lambda on `Step.Predict<T>()` | Generator uses C# 14 interceptors (stable in .NET 10) to intercept the lambda call site, analyze the expression, and emit a generated binding method that replaces the lambda at compile time |
-| **Tier 4** — Expression tree fallback | Developer writes a `bind:` lambda that cannot be statically analyzed | No generator action — the runtime calls `.Compile()` on the expression tree at execution time |
-
-> **Note:** C# 14 interceptors are **stable** in .NET 10 — they are no longer experimental. The `[InterceptsLocation]` attribute is part of the supported language surface.
-
-### 4A.2 Convention-Based Auto-Binding (Tier 1)
-
-The generator walks the program graph and, for each `Step.Predict<TSig>` step, compares the input properties of `TSig` against available upstream outputs:
+### User Code
 
 ```csharp
-// Generator logic (simplified)
-foreach (var inputProp in signatureInputProperties)
+[LmpSignature("Classify a support ticket by category and urgency")]
+public partial record ClassifyTicket
 {
-    // Look for an exact name+type match in any upstream step's output
-    var match = upstreamOutputs.FirstOrDefault(o =>
-        o.Name == inputProp.Name &&
-        o.Type.Equals(inputProp.Type, SymbolEqualityComparer.Default));
+    [Description("Category: billing, technical, account")]
+    public required string Category { get; init; }
 
-    if (match is not null)
-    {
-        // Emit: target.Property = ctx.OutputOf<UpstreamType>("stepId").Property;
-        EmitDirectAssignment(spc, inputProp, match);
-    }
+    [Description("Urgency from 1 (low) to 5 (critical)")]
+    public required int Urgency { get; init; }
 }
+
+// ChainOfThought wraps the output type
+var cot = new ChainOfThought<TicketInput, ClassifyTicket>(client);
+var result = await cot.PredictAsync(input);
+// result has .Category + .Urgency (Reasoning is used internally, not exposed)
 ```
 
-**Generated output example:**
+### Generated Code
+
+`ClassifyTicket.ChainOfThought.g.cs`:
 
 ```csharp
-// <auto-generated /> — Convention binding for step "triage"
+// <auto-generated />
+#nullable enable
+
+using System.CodeDom.Compiler;
+using System.ComponentModel;
+using System.Text.Json.Serialization;
+
+namespace Demo;
+
+/// <summary>
+/// Extended output type for ChainOfThought reasoning.
+/// The Reasoning field is sent to the LM as an additional output field
+/// positioned before the real output fields, encouraging step-by-step thinking.
+/// </summary>
 [GeneratedCode("LMP.Generators", "1.0.0")]
-file static class TriageStepBindings
+internal partial record ClassifyTicketWithReasoning
 {
-    public static TriageTicket Bind(TicketInput input, IExecutionContext ctx)
-    {
-        return new TriageTicket
-        {
-            // Tier 1: convention-matched by name "TicketText" (string → string)
-            TicketText = input.TicketText,
-        };
-    }
+    [Description("Think step by step to work toward the answer")]
+    [JsonPropertyOrder(-1)]
+    public required string Reasoning { get; init; }
+
+    [Description("Category: billing, technical, account")]
+    public required string Category { get; init; }
+
+    [Description("Urgency from 1 (low) to 5 (critical)")]
+    public required int Urgency { get; init; }
 }
-```
 
-### 4A.3 Attribute-Based Binding (Tier 2)
-
-When `[BindFrom]` is present, the generator reads the source expression and emits a direct assignment:
-
-```csharp
-// Generator reads [BindFrom("retrieve-kb.Documents")] on KnowledgeSnippets
-// and emits:
-KnowledgeSnippets = ctx.OutputOf<RetrieveResult>("retrieve-kb").Documents,
-```
-
-The generator validates at compile time that:
-1. The referenced step name exists in the program graph.
-2. The referenced property exists on the step's output type.
-3. The types are assignment-compatible.
-
-If validation fails, the generator reports a diagnostic and falls through to Tier 4.
-
-### 4A.4 Interceptor-Based Lambda Binding (Tier 3)
-
-For `bind:` lambdas on `Step.Predict<T>()` calls, the generator uses C# 14 interceptors to replace the lambda at the call site with a generated method:
-
-```csharp
-// User writes:
-var triage = Step.Predict<TriageTicket>(
-    name: "triage",
-    bind: (input, ctx) => new TriageTicket
-    {
-        TicketText = input.TicketText,
-        KnowledgeSnippets = ctx.OutputOf(retrieveKb).Documents
-    });
-
-// Generator emits an interceptor that replaces the bind: lambda:
-[InterceptsLocation("SupportTriageProgram.cs", line: 14, column: 5)]
+[JsonSerializable(typeof(ClassifyTicketWithReasoning))]
 [GeneratedCode("LMP.Generators", "1.0.0")]
-file static class TriageBindInterceptor
-{
-    public static Step Predict<T>(
-        this StepFactory factory, string name,
-        Func<TicketInput, IExecutionContext, TriageTicket> bind)
-    {
-        return factory.PredictWithBinding<T>(name,
-            static (input, ctx) => new TriageTicket
-            {
-                TicketText = ((TicketInput)input).TicketText,
-                KnowledgeSnippets = ctx.OutputOf<RetrieveResult>("retrieve-kb").Documents,
-            });
-    }
-}
+internal partial class ClassifyTicketWithReasoningJsonContext : JsonSerializerContext;
 ```
 
-The interceptor eliminates the expression-tree overhead entirely — the `bind:` lambda is replaced with a direct method call that the JIT can inline. If the lambda body is too complex for static analysis (e.g., contains closures over local state, conditional logic, or method calls the generator cannot resolve), the generator does **not** emit an interceptor and the lambda falls through to Tier 4 (runtime `.Compile()`).
+### How `ChainOfThought<TIn, TOut>` Uses It
 
-> **Junior Dev Note:** Interceptors work by matching a specific source location (file, line, column). The generator must compute the exact `InterceptsLocation` from the syntax tree. Use `invocation.GetLocation().GetLineSpan()` to get the line and column.
+At runtime, `ChainOfThought` internally:
 
----
+1. Calls `GetResponseAsync<ClassifyTicketWithReasoning>()` (the extended type)
+2. The LM fills in `Reasoning` first, then `Category` and `Urgency`
+3. Maps the result back to `ClassifyTicket` (strips `Reasoning`)
 
-## 5. Generated Code Patterns
+This mirrors DSPy's `ChainOfThought`, which prepends a `rationale` field to the signature at runtime. LMP does it at compile time.
 
-All generated code must follow these conventions:
+### What the Generator Discovers
 
-| Rule | Rationale |
+| Data | Source |
 |---|---|
-| Use `file class` for all internal helper types | Prevents namespace pollution; follows System.Text.Json precedent |
-| Use `[GeneratedCode("LMP.Generators", "1.0.0")]` on every generated type | Enables code-coverage and analysis tool exclusion |
-| Naming: `<TypeName>.g.cs` | Standard .NET generator naming convention |
-| Namespace: same as the user's type | Generated partial classes must share the namespace |
-| Use raw string literals `"""..."""` for prompt templates | Avoids escaping issues in multi-line instructions text |
-| Include `// <auto-generated />` header | Tells IDEs/tools to suppress formatting and analysis |
-| Use `ImmutableArray` for collections | Enforces immutability; prevents accidental mutation |
-| Use `params ReadOnlySpan<T>` for variadic generated APIs | Zero-allocation variadic calls; avoids hidden `params T[]` heap allocations |
-| Use `static partial` properties for descriptors | C# 14 partial properties; more idiomatic than `static abstract` interface methods |
+| `TOut` type and its properties | From `ChainOfThought<TIn, TOut>` usage in source |
+| Output field descriptions | `[Description]` on each `TOut` property |
+| Output field types | Semantic model |
+
+The generator locates `ChainOfThought<TIn, TOut>` usages by scanning for the generic type name in syntax, then resolving the `TOut` type argument via the semantic model.
 
 ---
 
-## 6. Diagnostics Integration
+## 7. Diagnostics
 
-### How Generators and Analyzers Share Information
-
-Generators and analyzers both run inside Roslyn but are independent components. They share information through the **same semantic model** — they read the same attributed types and same syntax trees. They do NOT pass data to each other directly.
-
-The division of labor is:
-
-- **Analyzers** validate and report diagnostics (squiggly lines, warnings, errors).
-- **Generators** produce code. If a generator encounters a type it cannot safely lower, it reports a diagnostic AND skips generation for that type (emit nothing rather than broken code).
+The generator reports **2–3 focused diagnostics**. Avoid diagnostic sprawl — start small, add more based on real usage.
 
 ### Diagnostic Definitions
-
-The framework defines seven diagnostics. Each is a `DiagnosticDescriptor` instance:
 
 ```csharp
 using Microsoft.CodeAnalysis;
 
-namespace LMP.Analyzers;
+namespace LMP.Generators;
 
 public static class LmpDiagnostics
 {
     private const string Category = "LMP.Authoring";
 
-    public static readonly DiagnosticDescriptor LMP001_MissingFieldDescription = new(
+    /// <summary>
+    /// LMP001: Output type property is missing [Description].
+    /// The LM needs field descriptions to understand what to produce.
+    /// </summary>
+    public static readonly DiagnosticDescriptor LMP001_MissingOutputDescription = new(
         id: "LMP001",
-        title: "Missing field description",
-        messageFormat: "Property '{0}' on signature '{1}' is missing a Description in its [Input]/[Output] attribute",
+        title: "Output property missing [Description]",
+        messageFormat:
+            "Property '{0}' on output type '{1}' is missing a [Description] attribute. "
+          + "Add [Description(\"...\")] so the LM knows what this field represents.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "Every input and output field should have a Description so the LM knows what the field represents.");
+        description:
+            "Every output property should have a [Description] attribute so the LM "
+          + "knows what the field represents. Without it, the LM may produce "
+          + "unpredictable values.");
 
-    public static readonly DiagnosticDescriptor LMP002_MissingInstructions = new(
+    /// <summary>
+    /// LMP002: Output type has a property with a non-JSON-serializable type.
+    /// GetResponseAsync&lt;T&gt;() requires all output properties to be
+    /// serializable by System.Text.Json.
+    /// </summary>
+    public static readonly DiagnosticDescriptor LMP002_NonSerializableOutputProperty = new(
         id: "LMP002",
-        title: "Missing or empty signature instructions",
-        messageFormat: "Signature '{0}' has missing or empty Instructions in [LmpSignature]",
+        title: "Non-serializable output property type",
+        messageFormat:
+            "Property '{0}' on output type '{1}' has type '{2}' which cannot be "
+          + "serialized by System.Text.Json source generation.",
         category: Category,
-        defaultSeverity: DiagnosticSeverity.Warning,
+        defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "Signatures without instructions produce poor LM outputs. Provide clear task instructions.");
+        description:
+            "Output properties must use JSON-serializable types: string, bool, "
+          + "int, long, float, double, decimal, enum, DateTime, "
+          + "IReadOnlyList<T>, or nested records with [LmpSignature]. "
+          + "GetResponseAsync<T>() uses System.Text.Json under the hood.");
 
-    public static readonly DiagnosticDescriptor LMP003_DuplicateStepName = new(
+    /// <summary>
+    /// LMP003 (optional): [LmpSignature] is placed on a type that is not
+    /// a partial record. The generator cannot extend non-partial types.
+    /// </summary>
+    public static readonly DiagnosticDescriptor LMP003_NonPartialRecord = new(
         id: "LMP003",
-        title: "Duplicate step name in program",
-        messageFormat: "Step name '{0}' is used more than once in program '{1}'",
+        title: "[LmpSignature] on non-partial record",
+        messageFormat:
+            "Type '{0}' has [LmpSignature] but is not declared as 'partial record'. "
+          + "Change to 'public partial record {0}' so the source generator can extend it.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "Step names must be unique within a program. Traces, tunables, and the optimizer key on step name.");
-
-    public static readonly DiagnosticDescriptor LMP004_NonDeterministicStepName = new(
-        id: "LMP004",
-        title: "Non-deterministic step name",
-        messageFormat: "Step name for '{0}' in program '{1}' must be a compile-time constant",
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Error,
-        isEnabledByDefault: true,
-        description: "Step names must be deterministic compile-time constants. "
-                   + "Compiled variants, traces, and optimizer metadata require stable step identities.");
-
-    public static readonly DiagnosticDescriptor LMP005_UnsupportedOutputType = new(
-        id: "LMP005",
-        title: "Unsupported output field type",
-        messageFormat: "Output property '{0}' on signature '{1}' uses unsupported type '{2}'",
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Error,
-        isEnabledByDefault: true,
-        description: "Output field types must be types the framework can parse from structured LM output (string, bool, int, double, enum, IReadOnlyList<T>).");
-
-    public static readonly DiagnosticDescriptor LMP006_InvalidGraphCycle = new(
-        id: "LMP006",
-        title: "Invalid graph cycle or self-reference",
-        messageFormat: "Program '{0}' contains a cycle or unsupported self-reference involving step '{1}'",
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Error,
-        isEnabledByDefault: true,
-        description: "Program graphs must be acyclic in MVP. Cycles prevent deterministic execution ordering.");
-
-    public static readonly DiagnosticDescriptor LMP007_ExpressionTreeBindingHint = new(
-        id: "LMP007",
-        title: "Expression tree used where attribute binding would suffice",
-        messageFormat: "Binding for property '{0}' on step '{1}' uses a runtime expression tree; consider using [BindFrom(\"{2}\")] for zero-overhead compile-time binding",
-        category: Category,
-        defaultSeverity: DiagnosticSeverity.Info,
-        isEnabledByDefault: true,
-        description: "Expression-tree bindings (Tier 4) incur runtime .Compile() cost. "
-                   + "If the binding is a simple property mapping, use [BindFrom] (Tier 2) or let convention binding (Tier 1) handle it.");
+        description:
+            "[LmpSignature] output types must be declared as 'partial record' so "
+          + "the source generator can emit additional members (PromptBuilder, "
+          + "JsonTypeInfo, etc.) in a companion .g.cs file.");
 }
 ```
 
-### Reporting Diagnostics from a Generator
+### When Diagnostics Fire
 
-When the generator cannot safely lower a type, it reports a diagnostic on the `SourceProductionContext`:
+| ID | Fires when | Severity | Generator action |
+|---|---|---|---|
+| **LMP001** | An output property has no `[Description]` attribute | Warning | Still generates — uses property name as fallback description |
+| **LMP002** | An output property type is not JSON-serializable (e.g., `Stream`, `Func<>`, `IntPtr`) | Error | Skips generation for this type (emit nothing rather than broken code) |
+| **LMP003** | `[LmpSignature]` is on a `class`, `struct`, non-partial `record`, or non-partial type | Error | Skips generation for this type |
+
+### Reporting from the Generator
 
 ```csharp
-context.RegisterSourceOutput(signatures, static (spc, model) =>
+context.RegisterSourceOutput(outputTypes, static (spc, model) =>
 {
-    if (string.IsNullOrWhiteSpace(model.Instructions))
+    // LMP003: must be partial record
+    if (!model.IsPartialRecord)
     {
         spc.ReportDiagnostic(Diagnostic.Create(
-            LmpDiagnostics.LMP002_MissingInstructions,
+            LmpDiagnostics.LMP003_NonPartialRecord,
             model.Location,
             model.TypeName));
-        // Still emit the descriptor — instructions can be empty at runtime,
-        // but the warning tells the developer to fix it.
+        return; // skip generation entirely
     }
 
-    Emitter.EmitSignature(spc, model);
+    // LMP001: warn on missing descriptions
+    foreach (var field in model.OutputFields)
+    {
+        if (string.IsNullOrWhiteSpace(field.Description))
+        {
+            spc.ReportDiagnostic(Diagnostic.Create(
+                LmpDiagnostics.LMP001_MissingOutputDescription,
+                field.Location,
+                field.Name,
+                model.TypeName));
+        }
+    }
+
+    // LMP002: error on non-serializable types
+    foreach (var field in model.OutputFields)
+    {
+        if (!IsJsonSerializable(field.ClrTypeName))
+        {
+            spc.ReportDiagnostic(Diagnostic.Create(
+                LmpDiagnostics.LMP002_NonSerializableOutputProperty,
+                field.Location,
+                field.Name,
+                model.TypeName,
+                field.ClrTypeName));
+            return; // skip generation
+        }
+    }
+
+    PromptBuilderEmitter.Emit(spc, model);
+    JsonContextEmitter.Emit(spc, model);
 });
 ```
 
-> **Junior Dev Note:** Generators can report diagnostics but cannot prevent compilation. Use `DiagnosticSeverity.Error` for analyzers (which block the build), and `DiagnosticSeverity.Warning` for generator-side advisories. The analyzer project (`DiagnosticAnalyzer` subclass) is the proper home for build-blocking errors.
+---
+
+## 8. Generated Code Conventions
+
+All generated code follows these rules:
+
+| Rule | Rationale |
+|---|---|
+| `// <auto-generated />` header | Tells IDEs/tools to suppress formatting and analysis |
+| `#nullable enable` | Match the user's nullable context |
+| `[GeneratedCode("LMP.Generators", "1.0.0")]` on every generated type | Enables code-coverage and analysis tool exclusion |
+| `file class` for all internal helper types | Prevents namespace pollution; follows `System.Text.Json` precedent |
+| Hint name: `<TypeName>.<Artifact>.g.cs` | E.g., `ClassifyTicket.PromptBuilder.g.cs`, `ClassifyTicket.JsonContext.g.cs` |
+| Namespace: same as the user's type | Generated partial classes must share the namespace |
+| Raw string literals `"""..."""` for multi-line text | Avoids escaping issues in instructions |
+| `static partial` properties (C# 14) for generated members | More idiomatic than `static abstract` interface methods |
 
 ---
 
-## 7. Testing Source Generators
+## 9. Testing Source Generators
 
-### Golden File / Snapshot Testing
+### Snapshot / Golden File Testing
 
-Generated output must be **snapshot-tested**: you provide a known input, run the generator, and compare the output to a saved "golden" file. If the output changes, the test fails, forcing a deliberate review of the change.
-
-### Complete Test Example
+Generated output must be **snapshot-tested**: provide a known input, run the generator, compare output to a saved golden file.
 
 ```csharp
 using Microsoft.CodeAnalysis;
@@ -844,74 +792,92 @@ using Xunit;
 
 namespace LMP.Generators.Tests;
 
-public class SignatureGeneratorTests
+public class PromptBuilderGeneratorTests
 {
     [Fact]
-    public void Generates_Descriptor_For_Simple_Signature()
+    public void Generates_PromptBuilder_For_Simple_Output_Type()
     {
-        // Arrange — the user's source code
+        var source = """
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            public record TicketInput(
+                [Description("The raw ticket text")] string TicketText);
+
+            [LmpSignature("Classify the ticket severity.")]
+            public partial record SimpleTicket
+            {
+                [Description("Low, Medium, High, Critical")]
+                public required string Severity { get; init; }
+            }
+            """;
+
+        var compilation = CSharpCompilation.Create("TestAssembly",
+            syntaxTrees: [CSharpSyntaxTree.ParseText(source)],
+            references:
+            [
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(LmpSignatureAttribute).Assembly.Location),
+            ],
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var generator = new LmpGenerator();
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+        driver = driver.RunGeneratorsAndUpdateCompilation(
+            compilation, out var outputCompilation, out var diagnostics);
+
+        // No diagnostics
+        Assert.Empty(diagnostics);
+
+        // Snapshot match
+        var runResult = driver.GetRunResult();
+        var generatedSource = runResult.GeneratedTrees
+            .Single(t => t.FilePath.Contains("PromptBuilder"));
+        var actualText = generatedSource.GetText().ToString();
+
+        var goldenPath = Path.Combine("Snapshots", "SimpleTicket.PromptBuilder.g.verified.cs");
+        Assert.Equal(File.ReadAllText(goldenPath), actualText);
+
+        // No compile errors
+        Assert.Empty(outputCompilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error));
+    }
+
+    [Fact]
+    public void Reports_LMP001_For_Missing_Description()
+    {
         var source = """
             using LMP;
 
             namespace TestApp;
 
-            [LmpSignature(Instructions = "Classify the ticket severity.")]
-            public partial class SimpleTicket
+            [LmpSignature("Test")]
+            public partial record BadOutput
             {
-                [Input(Description = "The raw ticket text")]
-                public required string TicketText { get; init; }
-
-                [Output(Description = "Low, Medium, High, Critical")]
-                public required string Severity { get; init; }
+                public required string NoDescription { get; init; }
             }
             """;
 
-        // Arrange — build a compilation that includes framework types
-        var compilation = CSharpCompilation.Create("TestAssembly",
-            syntaxTrees: new[] { CSharpSyntaxTree.ParseText(source) },
-            references: new[]
-            {
-                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-                MetadataReference.CreateFromFile(typeof(LmpSignatureAttribute).Assembly.Location),
-            },
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        // ... run generator ...
 
-        // Act — run the generator
-        var generator = new LmpSignatureGenerator();
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
-        driver = driver.RunGeneratorsAndUpdateCompilation(
-            compilation, out var outputCompilation, out var diagnostics);
-
-        // Assert — no diagnostics
-        Assert.Empty(diagnostics);
-
-        // Assert — the generated source matches the golden snapshot
-        var runResult = driver.GetRunResult();
-        var generatedSource = runResult.GeneratedTrees.Single();
-        var actualText = generatedSource.GetText().ToString();
-
-        // Compare against golden file
-        var goldenPath = Path.Combine("Snapshots", "SimpleTicket.g.verified.cs");
-        var expectedText = File.ReadAllText(goldenPath);
-        Assert.Equal(expectedText, actualText);
-
-        // Assert — output compilation has no errors
-        var outputDiagnostics = outputCompilation.GetDiagnostics()
-            .Where(d => d.Severity == DiagnosticSeverity.Error);
-        Assert.Empty(outputDiagnostics);
+        var diagnostics = runResult.Diagnostics;
+        var lmp001 = Assert.Single(diagnostics, d => d.Id == "LMP001");
+        Assert.Contains("NoDescription", lmp001.GetMessage());
     }
 }
 ```
 
-> **Junior Dev Note:** The `Snapshots/` folder holds `.verified.cs` files that are checked into source control. When you intentionally change the generator's output, update the golden file. Consider using the [Verify](https://github.com/VerifyTests/Verify) library to automate snapshot management — it can auto-accept changes during development and diff them in CI.
+> **Junior Dev Note:** Consider using the [Verify](https://github.com/VerifyTests/Verify) library to automate snapshot management — it auto-accepts changes during development and diffs them in CI.
 
 ---
 
-## 8. Common Pitfalls
+## 10. Common Pitfalls
 
 ### Debugging Generators
 
-Source generators run inside the compiler process. You cannot set breakpoints the normal way. Two approaches:
+Source generators run inside the compiler process. Two debugging approaches:
 
 **Approach 1: `Debugger.Launch()`**
 
@@ -922,18 +888,12 @@ public void Initialize(IncrementalGeneratorInitializationContext context)
     if (!System.Diagnostics.Debugger.IsAttached)
         System.Diagnostics.Debugger.Launch();
 #endif
-    // ... rest of initialization
 }
 ```
 
-This pops a JIT debugger dialog when the build runs. Attach Visual Studio and step through.
-
-**Approach 2: Diagnostic dump mode**
-
-Write intermediate state to a file for inspection without a debugger:
+**Approach 2: Diagnostic dump**
 
 ```csharp
-// Emit a diagnostic with the model's contents for troubleshooting
 spc.ReportDiagnostic(Diagnostic.Create(
     new DiagnosticDescriptor("LMPDBG", "Debug", "Model: {0}",
         "Debug", DiagnosticSeverity.Warning, true),
@@ -943,138 +903,44 @@ spc.ReportDiagnostic(Diagnostic.Create(
 
 ### Incremental Cache Invalidation
 
-The #1 bug: your model type does not implement equality correctly, so the generator re-runs on every keystroke. Symptoms:
+The #1 bug: your model type does not implement equality correctly → generator re-runs on every keystroke.
 
-- IDE becomes sluggish when editing files that have nothing to do with your attributed types.
-- Build times increase.
-
-Fix: ensure every field in your model is a value type, `string`, or `EquatableArray<T>`. Never store `ISymbol`, `SyntaxNode`, or `Location` in the model — extract the data you need as strings/primitives.
+**Fix:** Every field in your model must be a value type, `string`, or `EquatableArray<T>`. Never store `ISymbol`, `SyntaxNode`, or `Location` in the model.
 
 ### Handling Malformed User Code
 
-The generator will encounter partially written code (the user is mid-keystroke). Defensive rules:
+The generator will encounter partially written code (user is mid-keystroke):
 
-1. **Return `null` from the transform** if any required data is missing. The `.Where(m => m is not null)` filter removes it.
-2. **Never throw exceptions** — an unhandled exception in a generator silently kills all generation for the compilation.
-3. **Report diagnostics** for structurally invalid but syntactically complete code (e.g., a signature with no `[Input]` or `[Output]` fields).
+1. **Return `null` from the transform** if data is missing — the `.Where(m => m is not null)` filter removes it.
+2. **Never throw exceptions** — an unhandled exception silently kills all generation.
+3. **Report diagnostics** for structurally invalid but syntactically complete code.
 
 ---
 
-## 9. Convention-Based Program Discovery (Post-MVP)
+## 11. What's Intentionally Excluded
 
-### Problem
+| Dropped Concept | Why |
+|---|---|
+| `ProgramDescriptor` / `StepDescriptor` / graph IR | DSPy has no graph IR. Modules are plain classes with `forward()`. LMP mirrors this with `LmpModule.ForwardAsync()`. |
+| Binding generators (convention, `[BindFrom]`, interceptors) | Over-engineered. `Predictor<TIn, TOut>` with source-gen `PromptBuilder` covers all binding. |
+| MSBuild targets for graph validation | No graphs → no graph validation. `dotnet build` with source gen diagnostics is sufficient. |
+| `SignatureDescriptor` / `FieldDescriptor` types | Replaced by `PromptBuilder` — the generator emits code that *does the work*, not metadata records. |
+| DI registration helpers | Not the generator's job. Users register services the standard .NET way. |
+| 7+ diagnostics with code fixes | Start with 2–3 essential diagnostics. Add more based on real usage. |
+| Convention-based auto-discovery | Post-MVP. Explicit registration is fine for now. |
 
-MVP requires explicit DI registration for each LMP program:
+---
 
-```csharp
-builder.Services.AddLmpProgram<SupportTriageProgram>();
-builder.Services.AddLmpProgram<ContentModerationProgram>();
-builder.Services.AddLmpProgram<TranslationProgram>();
-```
+## 12. DSPy Comparison
 
-This is tedious for large projects with many programs. Minimal APIs solved this exact problem — endpoints are discovered by convention.
+| Capability | DSPy (Python, runtime) | LMP (C#, compile-time) |
+|---|---|---|
+| Prompt assembly | Runtime string formatting in `ChatAdapter` | Source gen emits `PromptBuilder` class with baked-in constants |
+| Output parsing | `ChatAdapter` parses `[[ ## field ## ]]` delimiters | Not needed — `GetResponseAsync<T>()` handles structured output |
+| Field type validation | Pydantic runtime validation | Source gen emits `JsonTypeInfo<T>` + LMP002 diagnostic |
+| Predictor discovery | `named_predictors()` walks `__dict__` at runtime | Source gen emits `GetPredictors()` |
+| Chain-of-thought | Prepends `rationale` field at runtime | Source gen creates extended record at build time |
+| Missing descriptions | Runtime error | LMP001 IDE warning at build time |
+| State serialization | Runtime introspection (`pickle`/JSON) | Source gen `JsonSerializerContext` — AOT-safe |
 
-### Solution: Auto-Discovery Source Generator
-
-A post-MVP source generator discovers **all** types implementing `ILmProgram<TIn, TOut>` in the compilation and emits a single extension method:
-
-```csharp
-// Generated by LMP source generator
-public static class LmpServiceCollectionExtensions
-{
-    /// <summary>
-    /// Registers all LMP programs discovered in this assembly.
-    /// Generated automatically by the LMP source generator.
-    /// </summary>
-    public static IServiceCollection AddLmpPrograms(
-        this IServiceCollection services)
-    {
-        services.AddLmpProgram<SupportTriageProgram>();
-        services.AddLmpProgram<ContentModerationProgram>();
-        services.AddLmpProgram<TranslationProgram>();
-        return services;
-    }
-}
-```
-
-### Consumer Experience
-
-```csharp
-// Before (MVP — explicit)
-builder.Services.AddLmpProgram<SupportTriageProgram>();
-builder.Services.AddLmpProgram<ContentModerationProgram>();
-
-// After (Post-MVP — convention)
-builder.Services.AddLmpPrograms(); // Discovers all ILmProgram<,> in this assembly
-```
-
-### Implementation
-
-The generator scans for `ILmProgram<TIn, TOut>` implementations using the same `IncrementalGeneratorInitializationContext` pipeline as the existing signature generator:
-
-```csharp
-var programs = context.SyntaxProvider.ForAttributeWithMetadataName(
-    "LMP.LmpProgramAttribute",
-    predicate: static (node, _) => node is ClassDeclarationSyntax,
-    transform: static (ctx, _) =>
-    {
-        var symbol = (INamedTypeSymbol)ctx.TargetSymbol;
-        return new ProgramRegistrationModel(
-            FullyQualifiedName: symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            ProgramName: symbol.Name);
-    });
-
-context.RegisterSourceOutput(programs.Collect(), static (spc, models) =>
-{
-    var registrations = string.Join("\n        ",
-        models.Select(m =>
-            $"services.AddLmpProgram<{m.FullyQualifiedName}>();"));
-
-    spc.AddSource("LmpServiceCollectionExtensions.g.cs", $$"""
-        public static class LmpServiceCollectionExtensions
-        {
-            public static IServiceCollection AddLmpPrograms(
-                this IServiceCollection services)
-            {
-                {{registrations}}
-                return services;
-            }
-        }
-        """);
-});
-```
-
-This follows the same pattern used by `Microsoft.Extensions.DependencyInjection` source generators for auto-registration.
-
-```csharp
-// Safe: returns null if the attribute is malformed
-var instructions = attr?.NamedArguments
-    .FirstOrDefault(kvp => kvp.Key == "Instructions")
-    .Value.Value as string;
-
-if (instructions is null)
-    return null; // Skip this type — user is still typing
-```
-
-### Cross-Type Dependencies
-
-A `[LmpProgram]` references `[LmpSignature]` types via `Step.Predict<TriageTicket>`. The Program Generator needs the signature's normalized ID (`"triageticket"`) to populate `StepDescriptor.SignatureRef`.
-
-Since generators cannot depend on each other's outputs, the Program Generator must independently resolve the signature type from the semantic model:
-
-```csharp
-// Inside Program Generator — resolve signature reference
-if (methodSymbol.IsGenericMethod)
-{
-    var sigType = methodSymbol.TypeArguments[0];
-    // Check that sigType has [LmpSignature]
-    var hasAttr = sigType.GetAttributes().Any(a =>
-        a.AttributeClass?.ToDisplayString() == "LMP.LmpSignatureAttribute");
-    if (hasAttr)
-        sigRef = sigType.Name.ToLowerInvariant();
-}
-```
-
-This duplicates a small amount of discovery logic, but it is unavoidable — generators are isolated by design.
-
-> **Junior Dev Note:** If you find yourself needing data that "only the other generator knows," step back. Both generators read the same Roslyn semantic model. Extract what you need directly from the symbol/attribute — don't try to chain generators.
+*Source: DSPy's [`dspy/signatures/signature.py`](https://github.com/stanfordnlp/dspy/blob/main/dspy/signatures/signature.py) and [`dspy/adapters/chat_adapter.py`](https://github.com/stanfordnlp/dspy/blob/main/dspy/adapters/chat_adapter.py).*
