@@ -2,6 +2,7 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <RootNamespace>LMP.Tests</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

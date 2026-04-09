@@ -91,6 +91,21 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
             ModuleEmitter.Emit(spc, model);
             ModuleJsonContextEmitter.Emit(spc, model);
         });
+
+        // Pipeline 4: ChainOfThought<TIn, TOut> usages → extended output types
+        // Scans for GenericNameSyntax nodes matching ChainOfThought<,>, resolves the
+        // TOut type argument, and emits {TOut}WithReasoning record + JsonContext.
+        var cotModels = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, ct) => ChainOfThoughtExtractor.IsCandidate(node, ct),
+                transform: static (ctx, ct) => ChainOfThoughtExtractor.Extract(ctx, ct))
+            .Where(static m => m is not null)
+            .Select(static (m, _) => m!)
+            .Collect()
+            .SelectMany(static (models, _) => DeduplicateByOutputType(models));
+
+        context.RegisterSourceOutput(cotModels, static (spc, model) =>
+            ChainOfThoughtEmitter.Emit(spc, model));
     }
 
     /// <summary>
@@ -132,6 +147,20 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
         {
             if (seen.Add(pair.OutputTypeFullyQualified))
                 yield return pair;
+        }
+    }
+
+    private static IEnumerable<ChainOfThoughtModel> DeduplicateByOutputType(
+        System.Collections.Immutable.ImmutableArray<ChainOfThoughtModel> models)
+    {
+        var seen = new HashSet<string>();
+        foreach (var model in models.OrderBy(m => m.OutputTypeName))
+        {
+            var key = string.IsNullOrEmpty(model.Namespace)
+                ? model.OutputTypeName
+                : $"{model.Namespace}.{model.OutputTypeName}";
+            if (seen.Add(key))
+                yield return model;
         }
     }
 }

@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 2.8 complete — 300 tests passing. Next: Phase 3 (Reasoning Modules).
+> **Status:** Phase 3.1 complete — 351 tests passing. Next: Phase 3.2 (BestOfN).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -30,11 +30,11 @@
 | `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
-| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :x: Not started (placeholder only) |
+| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.1 (ChainOfThought) complete |
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 275 tests passing (Phases 1–2.7) |
+| Test projects | `AGENTS.md` | :white_check_mark: 351 tests passing (Phases 1–3.1) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -627,12 +627,12 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Entry criteria:** Phase 2 complete; `PredictAsync` works; source generator emits PromptBuilder.
 
-### 3.1 — ChainOfThought\<TInput, TOutput\>
+### 3.1 — ChainOfThought\<TInput, TOutput\> ✅ COMPLETE
 
 **Spec:** `runtime-execution.md` §4.1, `source-generator.md` §6
 
 **Tasks:**
-- [ ] Extend source generator with CoT discovery pipeline per `source-generator.md` §2 line 93–99:
+- [x] Extend source generator with CoT discovery pipeline per `source-generator.md` §2 line 93–99:
   - `CreateSyntaxProvider` scanning for `ChainOfThought<TIn, TOut>` generic usages
   - Extract `TOut` type symbol from generic argument
   - Emit `{TypeName}WithReasoning` internal record:
@@ -640,15 +640,18 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
     - All original `TOutput` fields copied with their `[Description]` attributes
   - Emit corresponding `{TypeName}WithReasoningJsonContext : JsonSerializerContext`
   - Hint name: `{TypeName}.ChainOfThought.g.cs`
-- [ ] Implement `ChainOfThought<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
-  - Wraps inner `Predictor<TIn, {TOut}WithReasoning>`
-  - `PredictAsync` calls inner predictor, strips Reasoning, returns `TOut`
-  - Delegates `Instructions`, `Demos`, `Config`, `Name` to inner predictor
-  - Reasoning captured in trace via inner predictor's trace recording
-- [ ] Snapshot test: `ClassifyTicket` usage -> emits `ClassifyTicketWithReasoning` record + JsonContext
-- [ ] Unit test against `FakeChatClient`: output has Category+Urgency, reasoning in trace
+- [x] Implement `ChainOfThought<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
+  - Overrides `PredictAsync` to call `GetResponseAsync<ChainOfThoughtResult<TOutput>>`
+  - `ChainOfThoughtResult<TOutput>` generic wrapper has `Reasoning` + `Result` fields
+  - Inherits from `Predictor<TIn, TOut>` for IPredictor/GetPredictors compatibility
+  - Reasoning captured in trace via extended result recording
+  - Updated Pipeline 2 predicate to also match `ChainOfThought<,>` for PromptBuilder emission
+- [x] Snapshot test: `ClassifyTicket` usage -> emits `ClassifyTicketWithReasoning` record + JsonContext
+- [x] Unit test against `FakeChatClient`: output has Category+Urgency, reasoning in trace
 
-**Completion criteria:** `ChainOfThought<TicketInput, ClassifyTicket>` produces typed output; reasoning visible in trace entries.
+**Status:** ✅ Complete. 351 total tests pass (51 Abstractions + 35 Core + 19 Modules + 246 SourceGen). ChainOfThought uses generic `ChainOfThoughtResult<TOutput>` wrapper at runtime (nested JSON); source generator emits optimized flat `{TypeName}WithReasoning` record for compile-time usage.
+
+**Completion criteria:** ✅ `ChainOfThought<TicketInput, ClassifyTicket>` produces typed output; reasoning visible in trace entries.
 
 ### 3.2 — BestOfN\<TInput, TOutput\>
 

@@ -1,1 +1,1 @@
-// Placeholder — Phase 3 reasoning modules will be added here.
+// LMP.Modules — Reasoning strategy modules (ChainOfThought, BestOfN, Refine).
