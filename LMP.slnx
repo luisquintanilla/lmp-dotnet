@@ -19,6 +19,7 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/LMP.Samples.Middleware/LMP.Samples.Middleware.csproj" />
+    <Project Path="samples/LMP.Samples.MIPROv2/LMP.Samples.MIPROv2.csproj" />
     <Project Path="samples/LMP.Samples.TicketTriage/LMP.Samples.TicketTriage.csproj" />
   </Folder>
 </Solution>
