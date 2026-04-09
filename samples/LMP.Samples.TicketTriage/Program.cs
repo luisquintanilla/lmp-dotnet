@@ -109,8 +109,8 @@ var optimized = await optimizer.CompileAsync(module, trainSet, metric);
 var optimizedScore = await Evaluator.EvaluateAsync(optimized, devSet, metric);
 
 Console.WriteLine($"  Optimized average score: {optimizedScore.AverageScore:P1}");
-Console.WriteLine($"  Demos in _classify: {optimized.GetPredictors().First(p => p.Name == "_classify").Predictor.Demos.Count}");
-Console.WriteLine($"  Demos in _draft:    {optimized.GetPredictors().First(p => p.Name == "_draft").Predictor.Demos.Count}");
+Console.WriteLine($"  Demos in classify: {optimized.GetPredictors().First(p => p.Name == "classify").Predictor.Demos.Count}");
+Console.WriteLine($"  Demos in draft:    {optimized.GetPredictors().First(p => p.Name == "draft").Predictor.Demos.Count}");
 Console.WriteLine();
 
 // ── Step 6: Save and Load ───────────────────────────────────

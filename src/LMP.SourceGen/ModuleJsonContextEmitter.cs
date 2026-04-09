@@ -39,25 +39,18 @@ internal static class ModuleJsonContextEmitter
             sb.AppendLine();
         }
 
-        // Class declaration with attributes
+        // Static helper class with JsonSerializerOptions
         sb.AppendLine("[GeneratedCode(\"LMP.Generators\", \"1.0.0\")]");
-        sb.AppendLine("[JsonSourceGenerationOptions(");
-        sb.AppendLine("    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,");
-        sb.AppendLine("    WriteIndented = true,");
-        sb.AppendLine("    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]");
-
-        // Core state types
-        sb.AppendLine("[JsonSerializable(typeof(ModuleState))]");
-        sb.AppendLine("[JsonSerializable(typeof(PredictorState))]");
-        sb.AppendLine("[JsonSerializable(typeof(DemoEntry))]");
-
-        // Concrete predictor input/output types (deduplicated, sorted for determinism)
-        foreach (var fqn in GetUniquePredictorTypes(model))
-        {
-            sb.Append("[JsonSerializable(typeof(").Append(fqn).AppendLine("))]");
-        }
-
-        sb.Append("internal partial class ").Append(model.TypeName).AppendLine("JsonContext : JsonSerializerContext;");
+        sb.Append("internal static class ").Append(model.TypeName).AppendLine("JsonOptions");
+        sb.AppendLine("{");
+        sb.Append("    internal static readonly JsonSerializerOptions Instance = new(JsonSerializerDefaults.Web)");
+        sb.AppendLine();
+        sb.AppendLine("    {");
+        sb.AppendLine("        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,");
+        sb.AppendLine("        WriteIndented = true,");
+        sb.AppendLine("        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull");
+        sb.AppendLine("    };");
+        sb.AppendLine("}");
 
         return sb.ToString();
     }

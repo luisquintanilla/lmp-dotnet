@@ -142,10 +142,8 @@ public class ChainOfThoughtEmitterTests
         var model = CreateModel(typeName: "ClassifyTicket");
         var source = ChainOfThoughtEmitter.GenerateSource(model);
 
-        Assert.Contains("[JsonSerializable(typeof(ClassifyTicketWithReasoning))]", source);
-        Assert.Contains(
-            "internal partial class ClassifyTicketWithReasoningJsonContext : JsonSerializerContext;",
-            source);
+        Assert.Contains("internal static class ClassifyTicketWithReasoningJsonOptions", source);
+        Assert.Contains("JsonSerializerOptions Instance", source);
     }
 
     [Fact]
@@ -203,7 +201,7 @@ public class ChainOfThoughtEmitterTests
         var reasoningIndex = source.IndexOf("public required string Reasoning");
         var categoryIndex = source.IndexOf("public required string Category");
         var urgencyIndex = source.IndexOf("public required int Urgency");
-        var jsonCtxIndex = source.IndexOf("ClassifyTicketWithReasoningJsonContext");
+        var jsonCtxIndex = source.IndexOf("ClassifyTicketWithReasoningJsonOptions");
 
         Assert.True(nsIndex < recordIndex, "namespace before record");
         Assert.True(recordIndex < reasoningIndex, "record before Reasoning field");
@@ -257,8 +255,8 @@ public class ChainOfThoughtEmitterTests
             .First(s => s.HintName == "ClassifyTicket.ChainOfThought.g.cs");
         var generatedSource = cotFile.SourceText.ToString();
 
-        Assert.Contains("ClassifyTicketWithReasoningJsonContext", generatedSource);
-        Assert.Contains("JsonSerializerContext", generatedSource);
+        Assert.Contains("ClassifyTicketWithReasoningJsonOptions", generatedSource);
+        Assert.Contains("JsonSerializerOptions", generatedSource);
     }
 
     [Fact]

@@ -162,8 +162,8 @@ public class OutputTypeModelExtractionTests
         // JsonContext emitted for valid partial records
         Assert.Single(runResult.GeneratedTrees);
         var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
-        Assert.Contains("MyOutputJsonContext", generatedSource);
-        Assert.Contains("JsonSerializerContext", generatedSource);
+        Assert.Contains("MyOutputJsonOptions", generatedSource);
+        Assert.Contains("JsonSerializerOptions", generatedSource);
     }
 
     #endregion
@@ -416,7 +416,7 @@ public class OutputTypeModelExtractionTests
         var runResult = driver.GetRunResult();
         Assert.Single(runResult.GeneratedTrees);
         var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
-        Assert.Contains("MyTypeJsonContext", generatedSource);
+        Assert.Contains("MyTypeJsonOptions", generatedSource);
     }
 
     [Fact]

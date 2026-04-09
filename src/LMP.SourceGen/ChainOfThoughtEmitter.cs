@@ -23,6 +23,7 @@ internal static class ChainOfThoughtEmitter
         sb.AppendLine();
         sb.AppendLine("using System.CodeDom.Compiler;");
         sb.AppendLine("using System.ComponentModel;");
+        sb.AppendLine("using System.Text.Json;");
         sb.AppendLine("using System.Text.Json.Serialization;");
         sb.AppendLine();
 
@@ -70,10 +71,17 @@ internal static class ChainOfThoughtEmitter
         sb.AppendLine("}");
         sb.AppendLine();
 
-        // JsonContext for the extended type
+        // JsonSerializerOptions for the extended type
         sb.AppendLine("[GeneratedCode(\"LMP.Generators\", \"1.0.0\")]");
-        sb.Append("[JsonSerializable(typeof(").Append(model.OutputTypeName).AppendLine("WithReasoning))]");
-        sb.Append("internal partial class ").Append(model.OutputTypeName).AppendLine("WithReasoningJsonContext : JsonSerializerContext;");
+        sb.Append("internal static class ").Append(model.OutputTypeName).AppendLine("WithReasoningJsonOptions");
+        sb.AppendLine("{");
+        sb.Append("    internal static readonly JsonSerializerOptions Instance = new(JsonSerializerDefaults.Web)");
+        sb.AppendLine();
+        sb.AppendLine("    {");
+        sb.AppendLine("        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,");
+        sb.AppendLine("        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull");
+        sb.AppendLine("    };");
+        sb.AppendLine("}");
 
         return sb.ToString();
     }

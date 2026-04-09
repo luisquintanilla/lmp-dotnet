@@ -157,7 +157,7 @@ public class ModelExtractionTests
         // JsonContext is emitted for valid partial records
         Assert.Single(runResult.GeneratedTrees);
         var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
-        Assert.Contains("ClassifyTicketJsonContext", generatedSource);
+        Assert.Contains("ClassifyTicketJsonOptions", generatedSource);
     }
 
     [Fact]
@@ -218,7 +218,7 @@ public class ModelExtractionTests
         // JsonContext generated for the valid partial record only
         Assert.Single(runResult.GeneratedTrees);
         var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
-        Assert.Contains("ValidOutputJsonContext", generatedSource);
+        Assert.Contains("ValidOutputJsonOptions", generatedSource);
     }
 
     [Fact]

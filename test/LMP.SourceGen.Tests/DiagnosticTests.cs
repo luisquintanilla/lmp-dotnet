@@ -147,7 +147,7 @@ public class DiagnosticTests
         var runResult = driver.GetRunResult();
         Assert.Single(runResult.GeneratedTrees);
         var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
-        Assert.Contains("TestOutputJsonContext", generatedSource);
+        Assert.Contains("TestOutputJsonOptions", generatedSource);
     }
 
     [Fact]
@@ -594,8 +594,8 @@ public class DiagnosticTests
         var runResult = driver.GetRunResult();
         Assert.Single(runResult.GeneratedTrees);
         var generated = runResult.GeneratedTrees[0].GetText().ToString();
-        Assert.Contains("GoodOutputJsonContext", generated);
-        Assert.DoesNotContain("BadOutputJsonContext", generated);
+        Assert.Contains("GoodOutputJsonOptions", generated);
+        Assert.DoesNotContain("BadOutputJsonOptions", generated);
     }
 
     #endregion

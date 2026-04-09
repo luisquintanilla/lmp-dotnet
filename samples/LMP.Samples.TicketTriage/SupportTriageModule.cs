@@ -17,10 +17,8 @@ public partial class SupportTriageModule : LmpModule
     /// <param name="client">The chat client for LM calls.</param>
     public SupportTriageModule(IChatClient client)
     {
-        _classify = new Predictor<TicketInput, ClassifyTicket>(client);
-        _classify.Name = "_classify";
-        _draft = new Predictor<ClassifyTicket, DraftReply>(client);
-        _draft.Name = "_draft";
+        _classify = new Predictor<TicketInput, ClassifyTicket>(client) { Name = "classify" };
+        _draft = new Predictor<ClassifyTicket, DraftReply>(client) { Name = "draft" };
     }
 
     /// <inheritdoc />
@@ -46,27 +44,5 @@ public partial class SupportTriageModule : LmpModule
             cancellationToken: cancellationToken);
 
         return reply;
-    }
-
-    /// <inheritdoc />
-    public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()
-        => [("_classify", _classify), ("_draft", _draft)];
-
-    /// <inheritdoc />
-    protected override LmpModule CloneCore()
-    {
-        var clone = (SupportTriageModule)MemberwiseClone();
-
-        var classifyClone = (Predictor<TicketInput, ClassifyTicket>)_classify.Clone();
-        var draftClone = (Predictor<ClassifyTicket, DraftReply>)_draft.Clone();
-
-        typeof(SupportTriageModule)
-            .GetField("_classify", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-            .SetValue(clone, classifyClone);
-        typeof(SupportTriageModule)
-            .GetField("_draft", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-            .SetValue(clone, draftClone);
-
-        return clone;
     }
 }

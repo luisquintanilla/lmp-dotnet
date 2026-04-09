@@ -264,8 +264,8 @@ public class PredictMethodTests
             "Expected a .JsonContext.g.cs file to be generated");
 
         var generatedSource = jsonContextFile.SourceText.ToString();
-        Assert.Contains("global::TestApp.TicketInput", generatedSource);
-        Assert.Contains("global::TestApp.ClassifyTicket", generatedSource);
+        Assert.Contains("JsonSerializerOptions Instance", generatedSource);
+        Assert.Contains("WriteIndented = true", generatedSource);
     }
 
     #endregion

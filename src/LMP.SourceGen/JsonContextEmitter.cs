@@ -38,17 +38,19 @@ internal static class JsonContextEmitter
             sb.AppendLine();
         }
 
-        // Class declaration with attributes
+        // Static helper class with JsonSerializerOptions
         sb.AppendLine("[GeneratedCode(\"LMP.Generators\", \"1.0.0\")]");
-        sb.AppendLine("[JsonSourceGenerationOptions(");
-        sb.AppendLine("    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,");
-        sb.AppendLine("    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]");
-        sb.Append("[JsonSerializable(typeof(");
+        sb.Append("file static class ");
         sb.Append(model.TypeName);
-        sb.AppendLine("))]");
-        sb.Append("file partial class ");
-        sb.Append(model.TypeName);
-        sb.AppendLine("JsonContext : JsonSerializerContext;");
+        sb.AppendLine("JsonOptions");
+        sb.AppendLine("{");
+        sb.Append("    internal static readonly JsonSerializerOptions Instance = new(JsonSerializerDefaults.Web)");
+        sb.AppendLine();
+        sb.AppendLine("    {");
+        sb.AppendLine("        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,");
+        sb.AppendLine("        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull");
+        sb.AppendLine("    };");
+        sb.AppendLine("}");
 
         return sb.ToString();
     }

@@ -88,8 +88,8 @@ public class LmpSourceGeneratorTests
         // Generator should emit JsonContext for the valid partial record
         Assert.Single(runResult.GeneratedTrees);
         var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
-        Assert.Contains("TestOutputJsonContext", generatedSource);
-        Assert.Contains("JsonSerializerContext", generatedSource);
+        Assert.Contains("TestOutputJsonOptions", generatedSource);
+        Assert.Contains("JsonSerializerOptions", generatedSource);
     }
 
     private static CSharpCompilation CreateCompilation(string source)
