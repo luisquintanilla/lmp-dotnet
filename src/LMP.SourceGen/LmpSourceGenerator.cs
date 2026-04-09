@@ -65,6 +65,19 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
 
         context.RegisterSourceOutput(predictorPairs, static (spc, model) =>
             PromptBuilderEmitter.Emit(spc, model));
+
+        // Pipeline 3: LmpModule subclasses → GetPredictors() emission
+        // Scans for partial class declarations that derive from LmpModule,
+        // extracts Predictor<,> fields, and emits the GetPredictors() override.
+        var moduleModels = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, ct) => ModuleExtractor.IsCandidate(node, ct),
+                transform: static (ctx, ct) => ModuleExtractor.Extract(ctx, ct))
+            .Where(static m => m is not null)
+            .Select(static (m, _) => m!);
+
+        context.RegisterSourceOutput(moduleModels, static (spc, model) =>
+            ModuleEmitter.Emit(spc, model));
     }
 
     private static IEnumerable<PromptBuilderModel> DeduplicateByOutputType(

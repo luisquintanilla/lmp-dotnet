@@ -1,9 +1,9 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 2.4 complete — 160 tests passing. Next: Phase 2.5 (GetPredictors emission).
+> **Status:** Phase 2.5 complete — 183 tests passing. Next: Phase 2.6 (Diagnostics LMP001 and LMP002).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
-> **Last updated:** 2025-07-25
+> **Last updated:** 2026-04-09
 
 ---
 
@@ -29,12 +29,12 @@
 | Solution skeleton (sln, props, global.json) | `AGENTS.md` | :white_check_mark: Complete |
 | `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 1 shell complete (PredictAsync wired in Phase 2) |
-| `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :construction: Phase 2.4 complete (model extraction, PromptBuilder, JsonContext) |
+| `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :construction: Phase 2.5 complete (model extraction, PromptBuilder, JsonContext, GetPredictors) |
 | `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :x: Not started (placeholder only) |
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :x: Not started |
 | Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 160 tests passing (Phases 1–2.4) |
+| Test projects | `AGENTS.md` | :white_check_mark: 183 tests passing (Phases 1–2.5) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -482,25 +482,30 @@ Generate STJ source-gen context for structured output.
 
 **Completion criteria:** `dotnet build` produces `ClassifyTicket.JsonContext.g.cs`; STJ source gen picks it up.
 
-### 2.5 — GetPredictors() Emission
+### 2.5 — GetPredictors() Emission ✅ COMPLETE
 
 Generate predictor discovery on `LmpModule` subclasses.
 
 **Spec:** `source-generator.md` §5
 
 **Tasks:**
-- [ ] Implement module discovery pipeline using `CreateSyntaxProvider` (per **D9**):
-  - Predicate: `ClassDeclarationSyntax` with base type `LmpModule`
-  - Transform: walk all fields/properties, identify `Predictor<,>` or subclasses (ChainOfThought, BestOfN, etc.)
-  - Use `IsPredictorType()` helper walking base types to match `LMP.Predictor<TInput, TOutput>`
-- [ ] Create `ModuleModel` record: Namespace, TypeName, PredictorFields (EquatableArray)
-- [ ] Create `PredictorFieldModel`: FieldName, InputTypeFQN, OutputTypeFQN
-- [ ] Create `ModuleEmitter` that generates `partial class {ModuleName}`:
+- [x] Implement module discovery pipeline using `CreateSyntaxProvider` (per **D9**):
+  - Predicate: `ClassDeclarationSyntax` with base list and `partial` keyword
+  - Transform: validate `LmpModule` base type, walk all fields, identify `Predictor<,>` or subclasses
+  - Use `PredictorPairExtractor.IsPredictorType()` helper walking base types to match `LMP.Predictor<TInput, TOutput>`
+- [x] Create `ModuleModel` record: Namespace, TypeName, PredictorFields (EquatableArray)
+- [x] Create `PredictorFieldModel`: FieldName, InputTypeFQN, OutputTypeFQN
+- [x] Create `ModuleExtractor` with `IsCandidate` predicate and `Extract` transform
+- [x] Create `ModuleEmitter` that generates `partial class {ModuleName}`:
   - `public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()` (per **D3**)
   - Returns list of `(fieldName, fieldReference)` for each Predictor field
   - Strips `_` prefix from field names for the Name string
-- [ ] Hint name: `{ModuleName}.Predictors.g.cs`
-- [ ] Snapshot test: module with 2 predictor fields -> generated `GetPredictors()` returning both
+- [x] Hint name: `{ModuleName}.Predictors.g.cs`
+- [x] Wired Pipeline 3 in `LmpSourceGenerator` — scans partial class declarations for LmpModule subclasses
+- [x] Unit tests: 23 tests in `ModuleEmitterTests` — direct emitter tests (structure, syntax validity, field stripping, snapshot) + pipeline integration tests (module with fields, single field, non-module, empty module, non-partial module) + model equality tests
+- [x] Un-skipped 5 PromptBuilder pipeline tests from Phase 2.3 (now all passing with the pipeline wired)
+
+**Status:** ✅ Complete. 183 total tests pass (51 Abstractions + 16 Core + 116 SourceGen). Full end-to-end pipeline: `partial class : LmpModule` → `ModuleExtractor` → `ModuleEmitter` → emitted `{ModuleName}.Predictors.g.cs`. Predictor fields named with `_` prefix get the prefix stripped in the name string.
 
 **Completion criteria:** A module with `_classify` and `_draft` predictor fields gets a generated `GetPredictors()` returning `[("classify", _classify), ("draft", _draft)]`.
 

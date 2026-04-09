@@ -54,3 +54,20 @@ internal sealed record InputFieldModel(
     string Name,
     string ClrTypeName,
     string? Description);
+
+/// <summary>
+/// Extracted metadata for an <c>LmpModule</c> subclass.
+/// Flows through the incremental generator pipeline for <c>GetPredictors()</c> emission.
+/// </summary>
+internal sealed record ModuleModel(
+    string Namespace,
+    string TypeName,
+    EquatableArray<PredictorFieldModel> PredictorFields);
+
+/// <summary>
+/// Metadata for a single <c>Predictor&lt;,&gt;</c> field on an <c>LmpModule</c> subclass.
+/// </summary>
+internal sealed record PredictorFieldModel(
+    string FieldName,
+    string InputTypeFQN,
+    string OutputTypeFQN);
