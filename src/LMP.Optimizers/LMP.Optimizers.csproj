@@ -1,5 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <InternalsVisibleTo Include="LMP.Optimizers.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\LMP.Core\LMP.Core.csproj" />
   </ItemGroup>
 </Project>

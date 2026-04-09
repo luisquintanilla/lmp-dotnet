@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 4.3 complete — 513 tests passing. Next: Phase 4.4 (BootstrapRandomSearch).
+> **Status:** Phase 4.4 complete — 535 tests passing. Next: Phase 4.5 (SaveAsync / LoadAsync Round-Trip Integration).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -31,10 +31,10 @@
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
 | `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.3 (Refine) complete |
-| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :construction: Phase 4.3 complete (Evaluator, Clone, BootstrapFewShot) |
+| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :construction: Phase 4.4 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 513 tests passing (Phases 1–4.3) |
+| Test projects | `AGENTS.md` | :white_check_mark: 535 tests passing (Phases 1–4.4) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -782,7 +782,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 **Spec:** `compiler-optimizer.md` §5
 
 **Tasks:**
-- [ ] Implement `BootstrapRandomSearch : IOptimizer` in `LMP.Optimizers`:
+- [x] Implement `BootstrapRandomSearch : IOptimizer` in `LMP.Optimizers`:
   - Constructor: `(int numTrials = 8, int maxDemos = 4, float metricThreshold = 1.0f, int? seed = null)`
   - `CompileAsync<TModule>` algorithm:
     1. Split trainSet -> 80/20 (train/validation) using `seed` for determinism
@@ -791,8 +791,8 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
        b. `candidate = await BootstrapFewShot.CompileAsync(module.Clone(), shuffled, metric)`
     3. Evaluate all candidates on validation set via `Task.WhenAll(candidates.Select(c => Evaluator.EvaluateAsync(...)))`
     4. Return candidate with highest `AverageScore`
-- [ ] Integration test: N=3 trials returns the best-scoring candidate
-- [ ] Test deterministic seeding produces same result
+- [x] Integration test: N=3 trials returns the best-scoring candidate
+- [x] Test deterministic seeding produces same result
 
 **Completion criteria:** `BootstrapRandomSearch` runs N trials and returns the best module by evaluation score.
 
