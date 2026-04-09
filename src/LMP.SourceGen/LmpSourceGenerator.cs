@@ -35,10 +35,15 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
                     model.TypeKindDescription));
             });
 
-        // Valid output type models for code generation (Phase 2.3+)
+        // Valid output type models for code generation
         var outputModels = allTargets.Where(static m => m.IsPartialRecord);
 
-        // Code emission (PromptBuilder, JsonContext) will be registered here in Phase 2.3+
-        _ = outputModels;
+        // Emit PromptBuilder for models that have input type info resolved
+        context.RegisterSourceOutput(
+            outputModels.Where(static m => m.InputTypeName is not null),
+            static (spc, model) =>
+            {
+                PromptBuilderEmitter.Emit(spc, model);
+            });
     }
 }

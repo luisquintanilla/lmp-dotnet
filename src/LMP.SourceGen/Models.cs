@@ -20,7 +20,20 @@ internal sealed record OutputTypeModel(
     EquatableArray<OutputFieldModel> OutputFields,
     bool IsPartialRecord,
     string? TypeKindDescription,
-    LocationInfo Location);
+    LocationInfo Location)
+{
+    /// <summary>
+    /// Simple name of the input type (e.g. "TicketInput").
+    /// Null until Predictor&lt;TInput, TOutput&gt; discovery resolves the input type.
+    /// </summary>
+    public string? InputTypeName { get; init; }
+
+    /// <summary>
+    /// Fully qualified name of the input type (e.g. "global::Demo.TicketInput").
+    /// Null until Predictor&lt;TInput, TOutput&gt; discovery resolves the input type.
+    /// </summary>
+    public string? InputTypeFullyQualifiedName { get; init; }
+}
 
 /// <summary>
 /// Metadata for a single property on an <c>[LmpSignature]</c> output type.
