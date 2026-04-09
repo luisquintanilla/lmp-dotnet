@@ -27,8 +27,10 @@ internal static class ModuleExtractor
 
     /// <summary>
     /// Semantic transform: validates the class derives from <c>LmpModule</c>,
-    /// extracts all <c>Predictor&lt;,&gt;</c> fields, and returns a <see cref="ModuleModel"/>.
-    /// Returns null if the class is not an <c>LmpModule</c> subclass or has no predictor fields.
+    /// extracts all <c>Predictor&lt;,&gt;</c> fields and <c>[Predict]</c> partial methods,
+    /// and returns a <see cref="ModuleModel"/>.
+    /// Returns null if the class is not an <c>LmpModule</c> subclass or has no
+    /// predictor fields or [Predict] methods.
     /// </summary>
     public static ModuleModel? Extract(GeneratorSyntaxContext ctx, CancellationToken ct)
     {
@@ -45,6 +47,7 @@ internal static class ModuleExtractor
             return null;
 
         var predictorFields = new List<PredictorFieldModel>();
+        var predictMethods = new List<PredictMethodModel>();
         var seen = new HashSet<string>();
 
         // Walk fields (e.g., private readonly Predictor<TIn,TOut> _classify)
@@ -67,7 +70,14 @@ internal static class ModuleExtractor
                 isProperty: true, isReadOnly: propIsReadOnly);
         }
 
-        if (predictorFields.Count == 0)
+        // Walk methods for [Predict]-decorated partial methods
+        foreach (var member in typeSymbol.GetMembers().OfType<IMethodSymbol>())
+        {
+            ct.ThrowIfCancellationRequested();
+            TryAddPredictMethod(member, predictMethods);
+        }
+
+        if (predictorFields.Count == 0 && predictMethods.Count == 0)
             return null;
 
         var ns = typeSymbol.ContainingNamespace.IsGlobalNamespace
@@ -78,7 +88,9 @@ internal static class ModuleExtractor
             Namespace: ns,
             TypeName: typeSymbol.Name,
             PredictorFields: new EquatableArray<PredictorFieldModel>(
-                predictorFields.ToImmutableArray()));
+                predictorFields.ToImmutableArray()),
+            PredictMethods: new EquatableArray<PredictMethodModel>(
+                predictMethods.ToImmutableArray()));
     }
 
     private static void TryAddPredictor(
@@ -117,6 +129,50 @@ internal static class ModuleExtractor
             FieldTypeFQN: fieldTypeFQN,
             CanAssignDirectly: canAssignDirectly,
             UnsafeAccessorFieldName: unsafeAccessorFieldName));
+    }
+
+    /// <summary>
+    /// Checks if a method has <c>[Predict]</c> attribute and is a valid partial method,
+    /// then adds it to the predict methods list.
+    /// </summary>
+    private static void TryAddPredictMethod(
+        IMethodSymbol method,
+        List<PredictMethodModel> predictMethods)
+    {
+        // Must have [Predict] attribute
+        if (!method.GetAttributes().Any(a =>
+            a.AttributeClass?.Name == "PredictAttribute" &&
+            a.AttributeClass.ContainingNamespace?.ToDisplayString() == "LMP"))
+            return;
+
+        // Must be partial
+        if (!method.IsPartialDefinition)
+            return;
+
+        // Must return Task<T>
+        if (method.ReturnType is not INamedTypeSymbol returnType ||
+            !returnType.IsGenericType ||
+            returnType.OriginalDefinition.ToDisplayString() != "System.Threading.Tasks.Task<TResult>")
+            return;
+
+        // Extract TOutput from Task<TOutput>
+        var outputType = returnType.TypeArguments[0] as INamedTypeSymbol;
+        if (outputType is null)
+            return;
+
+        // Must have exactly one parameter (TInput)
+        if (method.Parameters.Length != 1)
+            return;
+
+        var inputType = method.Parameters[0].Type as INamedTypeSymbol;
+        if (inputType is null)
+            return;
+
+        predictMethods.Add(new PredictMethodModel(
+            MethodName: method.Name,
+            InputTypeFQN: inputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            OutputTypeFQN: outputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            InputParameterName: method.Parameters[0].Name));
     }
 
     /// <summary>

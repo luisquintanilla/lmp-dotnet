@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.AI;
 
 namespace LMP;
 
@@ -8,6 +9,14 @@ namespace LMP;
 /// </summary>
 public abstract class LmpModule
 {
+    /// <summary>
+    /// The chat client used by <see cref="PredictAttribute"/>-decorated partial methods.
+    /// Set this property in your constructor before calling any <c>[Predict]</c> methods.
+    /// The source generator creates backing <see cref="Predictor{TInput, TOutput}"/> fields
+    /// that are lazily initialized from this client.
+    /// </summary>
+    protected IChatClient? Client { get; set; }
+
     /// <summary>
     /// Active trace for recording predictor invocations during execution.
     /// Set by optimizers before running training examples.

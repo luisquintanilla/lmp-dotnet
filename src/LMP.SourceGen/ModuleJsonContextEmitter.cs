@@ -74,8 +74,8 @@ internal static class ModuleJsonContextEmitter
     }
 
     /// <summary>
-    /// Collects all unique input/output types across all predictor fields,
-    /// sorted for deterministic output.
+    /// Collects all unique input/output types across all predictor fields
+    /// and [Predict] methods, sorted for deterministic output.
     /// </summary>
     private static IEnumerable<string> GetUniquePredictorTypes(ModuleModel model)
     {
@@ -85,6 +85,12 @@ internal static class ModuleJsonContextEmitter
         {
             seen.Add(field.InputTypeFQN);
             seen.Add(field.OutputTypeFQN);
+        }
+
+        foreach (var pm in model.PredictMethods)
+        {
+            seen.Add(pm.InputTypeFQN);
+            seen.Add(pm.OutputTypeFQN);
         }
 
         return seen.OrderBy(t => t);

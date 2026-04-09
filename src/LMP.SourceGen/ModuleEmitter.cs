@@ -27,6 +27,7 @@ internal static class ModuleEmitter
         sb.AppendLine("using System.CodeDom.Compiler;");
         sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine("using System.Runtime.CompilerServices;");
+        sb.AppendLine("using System.Threading.Tasks;");
         sb.AppendLine("using LMP;");
         sb.AppendLine();
 
@@ -41,6 +42,15 @@ internal static class ModuleEmitter
         sb.AppendLine("[GeneratedCode(\"LMP.Generators\", \"1.0.0\")]");
         sb.Append("partial class ").AppendLine(model.TypeName);
         sb.AppendLine("{");
+
+        // [Predict] backing fields
+        if (model.PredictMethods.Count > 0)
+        {
+            EmitPredictBackingFields(sb, model);
+            sb.AppendLine();
+            EmitPredictMethodBodies(sb, model);
+            sb.AppendLine();
+        }
 
         EmitGetPredictors(sb, model);
         sb.AppendLine();
@@ -66,17 +76,67 @@ internal static class ModuleEmitter
     private static void EmitGetPredictors(StringBuilder sb, ModuleModel model)
     {
         sb.AppendLine("    public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()");
-        sb.AppendLine("        =>");
+        sb.AppendLine("    {");
+
+        // Ensure [Predict] backing fields are initialized
+        foreach (var pm in model.PredictMethods)
+        {
+            var backingField = PredictBackingFieldName(pm.MethodName);
+            sb.Append("        ").Append(backingField)
+              .Append(" ??= new global::LMP.Predictor<").Append(pm.InputTypeFQN)
+              .Append(", ").Append(pm.OutputTypeFQN)
+              .AppendLine(">(Client ?? throw new global::System.InvalidOperationException(\"Set Client before calling GetPredictors().\"));");
+        }
+
+        sb.AppendLine("        return");
         sb.AppendLine("        [");
 
-        for (int i = 0; i < model.PredictorFields.Count; i++)
+        foreach (var field in model.PredictorFields)
         {
-            var field = model.PredictorFields[i];
             var name = StripUnderscorePrefix(field.FieldName);
             sb.Append("            (\"").Append(name).Append("\", ").Append(field.FieldName).AppendLine("),");
         }
 
+        foreach (var pm in model.PredictMethods)
+        {
+            var backingField = PredictBackingFieldName(pm.MethodName);
+            sb.Append("            (\"").Append(pm.MethodName).Append("\", ").Append(backingField).AppendLine("),");
+        }
+
         sb.AppendLine("        ];");
+        sb.AppendLine("    }");
+    }
+
+    private static void EmitPredictBackingFields(StringBuilder sb, ModuleModel model)
+    {
+        foreach (var pm in model.PredictMethods)
+        {
+            var backingField = PredictBackingFieldName(pm.MethodName);
+            sb.Append("    private global::LMP.Predictor<").Append(pm.InputTypeFQN)
+              .Append(", ").Append(pm.OutputTypeFQN).Append(">? ")
+              .Append(backingField).AppendLine(";");
+        }
+    }
+
+    private static void EmitPredictMethodBodies(StringBuilder sb, ModuleModel model)
+    {
+        foreach (var pm in model.PredictMethods)
+        {
+            var backingField = PredictBackingFieldName(pm.MethodName);
+            sb.Append("    public partial async Task<").Append(pm.OutputTypeFQN).Append("> ")
+              .Append(pm.MethodName).Append("(").Append(pm.InputTypeFQN)
+              .Append(" ").Append(pm.InputParameterName).AppendLine(")");
+            sb.AppendLine("    {");
+            sb.Append("        ").Append(backingField)
+              .Append(" ??= new global::LMP.Predictor<").Append(pm.InputTypeFQN)
+              .Append(", ").Append(pm.OutputTypeFQN)
+              .AppendLine(">(Client ?? throw new global::System.InvalidOperationException(\"Set Client before calling [Predict] methods.\"));");
+            sb.Append("        return await ").Append(backingField)
+              .Append(".PredictAsync(").Append(pm.InputParameterName)
+              .AppendLine(", Trace);");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+        }
     }
 
     private static void EmitCloneCore(StringBuilder sb, ModuleModel model)
@@ -104,6 +164,17 @@ internal static class ModuleEmitter
                   .Append(typeFqn).Append(")((global::LMP.IPredictor)")
                   .Append(field.FieldName).AppendLine(").Clone();");
             }
+        }
+
+        // Clone [Predict] backing fields
+        foreach (var pm in model.PredictMethods)
+        {
+            var backingField = PredictBackingFieldName(pm.MethodName);
+            sb.Append("        if (").Append(backingField).AppendLine(" is not null)");
+            sb.Append("            clone.").Append(backingField)
+              .Append(" = (global::LMP.Predictor<").Append(pm.InputTypeFQN)
+              .Append(", ").Append(pm.OutputTypeFQN).Append(">)((global::LMP.IPredictor)")
+              .Append(backingField).AppendLine(").Clone();");
         }
 
         sb.AppendLine("        return clone;");
@@ -156,5 +227,14 @@ internal static class ModuleEmitter
     private static string SanitizeForIdentifier(string name)
     {
         return name.Replace('<', '_').Replace('>', '_');
+    }
+
+    /// <summary>
+    /// Generates the backing field name for a [Predict] method.
+    /// E.g., <c>ClassifyAsync</c> → <c>__predict_ClassifyAsync</c>.
+    /// </summary>
+    private static string PredictBackingFieldName(string methodName)
+    {
+        return "__predict_" + methodName;
     }
 }

@@ -60,11 +60,28 @@ internal sealed record InputFieldModel(
 /// <summary>
 /// Extracted metadata for an <c>LmpModule</c> subclass.
 /// Flows through the incremental generator pipeline for <c>GetPredictors()</c> emission.
+/// Includes both explicit <c>Predictor&lt;,&gt;</c> fields and <c>[Predict]</c> partial methods.
 /// </summary>
 internal sealed record ModuleModel(
     string Namespace,
     string TypeName,
-    EquatableArray<PredictorFieldModel> PredictorFields);
+    EquatableArray<PredictorFieldModel> PredictorFields,
+    EquatableArray<PredictMethodModel> PredictMethods)
+{
+    /// <summary>
+    /// Initializes a <see cref="ModuleModel"/> with no <c>[Predict]</c> methods
+    /// (backwards-compatible with existing callers).
+    /// </summary>
+    public ModuleModel(
+        string Namespace,
+        string TypeName,
+        EquatableArray<PredictorFieldModel> PredictorFields)
+        : this(Namespace, TypeName, PredictorFields,
+               new EquatableArray<PredictMethodModel>(
+                   System.Collections.Immutable.ImmutableArray<PredictMethodModel>.Empty))
+    {
+    }
+}
 
 /// <summary>
 /// Metadata for a single <c>Predictor&lt;,&gt;</c> field on an <c>LmpModule</c> subclass.
@@ -76,3 +93,14 @@ internal sealed record PredictorFieldModel(
     string FieldTypeFQN = "object",
     bool CanAssignDirectly = true,
     string? UnsafeAccessorFieldName = null);
+
+/// <summary>
+/// Metadata for a <c>[Predict]</c>-decorated partial method on an <c>LmpModule</c> subclass.
+/// The source generator emits a backing <c>Predictor&lt;TInput, TOutput&gt;</c> field and
+/// the partial method body that delegates to the predictor.
+/// </summary>
+internal sealed record PredictMethodModel(
+    string MethodName,
+    string InputTypeFQN,
+    string OutputTypeFQN,
+    string InputParameterName);

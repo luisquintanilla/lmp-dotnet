@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 in progress — 778 tests passing. Next: `[Predict]` partial method sugar or C# 14 interceptors.
+> **Status:** Phase 8 in progress — 796 tests passing. Next: C# 14 interceptors.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -979,7 +979,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 **Entry criteria:** Phase 2 complete; C# 14 interceptor feature available.
 
 - [ ] C# 14 interceptors for zero-dispatch `PredictAsync` optimization
-- [ ] `[Predict]` partial method sugar — source gen emits method body
+- [x] `[Predict]` partial method sugar — source gen emits method body
 - [x] `ProgramOfThought<TIn, TOut>` — LM generates C# code -> Roslyn scripting executes -> structured result
 
 **Implementation notes (ProgramOfThought):**
@@ -992,6 +992,16 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 - JSON round-trip conversion for structural type matching (anonymous types → TOutput)
 - Added `Microsoft.CodeAnalysis.CSharp.Scripting` 5.3.0 dependency to LMP.Modules
 - 22 new tests: constructor, ExecuteCodeAsync (arithmetic, Linq, Fibonacci, Input globals, compilation/runtime errors, null, timeout), PredictAsync E2E (success, trace, input access, retry, max retries, validation), Clone, serialization
+
+**Implementation notes ([Predict] partial method sugar):**
+- `PredictAttribute` in `LMP.Abstractions` — `[AttributeUsage(AttributeTargets.Method)]` marker attribute
+- `LmpModule.Client` — new `protected IChatClient?` property for [Predict] backing fields to bind to
+- `ModuleExtractor` extended to discover `[Predict]` partial methods (checks: has [Predict], is partial definition, returns Task<T>, single parameter)
+- `PredictMethodModel` record: `MethodName`, `InputTypeFQN`, `OutputTypeFQN`, `InputParameterName`
+- `ModuleModel` extended with `PredictMethods` collection (backwards-compatible with existing callers)
+- `ModuleEmitter` emits: (1) `__predict_{Method}` nullable backing fields, (2) partial method bodies with lazy initialization from Client, (3) backing fields included in GetPredictors(), (4) CloneCore handles nullable [Predict] fields
+- `ModuleJsonContextEmitter` includes [Predict] method types in JsonContext
+- 18 new tests: direct emitter (backing fields, method bodies, GetPredictors, mixed, clone, parameter names, no-predict), pipeline integration (single, multiple, mixed, non-partial, JsonContext), attribute usage
 
 ---
 
@@ -1006,7 +1016,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 | **P1** | Phase 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface area | ✅ Complete |
 | **P2** | Phase 6: Advanced Optimization (MIPROv2) | Complex | Bayesian search backend / TPE sampler | ✅ Complete |
 | **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | ✅ Complete |
-| **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | ProgramOfThought ✅ |
+| **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | ProgramOfThought ✅, [Predict] ✅, Interceptors pending |
 
 ---
 
