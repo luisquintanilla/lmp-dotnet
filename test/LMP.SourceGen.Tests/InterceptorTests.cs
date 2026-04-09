@@ -495,6 +495,17 @@ public class InterceptorTests
             s => s.HintName == "LmpInterceptors.g.cs");
     }
 
+    [Fact]
+    public void Pipeline_InterceptorsNotEmitted_WhenOptInMissing()
+    {
+        // Valid PredictAsync call but LMP_INTERCEPTORS not defined — should NOT emit interceptors
+        var source = GetInterceptorPipelineSource();
+        var (_, runResult) = RunGenerator(source, enableInterceptors: false);
+
+        Assert.DoesNotContain(runResult.Results[0].GeneratedSources,
+            s => s.HintName == "LmpInterceptors.g.cs");
+    }
+
     #endregion
 
     #region Helpers
@@ -579,23 +590,32 @@ public class InterceptorTests
         }
         """;
 
-    private static (Diagnostic[] Diagnostics, GeneratorDriverRunResult RunResult) RunGenerator(string source)
+    private static (Diagnostic[] Diagnostics, GeneratorDriverRunResult RunResult) RunGenerator(
+        string source, bool enableInterceptors = true)
     {
-        var compilation = CreateCompilation(source);
+        var parseOptions = CSharpParseOptions.Default;
+        if (enableInterceptors)
+            parseOptions = parseOptions.WithPreprocessorSymbols("LMP_INTERCEPTORS");
 
-        var generator = new LmpSourceGenerator();
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+        var compilation = CreateCompilation(source, parseOptions);
+
+        var generator = new LmpSourceGenerator().AsSourceGenerator();
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(
+            generators: [generator],
+            parseOptions: parseOptions);
         driver = driver.RunGeneratorsAndUpdateCompilation(
             compilation, out _, out var diagnostics);
 
         return (diagnostics.ToArray(), driver.GetRunResult());
     }
 
-    private static CSharpCompilation CreateCompilation(string source)
+    private static CSharpCompilation CreateCompilation(string source, CSharpParseOptions? parseOptions = null)
     {
+        parseOptions ??= CSharpParseOptions.Default;
+
         var syntaxTrees = string.IsNullOrWhiteSpace(source)
             ? System.Array.Empty<SyntaxTree>()
-            : new[] { CSharpSyntaxTree.ParseText(source) };
+            : new[] { CSharpSyntaxTree.ParseText(source, parseOptions) };
 
         return CSharpCompilation.Create(
             "TestAssembly",

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace LMP.SourceGen;
@@ -119,8 +120,19 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
             .Select(static (m, _) => m!)
             .Collect();
 
-        context.RegisterSourceOutput(interceptorCallSites, static (spc, callSites) =>
-            InterceptorEmitter.Emit(spc, callSites));
+        // Only emit interceptors when the consumer opts in via LMP_INTERCEPTORS define constant.
+        // Consumer must also set <InterceptorsNamespaces>$(InterceptorsNamespaces);LMP.Generated</InterceptorsNamespaces>.
+        var interceptorPipeline = interceptorCallSites.Combine(context.ParseOptionsProvider);
+
+        context.RegisterSourceOutput(interceptorPipeline, static (spc, combined) =>
+        {
+            var (callSites, parseOptions) = combined;
+            if (parseOptions is CSharpParseOptions csOptions &&
+                csOptions.PreprocessorSymbolNames.Contains("LMP_INTERCEPTORS"))
+            {
+                InterceptorEmitter.Emit(spc, callSites);
+            }
+        });
     }
 
     /// <summary>

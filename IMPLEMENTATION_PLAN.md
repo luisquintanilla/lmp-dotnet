@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 complete — 822 tests passing. All phases done.
+> **Status:** Phase 8 complete — 852 tests passing. All phases done.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -1010,12 +1010,15 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 - Uses Roslyn `SemanticModel.GetInterceptableLocation()` API (Roslyn 5.3.0) for location encoding
 - `InterceptorCallSiteModel` record stores location version/data, type FQNs, display location
 - `InterceptorEmitter` groups call sites by (InputType, OutputType) — shared interceptor method per type pair
-- Each interceptor: (1) wires PromptBuilder via `SetPromptBuilder()`, (2) delegates to original `PredictAsync`
-- `Predictor<TIn,TOut>.SetPromptBuilder()` — new `[EditorBrowsable(Never)]` public method, no-op if already set
+- **True zero-dispatch inlining**: interceptors inline entire PredictAsync logic (PromptBuilder.BuildMessages, GetResponseAsync<T>, retry loop, trace)
+- Derived type guard: `if (self.GetType() != typeof(Predictor<TIn,TOut>))` falls back to virtual dispatch for ChainOfThought etc.
 - PromptBuilder changed from `file static class` to `internal static class` for cross-file access by interceptors
 - PromptBuilder gets 4-param `BuildMessages(instructions, input, demos, lastError)` overload matching `MessageBuilder` delegate
+- `Predictor<TIn,TOut>.Client` — new public property exposing `IChatClient` for interceptor use
 - File-local `InterceptsLocationAttribute` declaration in generated code (recommended pattern)
-- `InterceptorsNamespaces` configured in `Directory.Build.props` for `LMP.Generated` namespace
+- **Opt-in**: consumer must define `LMP_INTERCEPTORS` constant and `<InterceptorsNamespaces>$(InterceptorsNamespaces);LMP.Generated</InterceptorsNamespaces>`
+- Pipeline checks `CSharpParseOptions.PreprocessorSymbolNames` for `LMP_INTERCEPTORS` before emitting
+- 30 tests: emitter (empty, header, usings, attribute, signature, guard, PromptBuilder, client, trace, retry, null check, grouping, syntax, instructions), extractor predicates, pipeline (valid, inlined logic, guard, no call, multi-call, no signature, opt-in)
 - 20 new tests: emitter (empty, header, usings, attribute declaration, class shape, location attributes, method signature, wiring order, grouping, separate types, global namespace, generated code attribute), extractor (non-invocation, PredictAsync match, other methods, static calls), PromptBuilder 4-param (overload shape, lastError handling, delegation)
 
 ---
