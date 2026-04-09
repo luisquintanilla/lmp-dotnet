@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>LMP.Samples.Middleware</RootNamespace>
+    <UserSecretsId>b8e2a1d4-7f3c-4e9a-b5d6-middleware-demo</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,6 +14,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Azure OpenAI + managed identity -->
+    <PackageReference Include="Azure.AI.OpenAI" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
     <!-- M.E.AI middleware pipeline -->
     <PackageReference Include="Microsoft.Extensions.AI" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" />
