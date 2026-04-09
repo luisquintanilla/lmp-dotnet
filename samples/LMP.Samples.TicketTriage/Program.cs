@@ -77,12 +77,37 @@ var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
 
 Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
 {
-    // Simple metric: does the reply mention the expected category keyword?
-    var keywords = ExtractKeywords(label.ReplyText);
-    var matchCount = keywords.Count(kw =>
-        prediction.ReplyText.Contains(kw, StringComparison.OrdinalIgnoreCase));
+    // Structured rubric metric (3 dimensions, each 0–1):
+    //   1. Category detection: does the reply address the same topic?
+    //   2. Keyword coverage: does it include relevant terms from expected reply?
+    //   3. Professional tone: does it open with an appropriate greeting?
 
-    return keywords.Length > 0 ? (float)matchCount / keywords.Length : 0f;
+    float score = 0f;
+
+    // Dimension 1: Category detection via key phrases (0.4 weight)
+    var categoryPhrases = new[] { "billing", "technical", "account", "security", "feature" };
+    var expectedCategory = categoryPhrases.FirstOrDefault(c =>
+        label.ReplyText.Contains(c, StringComparison.OrdinalIgnoreCase)) ?? "";
+    if (!string.IsNullOrEmpty(expectedCategory) &&
+        prediction.ReplyText.Contains(expectedCategory, StringComparison.OrdinalIgnoreCase))
+        score += 0.4f;
+
+    // Dimension 2: Keyword overlap (0.4 weight)
+    var keywords = ExtractKeywords(label.ReplyText);
+    if (keywords.Length > 0)
+    {
+        var matchCount = keywords.Count(kw =>
+            prediction.ReplyText.Contains(kw, StringComparison.OrdinalIgnoreCase));
+        score += 0.4f * matchCount / keywords.Length;
+    }
+
+    // Dimension 3: Professional tone — opens with appropriate greeting (0.2 weight)
+    if (prediction.ReplyText.StartsWith("Thank you", StringComparison.OrdinalIgnoreCase) ||
+        prediction.ReplyText.StartsWith("We sincerely", StringComparison.OrdinalIgnoreCase) ||
+        prediction.ReplyText.StartsWith("We apologize", StringComparison.OrdinalIgnoreCase))
+        score += 0.2f;
+
+    return score;
 };
 
 var baseline = await Evaluator.EvaluateAsync(module, devSet, metric);
@@ -93,16 +118,16 @@ Console.WriteLine($"  Min score:     {baseline.MinScore:P1}");
 Console.WriteLine($"  Max score:     {baseline.MaxScore:P1}");
 Console.WriteLine();
 
-// ── Step 5: Optimize with BootstrapFewShot ──────────────────
-Console.WriteLine("Step 5: Optimize with BootstrapFewShot");
-Console.WriteLine("──────────────────────────────────────");
+// ── Step 5: Optimize with BootstrapRandomSearch ─────────────
+Console.WriteLine("Step 5: Optimize with BootstrapRandomSearch (8 trials)");
+Console.WriteLine("──────────────────────────────────────────────────────");
 
 var trainSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
     Path.Combine(dataDir, "train.jsonl"));
 
 // Wrap the typed metric for the optimizer (which uses the untyped signature)
 var untypedMetric = Metric.Create(metric);
-var optimizer = new BootstrapFewShot(maxDemos: 3, metricThreshold: 0.3f);
+var optimizer = new BootstrapRandomSearch(numTrials: 8, maxDemos: 4, metricThreshold: 0.3f);
 var optimized = await optimizer.CompileAsync(module, trainSet, untypedMetric);
 
 var optimizedScore = await Evaluator.EvaluateAsync(optimized, devSet, metric);
