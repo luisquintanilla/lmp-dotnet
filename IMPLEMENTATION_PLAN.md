@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 4.6 complete — 593 tests passing. Next: Phase 5.1 (ReActAgent).
+> **Status:** Phase 5.1 complete — 619 tests passing. Next: Phase 5.2 (RAG Composition Example).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -30,11 +30,11 @@
 | `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
-| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.3 (Refine) complete |
+| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 5.1 complete (ChainOfThought, BestOfN, Refine, ReActAgent) |
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :white_check_mark: Phase 4.4 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :white_check_mark: Complete (Phase 4.5) |
-| Test projects | `AGENTS.md` | :white_check_mark: 575 tests passing (Phases 1–4.5) |
+| Test projects | `AGENTS.md` | :white_check_mark: 619 tests passing (Phases 1–5.1) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -847,23 +847,26 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Entry criteria:** Phase 2 complete; M.E.AI `AIFunction` / `FunctionInvokingChatClient` available.
 
-### 5.1 — ReActAgent\<TInput, TOutput\>
+### 5.1 — ReActAgent\<TInput, TOutput\> ✅ COMPLETE
 
 **Spec:** `runtime-execution.md` §5
 
 **Tasks:**
-- [ ] Implement `ReActAgent<TIn, TOut>` in `LMP.Modules`:
-  - Constructor: `(IChatClient client, IList<AIFunction> tools, int maxSteps = 10)`
+- [x] Implement `ReActAgent<TIn, TOut>` in `LMP.Modules`:
+  - Constructor: `(IChatClient client, IEnumerable<AIFunction> tools, int maxSteps = 5)`
   - Wraps client with `ChatClientBuilder(client).UseFunctionInvocation().Build()` for automatic tool dispatch
-  - `PredictAsync(TInput input, CancellationToken ct)`:
-    - Build messages: System = instructions, User = `FormatInput(input)`
-    - Set `ChatOptions.Tools = [.. _tools]`
-    - Call `_client.GetResponseAsync<TOutput>(messages, options, ct)` — M.E.AI handles Think -> Act -> Observe internally
-    - Record trace of final (input, output)
-  - Expose `Instructions`, `Config` for optimizer access
-  - Implements `IPredictor` so it's discoverable by `GetPredictors()`
-- [ ] Integration test with mock tools (via `AIFunctionFactory.Create`): agent calls tool, returns typed result
-- [ ] Verify agent is optimizable: discoverable by `GetPredictors()`, demos fillable
+  - Overrides `PredictAsync` to set `ChatOptions.Tools = [.. _tools]` and call wrapped client
+  - Calls `_wrappedClient.GetResponseAsync<TOutput>(messages, options, ct)` — M.E.AI handles Think -> Act -> Observe internally
+  - Records trace of final (input, output) pair
+  - Exposes `Instructions`, `Config`, `Demos` for optimizer access
+  - Implements `IPredictor` via `Predictor<TIn,TOut>` base — discoverable by `GetPredictors()`
+  - `Clone()` produces independent copy with shared tools and client
+- [x] Integration test with mock tools (via `AIFunctionFactory.Create`): agent calls tool, returns typed result
+  - `ToolCallFakeChatClient` simulates function-calling protocol with `FunctionCallContent`
+  - Tests single tool call, multiple sequential tool calls, trace recording with tools
+- [x] Verify agent is optimizable: discoverable by `GetPredictors()`, demos fillable via `AddDemo`
+  - 26 tests covering: constructor validation, basic prediction, trace recording, validation/retry,
+    IPredictor interface, Clone, GetState/LoadState, tool exposure, integration with tool calling
 
 **Completion criteria:** `ReActAgent` executes Think -> Act -> Observe loop with >=1 tool call.
 
