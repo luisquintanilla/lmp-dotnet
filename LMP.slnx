@@ -18,6 +18,7 @@
     <Project Path="test/LMP.SourceGen.Tests/LMP.SourceGen.Tests.csproj" />
   </Folder>
   <Folder Name="/samples/">
+    <Project Path="samples/LMP.Samples.Middleware/LMP.Samples.Middleware.csproj" />
     <Project Path="samples/LMP.Samples.TicketTriage/LMP.Samples.TicketTriage.csproj" />
   </Folder>
 </Solution>

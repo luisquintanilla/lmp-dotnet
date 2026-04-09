@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LMP.Samples.Middleware</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LMP.Modules\LMP.Modules.csproj" />
+    <ProjectReference Include="..\..\src\LMP.Optimizers\LMP.Optimizers.csproj" />
+    <ProjectReference Include="..\..\src\LMP.SourceGen\LMP.SourceGen.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- M.E.AI middleware pipeline -->
+    <PackageReference Include="Microsoft.Extensions.AI" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

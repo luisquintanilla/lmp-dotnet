@@ -167,4 +167,87 @@ public class MetricTests
         Assert.Equal(1f, metric(example, new RichOutput("Paris", 0.9f, "r")));
         Assert.Equal(0f, metric(example, new RichOutput("London", 0.9f, "r")));
     }
+
+    // ── Async metric tests ──────────────────────────────────
+
+    [Fact]
+    public async Task CreateAsync_Float_ReturnsScore()
+    {
+        var metric = Metric.CreateAsync<TestOutput, TestOutput>(
+            (predicted, expected) => Task.FromResult(
+                predicted.Answer == expected.Answer ? 1f : 0f));
+
+        var example = new Example<string, TestOutput>("q", new TestOutput("yes", 5));
+        var score = await metric(example, new TestOutput("yes", 5));
+
+        Assert.Equal(1f, score);
+    }
+
+    [Fact]
+    public async Task CreateAsync_Float_Mismatch()
+    {
+        var metric = Metric.CreateAsync<TestOutput, TestOutput>(
+            (predicted, expected) => Task.FromResult(
+                predicted.Answer == expected.Answer ? 1f : 0f));
+
+        var example = new Example<string, TestOutput>("q", new TestOutput("yes", 5));
+        var score = await metric(example, new TestOutput("no", 5));
+
+        Assert.Equal(0f, score);
+    }
+
+    [Fact]
+    public async Task CreateAsync_Bool_TrueMapsToOne()
+    {
+        var metric = Metric.CreateAsync<TestOutput, TestOutput>(
+            (predicted, expected) => Task.FromResult(
+                predicted.Answer == expected.Answer));
+
+        var example = new Example<string, TestOutput>("q", new TestOutput("yes", 5));
+        var score = await metric(example, new TestOutput("yes", 99));
+
+        Assert.Equal(1f, score);
+    }
+
+    [Fact]
+    public async Task CreateAsync_Bool_FalseMapsToZero()
+    {
+        var metric = Metric.CreateAsync<TestOutput, TestOutput>(
+            (predicted, expected) => Task.FromResult(
+                predicted.Answer == expected.Answer));
+
+        var example = new Example<string, TestOutput>("q", new TestOutput("yes", 5));
+        var score = await metric(example, new TestOutput("no", 5));
+
+        Assert.Equal(0f, score);
+    }
+
+    [Fact]
+    public void CreateAsync_Float_ThrowsOnNull()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            Metric.CreateAsync<TestOutput, TestOutput>(
+                (Func<TestOutput, TestOutput, Task<float>>)null!));
+    }
+
+    [Fact]
+    public void CreateAsync_Bool_ThrowsOnNull()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            Metric.CreateAsync<TestOutput, TestOutput>(
+                (Func<TestOutput, TestOutput, Task<bool>>)null!));
+    }
+
+    [Fact]
+    public async Task CreateAsync_CrossType_Float()
+    {
+        var metric = Metric.CreateAsync<RichOutput, SimpleLabel>(
+            (predicted, expected) => Task.FromResult(
+                predicted.Answer == expected.Answer ? predicted.Confidence : 0f));
+
+        var example = new Example<string, SimpleLabel>("q", new SimpleLabel("Paris"));
+        var score = await metric(example, new RichOutput("Paris", 0.95f, "r"));
+
+        Assert.Equal(0.95f, score);
+    }
 }

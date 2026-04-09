@@ -110,4 +110,86 @@ public static class Evaluator
         CancellationToken cancellationToken = default)
         => EvaluateAsync(module, (IReadOnlyList<Example>)devSet,
             Metric.Create(metric), maxConcurrency, cancellationToken);
+
+    // ── Async metric overloads (LLM-as-judge, SemanticF1, etc.) ──
+
+    /// <summary>
+    /// Evaluates a module against a development set using an async metric function.
+    /// Use for LLM-as-judge metrics that call an LLM during evaluation.
+    /// </summary>
+    /// <typeparam name="TModule">The module type.</typeparam>
+    /// <param name="module">The module to evaluate.</param>
+    /// <param name="devSet">The set of examples to evaluate against.</param>
+    /// <param name="metric">Async scoring function: (example, module output) → score in [0, 1].</param>
+    /// <param name="maxConcurrency">Maximum number of concurrent evaluations. Default is 4.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Aggregate evaluation results including per-example scores.</returns>
+    public static async Task<EvaluationResult> EvaluateAsync<TModule>(
+        TModule module,
+        IReadOnlyList<Example> devSet,
+        Func<Example, object, Task<float>> metric,
+        int maxConcurrency = 4,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule
+    {
+        ArgumentNullException.ThrowIfNull(module);
+        ArgumentNullException.ThrowIfNull(devSet);
+        ArgumentNullException.ThrowIfNull(metric);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
+
+        if (devSet.Count == 0)
+        {
+            return new EvaluationResult([], 0f, 0f, 0f, 0);
+        }
+
+        var results = new ConcurrentBag<ExampleResult>();
+
+        await Parallel.ForEachAsync(
+            devSet,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = maxConcurrency,
+                CancellationToken = cancellationToken
+            },
+            async (example, ct) =>
+            {
+                var output = await module.ForwardAsync(example.WithInputs(), ct);
+                var score = await metric(example, output);
+                results.Add(new ExampleResult(example, output, score));
+            });
+
+        var scores = results.Select(r => r.Score).ToArray();
+        return new EvaluationResult(
+            PerExample: [.. results],
+            AverageScore: (float)scores.Average(),
+            MinScore: scores.Min(),
+            MaxScore: scores.Max(),
+            Count: scores.Length);
+    }
+
+    /// <summary>
+    /// Evaluates a typed module using a typed async float metric.
+    /// The module's output type and dataset label type may differ.
+    /// </summary>
+    public static Task<EvaluationResult> EvaluateAsync<TInput, TPredicted, TExpected>(
+        LmpModule<TInput, TPredicted> module,
+        IReadOnlyList<Example<TInput, TExpected>> devSet,
+        Func<TPredicted, TExpected, Task<float>> metric,
+        int maxConcurrency = 4,
+        CancellationToken cancellationToken = default)
+        => EvaluateAsync(module, (IReadOnlyList<Example>)devSet,
+            Metric.CreateAsync(metric), maxConcurrency, cancellationToken);
+
+    /// <summary>
+    /// Evaluates a typed module using a typed async bool metric.
+    /// <c>true</c> maps to <c>1.0f</c>, <c>false</c> maps to <c>0.0f</c>.
+    /// </summary>
+    public static Task<EvaluationResult> EvaluateAsync<TInput, TPredicted, TExpected>(
+        LmpModule<TInput, TPredicted> module,
+        IReadOnlyList<Example<TInput, TExpected>> devSet,
+        Func<TPredicted, TExpected, Task<bool>> metric,
+        int maxConcurrency = 4,
+        CancellationToken cancellationToken = default)
+        => EvaluateAsync(module, (IReadOnlyList<Example>)devSet,
+            Metric.CreateAsync(metric), maxConcurrency, cancellationToken);
 }

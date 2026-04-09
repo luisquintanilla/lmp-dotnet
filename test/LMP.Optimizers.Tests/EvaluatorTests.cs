@@ -92,7 +92,7 @@ public class EvaluatorTests
     {
         await Assert.ThrowsAsync<ArgumentNullException>(() =>
             Evaluator.EvaluateAsync(
-                new EchoModule(), [], null!));
+                new EchoModule(), [], (Func<Example, object, float>)null!));
     }
 
     [Fact]
@@ -542,6 +542,82 @@ public class EvaluatorTests
         var result = await Evaluator.EvaluateAsync<string, DetailedAnswer, string>(
             module, devSet,
             (predicted, expected) => predicted.Answer == expected ? 1f : 0f);
+
+        Assert.Equal(1f, result.AverageScore);
+    }
+
+    #endregion
+
+    #region Async Metrics
+
+    [Fact]
+    public async Task EvaluateAsync_AsyncMetric_ScoresCorrectly()
+    {
+        var module = new ConstantModule("billing");
+        var devSet = new List<Example>
+        {
+            new Example<string, string>("ticket", "billing"),
+            new Example<string, string>("ticket2", "technical"),
+        };
+
+        Func<Example, object, Task<float>> asyncMetric = (example, output) =>
+        {
+            var label = (string)example.GetLabel();
+            var actual = (string)output;
+            return Task.FromResult(label == actual ? 1f : 0f);
+        };
+
+        var result = await Evaluator.EvaluateAsync(module, devSet, asyncMetric);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(0.5f, result.AverageScore);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_AsyncMetric_EmptyDevSet()
+    {
+        var module = new ConstantModule("x");
+        var devSet = new List<Example>();
+
+        Func<Example, object, Task<float>> asyncMetric = (_, _) => Task.FromResult(1f);
+
+        var result = await Evaluator.EvaluateAsync(module, devSet, asyncMetric);
+
+        Assert.Equal(0, result.Count);
+        Assert.Equal(0f, result.AverageScore);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_TypedAsyncFloat_ScoresCorrectly()
+    {
+        var module = new DetailedAnswerModule(new DetailedAnswer("Paris", 0.9f, "r"));
+        var devSet = new List<Example<string, GroundTruth>>
+        {
+            new("q", new GroundTruth("Paris")),
+            new("q2", new GroundTruth("Berlin")),
+        };
+
+        var result = await Evaluator.EvaluateAsync<string, DetailedAnswer, GroundTruth>(
+            module, devSet,
+            (predicted, expected) => Task.FromResult(
+                predicted.Answer == expected.Answer ? 1f : 0f));
+
+        Assert.Equal(0.5f, result.AverageScore);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_TypedAsyncBool_ScoresCorrectly()
+    {
+        var module = new DetailedAnswerModule(new DetailedAnswer("Paris", 0.9f, "r"));
+        var devSet = new List<Example<string, GroundTruth>>
+        {
+            new("q", new GroundTruth("Paris")),
+        };
+
+        var result = await Evaluator.EvaluateAsync<string, DetailedAnswer, GroundTruth>(
+            module, devSet,
+            (predicted, expected) => Task.FromResult(
+                predicted.Answer == expected.Answer));
 
         Assert.Equal(1f, result.AverageScore);
     }
