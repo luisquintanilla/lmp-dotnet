@@ -3,15 +3,26 @@ namespace LMP;
 /// <summary>
 /// Records predictor invocations during a <see cref="LmpModule.ForwardAsync"/> call.
 /// Optimizers collect traces from successful examples and use them as few-shot demos.
+/// Thread-safe: concurrent predictor calls (e.g., BestOfN) can record simultaneously.
 /// </summary>
 public sealed class Trace
 {
     private readonly List<TraceEntry> _entries = [];
+    private readonly object _lock = new();
 
     /// <summary>
     /// All recorded trace entries in invocation order.
     /// </summary>
-    public IReadOnlyList<TraceEntry> Entries => _entries;
+    public IReadOnlyList<TraceEntry> Entries
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _entries.ToList();
+            }
+        }
+    }
 
     /// <summary>
     /// Records a predictor invocation with its input and output.
@@ -21,7 +32,10 @@ public sealed class Trace
     /// <param name="output">The output returned by the predictor.</param>
     public void Record(string predictorName, object input, object output)
     {
-        _entries.Add(new TraceEntry(predictorName, input, output));
+        lock (_lock)
+        {
+            _entries.Add(new TraceEntry(predictorName, input, output));
+        }
     }
 }
 

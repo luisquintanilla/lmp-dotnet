@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 3.2 complete — 376 tests passing. Next: Phase 3.3 (Refine).
+> **Status:** Phase 3.3 complete — 403 tests passing. Next: Phase 4 (Evaluation + BootstrapFewShot).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -30,11 +30,11 @@
 | `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
-| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.2 (BestOfN) complete |
+| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.3 (Refine) complete |
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 376 tests passing (Phases 1–3.2) |
+| Test projects | `AGENTS.md` | :white_check_mark: 403 tests passing (Phases 1–3.3) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -677,12 +677,12 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 **Spec:** `runtime-execution.md` §4.3
 
 **Tasks:**
-- [ ] Create `RefineCritiqueInput<TOutput>` record: `(TInput OriginalInput, TOutput PreviousOutput)`
-- [ ] Implement `Refine<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
+- [x] Create `RefineCritiqueInput<TOutput>` record: `(object OriginalInput, TOutput PreviousOutput)`
+- [x] Implement `Refine<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
   - Constructor: `(IChatClient client, int maxIterations = 2)`
   - `PredictAsync`: initial predict -> for each iteration: critique previous output -> re-predict with critique context
   - Each iteration is a separate `PredictAsync` call recorded in trace
-- [ ] Unit test: at least 2 rounds execute; final result is from last iteration
+- [x] Unit test: 27 tests covering constructor validation, inheritance, trace recording, chained outputs, cancellation, validation, demos
 
 **Completion criteria:** `Refine` executes predict -> refine loop; trace shows multiple predictor calls.
 
