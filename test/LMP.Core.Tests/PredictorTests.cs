@@ -179,6 +179,140 @@ public class PredictorTests
         Assert.Throws<ArgumentNullException>(() => predictor.LoadState(null!));
     }
 
+    #region Clone tests
+
+    [Fact]
+    public void Clone_ReturnsIPredictor()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+
+        var clone = predictor.Clone();
+
+        Assert.IsAssignableFrom<IPredictor>(clone);
+    }
+
+    [Fact]
+    public void Clone_ReturnsSameConcreteType()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+
+        var clone = predictor.Clone();
+
+        Assert.IsType<Predictor<string, TestOutput>>(clone);
+    }
+
+    [Fact]
+    public void Clone_CopiesName()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        predictor.Name = "classify";
+
+        var clone = (Predictor<string, TestOutput>)predictor.Clone();
+
+        Assert.Equal("classify", clone.Name);
+    }
+
+    [Fact]
+    public void Clone_CopiesInstructions()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        predictor.Instructions = "Classify tickets";
+
+        var clone = (Predictor<string, TestOutput>)predictor.Clone();
+
+        Assert.Equal("Classify tickets", clone.Instructions);
+    }
+
+    [Fact]
+    public void Clone_CopiesDemos()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        predictor.Demos.Add(("input1", new TestOutput { Value = "output1" }));
+
+        var clone = (Predictor<string, TestOutput>)predictor.Clone();
+
+        Assert.Single(clone.Demos);
+        Assert.Equal("input1", clone.Demos[0].Input);
+        Assert.Equal("output1", clone.Demos[0].Output.Value);
+    }
+
+    [Fact]
+    public void Clone_DemosAreIndependent()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        predictor.Demos.Add(("shared", new TestOutput { Value = "shared" }));
+
+        var clone = (Predictor<string, TestOutput>)predictor.Clone();
+
+        // Modify clone's demos
+        clone.Demos.Add(("new", new TestOutput { Value = "new" }));
+
+        // Original should not be affected
+        Assert.Single(predictor.Demos);
+        Assert.Equal(2, clone.Demos.Count);
+    }
+
+    [Fact]
+    public void Clone_ModifyingOriginalDemos_DoesNotAffectClone()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        predictor.Demos.Add(("original", new TestOutput { Value = "original" }));
+
+        var clone = (Predictor<string, TestOutput>)predictor.Clone();
+
+        // Modify original's demos
+        predictor.Demos.Add(("added", new TestOutput { Value = "added" }));
+
+        // Clone should not be affected
+        Assert.Single(clone.Demos);
+    }
+
+    [Fact]
+    public void Clone_ConfigIsIndependent()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        predictor.Config = new ChatOptions { Temperature = 0.5f };
+
+        var clone = (Predictor<string, TestOutput>)predictor.Clone();
+
+        // Config should be a separate instance with same values
+        Assert.NotSame(predictor.Config, clone.Config);
+        Assert.Equal(0.5f, clone.Config.Temperature);
+
+        // Modifying clone's config should not affect original
+        clone.Config.Temperature = 0.9f;
+        Assert.Equal(0.5f, predictor.Config.Temperature);
+    }
+
+    [Fact]
+    public void Clone_InstructionsAreIndependent()
+    {
+        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        predictor.Instructions = "Original";
+
+        var clone = (Predictor<string, TestOutput>)predictor.Clone();
+
+        // Modify clone's instructions
+        clone.Instructions = "Modified";
+
+        Assert.Equal("Original", predictor.Instructions);
+        Assert.Equal("Modified", clone.Instructions);
+    }
+
+    [Fact]
+    public void Clone_ViaIPredictor_ReturnsClone()
+    {
+        IPredictor predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        predictor.Instructions = "Test";
+
+        var clone = predictor.Clone();
+
+        Assert.NotSame(predictor, clone);
+        Assert.Equal("Test", clone.Instructions);
+    }
+
+    #endregion
+
     public class TestOutput
     {
         public string Value { get; init; } = string.Empty;

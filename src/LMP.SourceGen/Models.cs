@@ -72,4 +72,7 @@ internal sealed record ModuleModel(
 internal sealed record PredictorFieldModel(
     string FieldName,
     string InputTypeFQN,
-    string OutputTypeFQN);
+    string OutputTypeFQN,
+    string FieldTypeFQN = "object",
+    bool CanAssignDirectly = true,
+    string? UnsafeAccessorFieldName = null);

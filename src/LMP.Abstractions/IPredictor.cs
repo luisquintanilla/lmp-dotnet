@@ -42,4 +42,11 @@ public interface IPredictor
     /// Restores the predictor's learnable state from a previously saved state.
     /// </summary>
     void LoadState(PredictorState state);
+
+    /// <summary>
+    /// Creates an independent copy of this predictor with the same client binding
+    /// but separate learnable state (Demos, Instructions, Config).
+    /// Used by optimizers that need teacher/student separation.
+    /// </summary>
+    IPredictor Clone();
 }

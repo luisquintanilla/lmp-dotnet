@@ -51,7 +51,8 @@ internal static class ModuleExtractor
         foreach (var member in typeSymbol.GetMembers().OfType<IFieldSymbol>())
         {
             ct.ThrowIfCancellationRequested();
-            TryAddPredictor(member.Name, member.Type, predictorFields, seen);
+            TryAddPredictor(member.Name, member.Type, predictorFields, seen,
+                isProperty: false, isReadOnly: member.IsReadOnly);
         }
 
         // Walk properties (e.g., public Predictor<TIn,TOut> Classify { get; })
@@ -61,7 +62,9 @@ internal static class ModuleExtractor
             ct.ThrowIfCancellationRequested();
             if (member.IsIndexer)
                 continue;
-            TryAddPredictor(member.Name, member.Type, predictorFields, seen);
+            var propIsReadOnly = member.SetMethod is null || member.SetMethod.IsInitOnly;
+            TryAddPredictor(member.Name, member.Type, predictorFields, seen,
+                isProperty: true, isReadOnly: propIsReadOnly);
         }
 
         if (predictorFields.Count == 0)
@@ -82,7 +85,9 @@ internal static class ModuleExtractor
         string memberName,
         ITypeSymbol memberType,
         List<PredictorFieldModel> predictorFields,
-        HashSet<string> seen)
+        HashSet<string> seen,
+        bool isProperty,
+        bool isReadOnly)
     {
         if (memberType is not INamedTypeSymbol namedType)
             return;
@@ -97,10 +102,21 @@ internal static class ModuleExtractor
         if (!seen.Add(memberName))
             return;
 
+        var fieldTypeFQN = namedType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        var canAssignDirectly = !isReadOnly;
+        string? unsafeAccessorFieldName = canAssignDirectly
+            ? null
+            : isProperty
+                ? "<" + memberName + ">k__BackingField"
+                : memberName;
+
         predictorFields.Add(new PredictorFieldModel(
             FieldName: memberName,
             InputTypeFQN: inputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            OutputTypeFQN: outputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
+            OutputTypeFQN: outputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            FieldTypeFQN: fieldTypeFQN,
+            CanAssignDirectly: canAssignDirectly,
+            UnsafeAccessorFieldName: unsafeAccessorFieldName));
     }
 
     /// <summary>

@@ -21,6 +21,11 @@ public class IPredictorTests
         {
             Instructions = state.Instructions;
         }
+        public IPredictor Clone() => new StubPredictor
+        {
+            Name = Name,
+            Instructions = Instructions,
+        };
     }
 
     [Fact]

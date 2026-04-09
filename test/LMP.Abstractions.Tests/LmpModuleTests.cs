@@ -97,4 +97,45 @@ public class LmpModuleTests
         await Assert.ThrowsAsync<NotImplementedException>(
             () => module.LoadAsync("test.json"));
     }
+
+    [Fact]
+    public void Clone_ThrowsNotSupported_WithoutSourceGen()
+    {
+        var module = new TestModule();
+
+        Assert.Throws<NotSupportedException>(() => module.Clone<TestModule>());
+    }
+
+    [Fact]
+    public void Clone_ThrowsNotSupported_MessageMentionsPartialClass()
+    {
+        var module = new TestModule();
+
+        var ex = Assert.Throws<NotSupportedException>(() => module.Clone<TestModule>());
+
+        Assert.Contains("TestModule", ex.Message);
+        Assert.Contains("partial", ex.Message);
+    }
+
+    [Fact]
+    public void Clone_WithOverriddenCloneCore_ReturnsClone()
+    {
+        var module = new CloneableModule();
+        module.Trace = new Trace();
+
+        var clone = module.Clone<CloneableModule>();
+
+        Assert.NotSame(module, clone);
+        Assert.Null(clone.Trace);
+    }
+
+    private sealed class CloneableModule : LmpModule
+    {
+        public override Task<object> ForwardAsync(
+            object input, CancellationToken cancellationToken = default)
+            => Task.FromResult(input);
+
+        protected override LmpModule CloneCore()
+            => (CloneableModule)MemberwiseClone();
+    }
 }

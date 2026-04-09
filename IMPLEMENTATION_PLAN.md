@@ -1,9 +1,9 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 4.1 complete — 430 tests passing. Next: Phase 4.2 (Module Cloning).
+> **Status:** Phase 4.2 complete — 485 tests passing. Next: Phase 4.3 (BootstrapFewShot).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
-> **Last updated:** 2026-04-09
+> **Last updated:** 2025-07-21
 
 ---
 
@@ -732,11 +732,18 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 **Spec:** `compiler-optimizer.md` §4 (Clone)
 
 **Tasks:**
-- [ ] Add `Clone<TModule>()` method to `LmpModule`:
-  - Source generator emits per-module clone implementation using `with` expressions on records
-  - Clones all Predictor fields with independent Demos lists
-- [ ] Extend `ModuleEmitter` to generate `Clone<TModule>()` override
-- [ ] Unit test: cloned module has independent demo lists (modifying clone doesn't affect original)
+- [x] Add `Clone<TModule>()` method to `LmpModule`:
+  - `Clone<TModule>()` non-virtual generic helper calls `protected virtual CloneCore()` and casts
+  - `CloneCore()` throws `NotSupportedException` by default; source-gen emits override
+- [x] Add `IPredictor.Clone()` method returning `IPredictor` with independent learnable state
+- [x] Implement `Predictor<TIn,TOut>.Clone()` via `MemberwiseClone()` + independent Demos/Config
+- [x] Extend `ModuleEmitter` to generate `CloneCore()` override:
+  - Uses `MemberwiseClone()` for module shallow copy, then replaces each predictor field
+  - `[UnsafeAccessor]` for readonly fields/get-only properties; direct assignment for writable
+  - Extends `PredictorFieldModel` with `FieldTypeFQN`, `CanAssignDirectly`, `UnsafeAccessorFieldName`
+  - `ModuleExtractor` populates new fields based on `IsReadOnly` analysis
+- [x] Unit test: cloned module has independent demo lists (modifying clone doesn't affect original)
+  - 10 Predictor.Clone tests, 3 LmpModule.Clone tests, ~15 ModuleEmitter CloneCore tests
 
 **Completion criteria:** `module.Clone<T>()` returns a deep copy with independent predictor state.
 

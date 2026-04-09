@@ -566,6 +566,219 @@ public class ModuleEmitterTests
 
     #endregion
 
+    #region CloneCore emission tests — direct emitter
+
+    [Fact]
+    public void GenerateSource_EmitsCloneCoreOverride()
+    {
+        var model = CreateModuleModel();
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.Contains("protected override LmpModule CloneCore()", source);
+    }
+
+    [Fact]
+    public void GenerateSource_CloneCore_UsesMemberwiseClone()
+    {
+        var model = CreateModuleModel();
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.Contains("MemberwiseClone()", source);
+    }
+
+    [Fact]
+    public void GenerateSource_CloneCore_CastsToModuleType()
+    {
+        var model = CreateModuleModel(typeName: "TicketTriageModule");
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.Contains("(TicketTriageModule)MemberwiseClone()", source);
+    }
+
+    [Fact]
+    public void GenerateSource_CloneCore_DirectAssignment_ForWritableFields()
+    {
+        var model = CreateModuleModel(fields: new[]
+        {
+            new PredictorFieldModel("_classify", "global::A", "global::B",
+                FieldTypeFQN: "global::LMP.Predictor<global::A, global::B>",
+                CanAssignDirectly: true),
+        });
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.Contains(
+            "clone._classify = (global::LMP.Predictor<global::A, global::B>)((global::LMP.IPredictor)_classify).Clone();",
+            source);
+    }
+
+    [Fact]
+    public void GenerateSource_CloneCore_UnsafeAccessor_ForReadonlyFields()
+    {
+        var model = CreateModuleModel(fields: new[]
+        {
+            new PredictorFieldModel("_classify", "global::A", "global::B",
+                FieldTypeFQN: "global::LMP.Predictor<global::A, global::B>",
+                CanAssignDirectly: false,
+                UnsafeAccessorFieldName: "_classify"),
+        });
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.Contains("[UnsafeAccessor(UnsafeAccessorKind.Field, Name = \"_classify\")]", source);
+        Assert.Contains(
+            "private static extern ref global::LMP.Predictor<global::A, global::B> __cloneRef__classify(TestModule instance);",
+            source);
+    }
+
+    [Fact]
+    public void GenerateSource_CloneCore_UnsafeAccessor_ForGetOnlyProperties()
+    {
+        var model = CreateModuleModel(fields: new[]
+        {
+            new PredictorFieldModel("Classify", "global::A", "global::B",
+                FieldTypeFQN: "global::LMP.Predictor<global::A, global::B>",
+                CanAssignDirectly: false,
+                UnsafeAccessorFieldName: "<Classify>k__BackingField"),
+        });
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.Contains("[UnsafeAccessor(UnsafeAccessorKind.Field, Name = \"<Classify>k__BackingField\")]", source);
+        Assert.Contains("__cloneRef__Classify_", source);
+    }
+
+    [Fact]
+    public void GenerateSource_CloneCore_MixedWritableAndReadonly()
+    {
+        var model = CreateModuleModel(fields: new[]
+        {
+            new PredictorFieldModel("_writable", "global::A", "global::B",
+                FieldTypeFQN: "global::LMP.Predictor<global::A, global::B>",
+                CanAssignDirectly: true),
+            new PredictorFieldModel("_readonly", "global::C", "global::D",
+                FieldTypeFQN: "global::LMP.Predictor<global::C, global::D>",
+                CanAssignDirectly: false,
+                UnsafeAccessorFieldName: "_readonly"),
+        });
+        var source = ModuleEmitter.GenerateSource(model);
+
+        // Writable: direct assignment
+        Assert.Contains(
+            "clone._writable = (global::LMP.Predictor<global::A, global::B>)((global::LMP.IPredictor)_writable).Clone();",
+            source);
+        // Readonly: UnsafeAccessor
+        Assert.Contains("__cloneRef__readonly(clone)", source);
+        Assert.Contains("[UnsafeAccessor(UnsafeAccessorKind.Field, Name = \"_readonly\")]", source);
+    }
+
+    [Fact]
+    public void GenerateSource_CloneCore_ReturnsClone()
+    {
+        var model = CreateModuleModel();
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.Contains("return clone;", source);
+    }
+
+    [Fact]
+    public void GenerateSource_IncludesUnsafeAccessorUsing()
+    {
+        var model = CreateModuleModel();
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.Contains("using System.Runtime.CompilerServices;", source);
+    }
+
+    #endregion
+
+    #region CloneCore pipeline integration tests
+
+    [Fact]
+    public void Pipeline_EmitsCloneCore_ForModuleWithPredictorFields()
+    {
+        var source = GetModulePipelineSource();
+        var (diagnostics, runResult) = RunGenerator(source);
+
+        Assert.Empty(diagnostics);
+
+        var predictorsFile = runResult.Results[0].GeneratedSources
+            .FirstOrDefault(s => s.HintName.Contains("Predictors"));
+        Assert.True(predictorsFile.HintName is not null,
+            "Expected a .Predictors.g.cs file to be generated");
+
+        var generatedSource = predictorsFile.SourceText.ToString();
+        Assert.Contains("protected override LmpModule CloneCore()", generatedSource);
+        Assert.Contains("MemberwiseClone()", generatedSource);
+    }
+
+    [Fact]
+    public void Pipeline_CloneCore_ContainsReadonlyFieldUnsafeAccessors()
+    {
+        // readonly fields require UnsafeAccessor
+        var source = GetModulePipelineSource();
+        var (_, runResult) = RunGenerator(source);
+
+        var predictorsFile = runResult.Results[0].GeneratedSources
+            .FirstOrDefault(s => s.HintName.Contains("Predictors"));
+        var generatedSource = predictorsFile.SourceText.ToString();
+
+        // The pipeline source has readonly fields (_classify, _draft)
+        Assert.Contains("[UnsafeAccessor(UnsafeAccessorKind.Field", generatedSource);
+        Assert.Contains("((global::LMP.IPredictor)_classify).Clone()", generatedSource);
+        Assert.Contains("((global::LMP.IPredictor)_draft).Clone()", generatedSource);
+    }
+
+    [Fact]
+    public void Pipeline_CloneCore_WritableProperty_UsesDirectAssignment()
+    {
+        var source = """
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                    protected virtual LmpModule CloneCore() => throw new System.NotSupportedException();
+                }
+                public interface IPredictor
+                {
+                    IPredictor Clone();
+                }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                    public IPredictor Clone() => this;
+                }
+            }
+
+            namespace TestApp
+            {
+                using LMP;
+
+                public record TestInput(string Text);
+                public partial record TestOutput { public required string Result { get; init; } }
+
+                public partial class PropModule : LmpModule
+                {
+                    public Predictor<TestInput, TestOutput> Classify { get; set; } = null!;
+
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+            }
+            """;
+
+        var (_, runResult) = RunGenerator(source);
+
+        var predictorsFile = runResult.Results[0].GeneratedSources
+            .FirstOrDefault(s => s.HintName == "PropModule.Predictors.g.cs");
+        var generatedSource = predictorsFile.SourceText.ToString();
+
+        // Property with setter uses direct assignment, no UnsafeAccessor
+        Assert.Contains("clone.Classify =", generatedSource);
+        Assert.DoesNotContain("UnsafeAccessor", generatedSource);
+    }
+
+    #endregion
+
     #region Model tests
 
     [Fact]
@@ -626,11 +839,16 @@ public class ModuleEmitterTests
             public abstract class LmpModule
             {
                 public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                protected virtual LmpModule CloneCore() => throw new System.NotSupportedException();
             }
-            public interface IPredictor { }
+            public interface IPredictor
+            {
+                IPredictor Clone();
+            }
             public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
             {
                 public Predictor(object client) { }
+                public IPredictor Clone() => this;
             }
         }
 

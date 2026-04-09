@@ -187,6 +187,31 @@ public class Predictor<TInput, TOutput> : IPredictor
         }
     }
 
+    /// <summary>
+    /// Creates an independent copy of this predictor. The clone shares the same
+    /// <see cref="IChatClient"/> binding but has its own <see cref="Demos"/> list
+    /// and <see cref="Config"/> instance.
+    /// </summary>
+    /// <returns>A new <see cref="IPredictor"/> with independent learnable state.</returns>
+    public virtual IPredictor Clone()
+    {
+        var clone = (Predictor<TInput, TOutput>)MemberwiseClone();
+        clone.Demos = new List<(TInput Input, TOutput Output)>(Demos);
+        clone.Config = new ChatOptions
+        {
+            Temperature = Config.Temperature,
+            MaxOutputTokens = Config.MaxOutputTokens,
+            TopP = Config.TopP,
+            FrequencyPenalty = Config.FrequencyPenalty,
+            PresencePenalty = Config.PresencePenalty,
+            StopSequences = Config.StopSequences is { Count: > 0 }
+                ? [.. Config.StopSequences]
+                : null,
+            ModelId = Config.ModelId,
+        };
+        return clone;
+    }
+
     private static Dictionary<string, JsonElement> JsonElementFromObject<T>(T value)
     {
         var json = JsonSerializer.Serialize(value);

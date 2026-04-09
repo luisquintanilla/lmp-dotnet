@@ -32,6 +32,33 @@ public abstract class LmpModule
         => [];
 
     /// <summary>
+    /// Creates a deep copy of this module with independent predictor state.
+    /// The returned module shares the same <c>IChatClient</c> bindings but has
+    /// separate <c>Demos</c> and <c>Instructions</c> on every predictor.
+    /// </summary>
+    /// <typeparam name="TModule">The concrete module type.</typeparam>
+    /// <returns>A deep-cloned module with independent learnable parameters.</returns>
+    /// <exception cref="NotSupportedException">
+    /// Thrown when the source generator has not emitted a <c>CloneCore()</c> override
+    /// for this module type. Ensure the module class is <c>partial</c>.
+    /// </exception>
+    public TModule Clone<TModule>() where TModule : LmpModule
+    {
+        var clone = CloneCore();
+        clone.Trace = null;
+        return (TModule)clone;
+    }
+
+    /// <summary>
+    /// Creates a deep copy of this module. Override this in source-generated code
+    /// to clone all predictor fields with independent state.
+    /// </summary>
+    protected virtual LmpModule CloneCore()
+        => throw new NotSupportedException(
+            $"CloneCore() requires a source-generated override. " +
+            $"Ensure '{GetType().Name}' is declared as a partial class.");
+
+    /// <summary>
     /// Serializes all learnable parameters (demos, instructions, config) to a JSON file.
     /// </summary>
     /// <param name="path">The file path to write the artifact to.</param>
