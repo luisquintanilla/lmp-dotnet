@@ -165,7 +165,7 @@ Console.WriteLine($"  Loaded module score: {loadedScore.AverageScore:P1}");
 Console.WriteLine();
 
 // Clean up
-File.Delete(artifactPath);
+// File.Delete(artifactPath);
 
 Console.WriteLine("╔══════════════════════════════════════════════╗");
 Console.WriteLine("║   Demo Complete!                             ║");

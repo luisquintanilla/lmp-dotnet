@@ -4,30 +4,60 @@ using LMP.Optimizers;
 using LMP.Samples.Evaluation;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.AI.Evaluation;
+using Microsoft.Extensions.AI.Evaluation.Quality;
+using Microsoft.Extensions.Configuration;
+using Azure.AI.OpenAI;
+using Azure.Identity;
 using MeaiEvaluationResult = Microsoft.Extensions.AI.Evaluation.EvaluationResult;
 
 // ──────────────────────────────────────────────────────────────
-// LMP + M.E.AI.Evaluation Integration Demo
+// LMP + M.E.AI.Evaluation Integration Demo (Azure OpenAI)
 //
-// Demonstrates three evaluation approaches side by side:
+// Demonstrates four evaluation approaches side by side:
 //   1. LMP keyword metric (fast, no LLM needed)
-//   2. M.E.AI.Evaluation NLP evaluator (F1 score, no LLM needed)
-//   3. M.E.AI.Evaluation LLM-as-judge (Coherence, requires LLM)
+//   2. Custom IEvaluator via Bridge (word overlap, no LLM needed)
+//   3. M.E.AI.Evaluation LLM-as-judge (Coherence via Azure OpenAI)
+//   4. Combined multi-metric with optimization
 //
 // The EvaluationBridge adapter converts M.E.AI IEvaluator instances
 // into LMP-compatible Func<Example, object, Task<float>> metrics,
 // enabling seamless integration with LMP's optimization pipeline.
 //
-// With a real LLM, the quality evaluators (Coherence, Relevance,
-// Groundedness) provide production-grade evaluation.
+// Prerequisites:
+//   dotnet user-secrets set "AzureOpenAI:Endpoint" "https://YOUR_RESOURCE.openai.azure.com/"
+//   dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-4o-mini"
 // ──────────────────────────────────────────────────────────────
 
 Console.WriteLine("╔══════════════════════════════════════════════════════╗");
 Console.WriteLine("║   LMP + M.E.AI.Evaluation Integration Demo          ║");
+Console.WriteLine("║   (Azure OpenAI)                                     ║");
 Console.WriteLine("╚══════════════════════════════════════════════════════╝");
 Console.WriteLine();
 
-IChatClient client = new MockChatClient();
+// ── Azure OpenAI Setup ──────────────────────────────────────
+var config = new ConfigurationBuilder()
+    .AddUserSecrets<Program>()
+    .Build();
+
+string endpoint = config["AzureOpenAI:Endpoint"]
+    ?? throw new InvalidOperationException(
+        "Set AzureOpenAI:Endpoint in user secrets: dotnet user-secrets set \"AzureOpenAI:Endpoint\" \"https://YOUR_RESOURCE.openai.azure.com/\"");
+string deployment = config["AzureOpenAI:Deployment"]
+    ?? throw new InvalidOperationException(
+        "Set AzureOpenAI:Deployment in user secrets: dotnet user-secrets set \"AzureOpenAI:Deployment\" \"gpt-4o-mini\"");
+
+var azureClient = new AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential());
+
+// Module client — runs the support triage pipeline
+IChatClient client = azureClient.GetChatClient(deployment).AsIChatClient();
+
+// Eval client — used by LLM-as-judge evaluators (Coherence, Relevance, etc.)
+IChatClient evalClient = azureClient.GetChatClient(deployment).AsIChatClient();
+var evalConfig = new ChatConfiguration(evalClient);
+
+Console.WriteLine($"  Using: {endpoint}");
+Console.WriteLine($"  Deployment: {deployment}");
+Console.WriteLine();
 var dataDir = Path.Combine(AppContext.BaseDirectory, "data");
 
 var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
@@ -87,45 +117,36 @@ Console.WriteLine();
 // ── Approach 3: M.E.AI Coherence (LLM-as-judge) ────────────
 Console.WriteLine("Approach 3: M.E.AI Coherence Evaluator (LLM-as-judge)");
 Console.WriteLine("──────────────────────────────────────────────────────");
-Console.WriteLine("  CoherenceEvaluator uses an LLM to judge if a response");
+Console.WriteLine("  CoherenceEvaluator uses Azure OpenAI to judge if a response");
 Console.WriteLine("  is readable, well-organized, and user-friendly.");
-Console.WriteLine("  Scores 1-5. Requires ChatConfiguration with an LLM.");
+Console.WriteLine("  Scores 1-5, normalized to [0, 1] by the bridge.");
 Console.WriteLine();
 
-// Note: With a real LLM, you'd create a ChatConfiguration:
-//   var evalConfig = new ChatConfiguration(evalClient);
-//   var coherenceMetric = EvaluationBridge.CreateMetric(
-//       new CoherenceEvaluator(), evalConfig,
-//       CoherenceEvaluator.CoherenceMetricName, maxScore: 5.0f);
-//   var coherenceResult = await Evaluator.EvaluateAsync(module, devSet, coherenceMetric);
+var coherenceMetric = EvaluationBridge.CreateMetric(
+    new CoherenceEvaluator(), evalConfig,
+    CoherenceEvaluator.CoherenceMetricName, maxScore: 5.0f);
 
-// For this demo, we simulate what the bridge does:
-Console.WriteLine("  [Skipped — requires a real LLM for LLM-as-judge]");
-Console.WriteLine("  With Azure OpenAI, it would look like:");
-Console.WriteLine();
-Console.WriteLine("    var evalClient = new AzureOpenAIClient(...)");
-Console.WriteLine("        .GetChatClient(\"gpt-4.1-nano\").AsIChatClient();");
-Console.WriteLine("    var evalConfig = new ChatConfiguration(evalClient);");
-Console.WriteLine("    var coherenceMetric = EvaluationBridge.CreateMetric(");
-Console.WriteLine("        new CoherenceEvaluator(), evalConfig,");
-Console.WriteLine("        CoherenceEvaluator.CoherenceMetricName);");
+var coherenceResult = await Evaluator.EvaluateAsync(module, devSet, coherenceMetric);
+Console.WriteLine($"  Coherence Average: {coherenceResult.AverageScore:P1}");
+Console.WriteLine($"  Coherence Min/Max: {coherenceResult.MinScore:P1} / {coherenceResult.MaxScore:P1}");
 Console.WriteLine();
 
 // ── Approach 4: Combined Multi-Metric Evaluation ────────────
-Console.WriteLine("Approach 4: Combined Multi-Metric (F1 + Keyword)");
-Console.WriteLine("─────────────────────────────────────────────────");
+Console.WriteLine("Approach 4: Combined Multi-Metric (Coherence + Relevance)");
+Console.WriteLine("──────────────────────────────────────────────────────────");
 Console.WriteLine("  EvaluationBridge.CreateCombinedMetric() lets you weight");
 Console.WriteLine("  multiple M.E.AI evaluators into a single LMP score.");
 Console.WriteLine();
 
-// For demo, we show a combined metric using word overlap (the only one we can run without LLM)
-// In production, you'd combine: Coherence (0.3) + Relevance (0.3) + WordOverlap (0.4)
+// Combine two LLM-as-judge evaluators: Coherence (60%) + Relevance (40%)
+// Both score 1-5, so they share the same maxScore normalization.
 var combinedMetric = EvaluationBridge.CreateCombinedMetric(
     [
-        (wordOverlapEvaluator, WordOverlapEvaluator.OverlapMetricName, Weight: 1.0f)
+        (new CoherenceEvaluator(), CoherenceEvaluator.CoherenceMetricName, Weight: 0.6f),
+        (new RelevanceEvaluator(), RelevanceEvaluator.RelevanceMetricName, Weight: 0.4f)
     ],
-    chatConfiguration: null,
-    maxScore: 1.0f);
+    chatConfiguration: evalConfig,
+    maxScore: 5.0f);
 
 var combinedResult = await Evaluator.EvaluateAsync(module, devSet, combinedMetric);
 Console.WriteLine($"  Combined Average: {combinedResult.AverageScore:P1}");
@@ -226,79 +247,4 @@ file sealed class WordOverlapEvaluator : IEvaluator
     }
 }
 
-// ── Mock Chat Client ────────────────────────────────────────
-
-file sealed class MockChatClient : IChatClient
-{
-    public void Dispose() { }
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-    public Task<ChatResponse> GetResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        var messageList = messages.ToList();
-        var systemText = messageList.FirstOrDefault(m => m.Role == ChatRole.System)?.Text ?? "";
-        var userText = messageList.LastOrDefault(m => m.Role == ChatRole.User)?.Text ?? "";
-
-        bool isCoT = systemText.Contains("step by step", StringComparison.OrdinalIgnoreCase);
-        bool isDraft = userText.Contains("Category", StringComparison.Ordinal)
-                    || userText.Contains("category", StringComparison.Ordinal)
-                       && (userText.Contains("Urgency", StringComparison.Ordinal)
-                           || userText.Contains("urgency", StringComparison.Ordinal));
-
-        string json;
-        if (isDraft && !isCoT)
-        {
-            var replyText = DraftFromContext(userText);
-            json = $$$"""{"replyText":"{{{replyText}}}"}""";
-        }
-        else if (isCoT)
-        {
-            var (category, urgency) = ClassifyFromText(userText);
-            json = $$$"""{"reasoning":"Analyzing the ticket.","result":{"category":"{{{category}}}","urgency":{{{urgency}}}}}""";
-        }
-        else
-        {
-            var (category, urgency) = ClassifyFromText(userText);
-            json = $$$"""{"category":"{{{category}}}","urgency":{{{urgency}}}}""";
-        }
-
-        return Task.FromResult(new ChatResponse(
-            new ChatMessage(ChatRole.Assistant, json)));
-    }
-
-    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-        => throw new NotSupportedException();
-
-    private static (string, int) ClassifyFromText(string text)
-    {
-        var lower = text.ToLowerInvariant();
-        if (lower.Contains("charg") || lower.Contains("invoice") || lower.Contains("bill")
-            || lower.Contains("payment") || lower.Contains("refund"))
-            return ("billing", lower.Contains("production") ? 5 : 3);
-        if (lower.Contains("vpn") || lower.Contains("api") || lower.Contains("error")
-            || lower.Contains("crash") || lower.Contains("503") || lower.Contains("slow"))
-            return ("technical", lower.Contains("production") ? 5 : 4);
-        if (lower.Contains("account") || lower.Contains("email") || lower.Contains("password")
-            || lower.Contains("login"))
-            return ("account", 2);
-        return ("general", 1);
-    }
-
-    private static string DraftFromContext(string text)
-    {
-        var lower = text.ToLowerInvariant();
-        if (lower.Contains("billing"))
-            return "Thank you for reaching out about your billing concern. We have reviewed your account and will process a correction.";
-        if (lower.Contains("technical"))
-            return "Thank you for reporting this technical issue. Our engineering team is investigating and we will provide an update shortly.";
-        if (lower.Contains("account"))
-            return "Thank you for contacting us about your account. For security, please verify your identity through the link we have sent.";
-        return "Thank you for contacting support. A team member will follow up within 24 hours.";
-    }
-}
+// ── Mock Chat Client removed — using Azure OpenAI ───────────
