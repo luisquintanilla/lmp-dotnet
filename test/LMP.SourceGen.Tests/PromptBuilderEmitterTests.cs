@@ -335,10 +335,8 @@ public class PromptBuilderEmitterTests
     #endregion
 
     #region Pipeline integration — Predictor<TIn, TOut> discovery
-    // These tests validate the full PredictorPairExtractor pipeline (Task 2.5).
-    // They are skipped until the pipeline is fully wired and debugged.
 
-    [Fact(Skip = "PredictorPairExtractor pipeline — Task 2.5")]
+    [Fact]
     public void Pipeline_EmitsPromptBuilder_ForValidPredictorUsage()
     {
         var source = GetPipelineTestSource();
@@ -358,7 +356,7 @@ public class PromptBuilderEmitterTests
         Assert.Contains("Classify a support ticket", generatedSource);
     }
 
-    [Fact(Skip = "PredictorPairExtractor pipeline — Task 2.5")]
+    [Fact]
     public void Pipeline_HintName_FollowsConvention()
     {
         var source = GetPipelineTestSource();
@@ -428,7 +426,7 @@ public class PromptBuilderEmitterTests
             s => s.HintName.Contains("PromptBuilder"));
     }
 
-    [Fact(Skip = "PredictorPairExtractor pipeline — Task 2.5")]
+    [Fact]
     public void Pipeline_DuplicatePredictorUsages_EmitsSinglePromptBuilder()
     {
         var source = """
@@ -472,7 +470,7 @@ public class PromptBuilderEmitterTests
         Assert.Single(promptBuilders);
     }
 
-    [Fact(Skip = "PredictorPairExtractor pipeline — Task 2.5")]
+    [Fact]
     public void Pipeline_PromptBuilder_ContainsInputFieldDescriptions()
     {
         var source = GetPipelineTestSource();
@@ -486,7 +484,7 @@ public class PromptBuilderEmitterTests
         Assert.Contains("AccountTier (string): Customer plan tier", text);
     }
 
-    [Fact(Skip = "PredictorPairExtractor pipeline — Task 2.5")]
+    [Fact]
     public void Pipeline_PromptBuilder_ContainsOutputFieldDescriptions()
     {
         var source = GetPipelineTestSource();
