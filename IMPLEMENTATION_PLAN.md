@@ -1,375 +1,902 @@
 # LMP Implementation Plan
 
-> **Status:** Planning complete — no code exists yet (`src/` is empty)
->
+> **Status:** Phase 1.1 (solution skeleton) complete — all projects build; no types implemented yet.
 > **Target:** .NET 10 / C# 14
->
-> **Authoritative specs:** `docs/02-specs/` (public-api, source-generator, runtime-execution, compiler-optimizer, artifact-format, diagnostics)
->
-> **Project structure** (from `AGENTS.md` / `system-architecture.md`):
-> ```
-> src/
-> ├── LMP.Abstractions/      # Interfaces, attributes, base types (no dependencies)
-> ├── LMP.Core/               # Predictor<TIn,TOut>, LmpModule, assertions
-> ├── LMP.SourceGen/          # Roslyn IIncrementalGenerator (netstandard2.0)
-> ├── LMP.Modules/            # ChainOfThought, BestOfN, Refine, ReActAgent
-> └── LMP.Optimizers/         # Evaluator, BootstrapFewShot, BootstrapRandomSearch
-> test/
-> ├── LMP.Abstractions.Tests/
-> ├── LMP.Core.Tests/
-> ├── LMP.SourceGen.Tests/
-> ├── LMP.Modules.Tests/
-> └── LMP.Optimizers.Tests/
-> samples/
-> └── LMP.Samples.TicketTriage/
-> ```
-
-> **Note on `docs/03-implementation/`:** `repo-layout.md` and `testing-strategy.md` describe a **v1 design** with dropped concepts (IR graphs, StepDescriptor, binding tiers, TPL Dataflow, 9-project layout). This plan follows the **current** specs in `docs/02-specs/` and the simplified 5-project structure from `AGENTS.md`.
+> **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
+> **Last updated:** 2026-04-09
 
 ---
 
 ## Gap Analysis
 
-**Existing code:** None. No `src/` directory, no `.cs`/`.csproj`/`.sln` files.
+**Existing code:** Solution skeleton is complete. All 5 `src/` projects and 5 `test/` projects exist with placeholder files. `dotnet build` succeeds with 0 warnings, 0 errors. No types are implemented yet.
+
+**Skeleton inventory (all present):**
+- `global.json` — SDK 10.0.201
+- `Directory.Build.props` — net10.0, LangVersion=preview, Nullable=enable, TreatWarningsAsErrors
+- `Directory.Packages.props` — M.E.AI 10.4.1, CodeAnalysis 5.3.0, xUnit 2.9.3, Moq 4.20.72
+- `.editorconfig` — C# 14 conventions, file-scoped namespaces, `_camelCase` private fields
+- `LMP.slnx` — all 10 projects in `/src/` and `/test/` folders
+- `LMP.SourceGen.csproj` — netstandard2.0, `IsRoslynComponent`, `EnforceExtendedAnalyzerRules`, LangVersion=12.0
+- `LMP.Core.csproj` — refs Abstractions + SourceGen (as analyzer) + M.E.AI
+- `LMP.Modules.csproj` / `LMP.Optimizers.csproj` — ref Core
+- `LmpSourceGenerator.cs` — stub with `[Generator]` + empty `Initialize()`
+
+**What needs to be built (from specs):**
 
 | Component | Spec Reference | Status |
 |---|---|---|
-| Solution skeleton (slnx, props, global.json) | `AGENTS.md` | ✅ Complete |
-| `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` | ❌ Not started |
-| `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | ❌ Not started |
-| `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | ❌ Not started |
-| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | ❌ Not started |
-| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | ❌ Not started |
-| Diagnostics LMP001–LMP003 | `diagnostics.md` | ❌ Not started |
-| Artifact save/load (JSON) | `artifact-format.md` | ❌ Not started |
-| Test projects (5) | `AGENTS.md` | ❌ Not started |
+| Solution skeleton (sln, props, global.json) | `AGENTS.md` | :white_check_mark: Complete |
+| `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
+| `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 1 shell complete (PredictAsync wired in Phase 2) |
+| `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :construction: Stub only (empty Initialize) |
+| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :x: Not started (placeholder only) |
+| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
+| Diagnostics LMP001–LMP003 | `diagnostics.md` | :x: Not started |
+| Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
+| Test projects | `AGENTS.md` | :white_check_mark: 67 tests passing (Phase 1) |
+
+**Skeleton issues to address during Phase 1:**
+- `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
+- `LMP.Abstractions` needs PackageReference to `Microsoft.Extensions.AI.Abstractions` for `ChatOptions` (used by `IPredictor.Config`).
+- Consumer test projects that define `[LmpSignature]` types or `LmpModule` subclasses will need SourceGen analyzer reference (add in Phase 2).
+
+> **Stale v1 docs:** `docs/03-implementation/repo-layout.md` and `testing-strategy.md` reference v1 concepts (ProgramGraph, StepDescriptor, binding tiers) that were **explicitly dropped** in v2. Use `AGENTS.md` and `docs/02-specs/` as the authoritative source.
 
 ---
 
-## Dependency Graph
+## Resolved Spec Discrepancies
 
-```
-Phase 0 ─→ Phase 1 ─→ Phase 2 ─┬─→ Phase 3
-                                 │
-                                 ├─→ Phase 4 ─→ Phase 6
-                                 │      │
-                                 ├─→ Phase 5  │
-                                 │      │     │
-                                 │      └──→ Phase 7
-                                 │
-                                 └─→ Phase 8
-```
+These disagreements exist across spec documents. Each is resolved below with rationale. Implementations **must** follow the resolution, not the individual spec that disagrees.
 
-**Hard deps:** 0→1→2. Then 2→3, 2→4, 2→5, 2→8. 4→6, 4→7.
-**Soft deps:** Phase 3 recommended before Phase 4. Phase 5 recommended before Phase 6.
+### D1. Project naming for source generator
 
-**MVP boundary: Phases 0–5.** After Phase 5 a developer can author, build, compose, evaluate, optimize, and save/load LM programs.
+| Spec | Name |
+|---|---|
+| `AGENTS.md` | `LMP.SourceGen` |
+| `system-architecture.md` | Implied inside `LMP.Core` |
+| `source-generator.md` | `LMP.Generators` |
 
----
+**Resolution: `LMP.SourceGen`** per `AGENTS.md`. The generator MUST target `netstandard2.0` while `LMP.Core` targets `net10.0`, so they must be separate projects. `LMP.SourceGen` is referenced as an analyzer by consumer projects.
 
-## Phase 0 — Repository Skeleton
+### D2. `IOptimizer.CompileAsync` signature
 
-**Goal:** Empty solution that compiles — the foundation for everything.
+| Spec | Signature |
+|---|---|
+| `public-api.md` §4.8 | `CompileAsync<TModule, TInput, TLabel>(TModule, IReadOnlyList<Example<TInput, TLabel>>, Func<TLabel, object, float>, CancellationToken)` |
+| `compiler-optimizer.md` §2 | `CompileAsync<TModule>(TModule, IReadOnlyList<Example>, Func<Example, object, float>, CancellationToken)` |
 
-**Spec:** `AGENTS.md`, `docs/01-architecture/system-architecture.md` §Project Structure
+**Resolution: Use the `compiler-optimizer.md` form** — `CompileAsync<TModule>` with non-generic `Example` and `Func<Example, object, float>`. Rationale: optimizers iterate `GetPredictors()` which returns `IPredictor` (non-generic). The optimizer must work with any module regardless of specific TInput/TOutput types. `ForwardAsync` returns `object`. The typed `Example<TInput, TLabel>` is the user-facing type for constructing training sets, but it must be implicitly convertible to or extend the non-generic `Example` so optimizers can consume it.
 
-| # | Task | Completion Criteria | Status |
-|---|------|---------------------|--------|
-| 0.1 | Create `global.json` pinning .NET 10 SDK | `dotnet --version` shows 10.x | ✅ Done |
-| 0.2 | Create `Directory.Build.props`: `net10.0`, `LangVersion=preview`, `Nullable=enable`, `ImplicitUsings=enable`, `TreatWarningsAsErrors=true` | All projects inherit settings | ✅ Done |
-| 0.3 | Create `Directory.Packages.props` for central package management (`Microsoft.Extensions.AI`, `Microsoft.CodeAnalysis.*`, `xunit`, `Moq`) | Versions centralized in one file | ✅ Done |
-| 0.4 | Create `LMP.slnx` with solution folders `src/`, `test/` | `dotnet sln list` shows all projects | ✅ Done |
-| 0.5 | Create `LMP.Abstractions` classlib (`net10.0`, `RootNamespace=LMP`) — no project references | Compiles | ✅ Done |
-| 0.6 | Create `LMP.Core` classlib → refs `LMP.Abstractions` + `Microsoft.Extensions.AI` | Compiles | ✅ Done |
-| 0.7 | Create `LMP.SourceGen` classlib → `netstandard2.0`, `<IsRoslynComponent>true`, `<EnforceExtendedAnalyzerRules>true`, `Microsoft.CodeAnalysis.CSharp` 5.3.0 | Compiles | ✅ Done |
-| 0.8 | Create `LMP.Modules` classlib → refs `LMP.Core` | Compiles | ✅ Done |
-| 0.9 | Create `LMP.Optimizers` classlib → refs `LMP.Core` | Compiles | ✅ Done |
-| 0.10 | Create 5 xUnit test projects, each referencing its src counterpart | `dotnet test` passes (0 tests) | ✅ Done |
-| 0.11 | Wire `LMP.SourceGen` as analyzer ref in `LMP.Core`: `<ProjectReference ... OutputItemType="Analyzer" ReferenceOutputAssembly="false" />` | Source gen in build pipeline | ✅ Done |
-| 0.12 | Create `.editorconfig` with C# conventions | Code style enforced | ✅ Done |
+### D3. `GetPredictors()` return type
 
-**Entry:** Repo exists with `docs/`, `AGENTS.md`.
-**Exit:** `dotnet build LMP.slnx && dotnet test LMP.slnx` — 0 errors, 0 warnings. ✅ COMPLETE
+| Spec | Return type |
+|---|---|
+| `public-api.md` §4.3 | `IReadOnlyList<object>` |
+| `runtime-execution.md` §3.2, appendix | `IReadOnlyList<IPredictor>` |
+| `artifact-format.md` §4, `source-generator.md` §5 | `IReadOnlyList<(string Name, IPredictor Predictor)>` |
+| `compiler-optimizer.md` §2 | `IReadOnlyList<PredictorMetadata>` |
 
-> **Note:** .NET 10 SDK creates `.slnx` format by default (not `.sln`).
+**Resolution: `IReadOnlyList<(string Name, IPredictor Predictor)>`** per `source-generator.md` §5 and `artifact-format.md` §4. Optimizers need both the name (for demo mapping in save/load) and the `IPredictor` instance. Named tuples are simple enough — no need for a `PredictorMetadata` record.
 
----
+### D4. `Predictor.Demos` type
 
-## Phase 1 — Abstractions
+| Spec | Type |
+|---|---|
+| `public-api.md` §4.2 | `IReadOnlyList<(TInput Input, TOutput Output)>` |
+| `runtime-execution.md` §2.1 | `List<Example<TInput, TOutput>>` |
+| `IPredictor` (runtime §3.2) | `IList` (non-generic) |
 
-**Goal:** Define all foundational types in `LMP.Abstractions` and `LMP.Core`. No runtime logic, no code generation — purely type contracts.
+**Resolution:** Use `List<Example<TInput, TOutput>>` on the generic `Predictor<TIn,TOut>`. Expose as `IList` via `IPredictor` for optimizers that work with erased types. The optimizer fills demos via the non-generic `IList` using boxed objects.
 
-**Spec:** `public-api.md`, `artifact-format.md` §3, `runtime-execution.md` §2.4/§6
+### D5. `Predictor.Config` type
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 1.1 | **`LmpSignatureAttribute`** — `[AttributeUsage(Class, AllowMultiple=false, Inherited=false)]`, constructor `(string instructions)`, property `string Instructions`. Namespace `LMP`. | Test: construct attribute, verify `Instructions` round-trips |
-| 1.2 | **`IPredictor` interface** (non-generic, for optimizer enumeration) — `Name` (get/set), `Instructions` (get/set), `Demos` (`IList`), `Config` (`ChatOptions`), `GetState()` → `PredictorState`, `LoadState(PredictorState)` | Test: stub class implements interface without error |
-| 1.3 | **Artifact records** — `ModuleState` { Version, Module, Predictors `Dictionary<string, PredictorState>` }, `PredictorState` { Instructions, Demos `List<DemoEntry>`, Config `Dictionary<string, JsonElement>?` }, `DemoEntry` { Input, Output as `Dictionary<string, JsonElement>` }. Per `artifact-format.md` §3. | Test: construct each, verify equality/`with` expressions |
-| 1.4 | **`ModuleStateSerializerContext`** — `[JsonSerializable(typeof(ModuleState))]` with camelCase, WriteIndented, WhenWritingNull options | Test: serialize → deserialize `ModuleState` round-trip via context |
-| 1.5 | **`Example<TInput, TLabel>`** — Record `(TInput Input, TLabel Label)` with `WithInputs()` → `TInput` | Test: construct, `WithInputs()` returns input; record equality works |
-| 1.6 | **`Trace` + `TraceEntry`** — `Trace` holds `List<TraceEntry>`, has `Record(string name, object input, object output)`. `TraceEntry` is record `(string PredictorName, object Input, object Output)` | Test: record entries, verify list contents |
-| 1.7 | **`LmpAssert`** — Static `That<T>(T result, Func<T, bool> predicate, string? message)` throws `LmpAssertionException` on failure | Test: passing predicate no-ops; failing throws with message |
-| 1.8 | **`LmpSuggest`** — Static `That<T>(T result, Func<T, bool> predicate, string? message)` returns `bool`, never throws | Test: failing predicate returns false without throwing |
-| 1.9 | **`LmpAssertionException`** — `Message` + `object? FailedResult`. **`LmpMaxRetriesExceededException`** — `PredictorName` + `MaxRetries`. | Test: construct, verify properties |
-| 1.10 | **`IRetriever`** — `Task<string[]> RetrieveAsync(string query, int k = 5, CancellationToken ct = default)` | Test: stub implements interface |
-| 1.11 | **`IOptimizer`** — `Task<TModule> CompileAsync<TModule, TInput, TLabel>(TModule module, IReadOnlyList<Example<TInput, TLabel>> trainSet, Func<Example<TInput, TLabel>, object, float> metric, CancellationToken ct) where TModule : LmpModule` | Test: stub implements interface |
-| 1.12 | **`LmpModule`** — Abstract base class. `Trace?` property. Abstract `GetPredictors()` → `IReadOnlyList<(string Name, IPredictor Predictor)>`. Concrete `SaveAsync`/`LoadAsync` (impl deferred; can throw `NotImplementedException` until Phase 4). | Test: subclass compiles, overrides GetPredictors |
-| 1.13 | **`Predictor<TInput, TOutput>` shell** in `LMP.Core` — Constructor `(IChatClient)`. Properties: `Demos` (`List<(TInput, TOutput)>`), `Instructions`, `Config` (`ChatOptions`), `Name`. Implements `IPredictor`. `PredictAsync` throws `NotImplementedException` (wired in Phase 2). `where TOutput : class`. | Test: construction, property defaults, IPredictor satisfaction |
+| Spec | Type |
+|---|---|
+| `public-api.md` §4.2 | `PredictorConfig` (custom) |
+| `runtime-execution.md` §2.1 | `ChatOptions` (M.E.AI) |
 
-**Entry:** Phase 0 complete.
-**Exit:** `LMP.Abstractions` + `LMP.Core` compile with 0 warnings. Consumer project references all types. All unit tests pass.
+**Resolution: `ChatOptions`** from `Microsoft.Extensions.AI`. Don't reinvent — M.E.AI's `ChatOptions` already has temperature, max tokens, stop sequences, tools, etc.
 
----
+### D6. `ForwardAsync` base signature
 
-## Phase 2 — Source Generator + Core Predictor
+| Spec | Signature |
+|---|---|
+| `public-api.md` §4.3 | `abstract Task<object> ForwardAsync(object input, CancellationToken)` |
+| `runtime-execution.md` §3.1 | Typed override: `Task<DraftReply> ForwardAsync(TicketInput input)` |
 
-**Goal:** Wire the source generator to `[LmpSignature]` output types and make `Predictor<TIn, TOut>.PredictAsync()` work end-to-end.
+**Resolution:** Both are needed. Declare `abstract Task<object> ForwardAsync(object input, CancellationToken ct = default)` as the base (required by Evaluator/optimizers). Users also write typed convenience methods that call the base. Source-gen may bridge them.
 
-**Spec:** `source-generator.md`, `runtime-execution.md` §2, `diagnostics.md`
+### D7. `IPredictor` interface — save/load members
 
-### 2A — Generator Infrastructure
+| Spec | Members |
+|---|---|
+| `runtime-execution.md` §3.2 | `Name`, `Instructions`, `Demos`, `Config` |
+| `artifact-format.md` §5 | `GetState() -> PredictorState`, `LoadState(PredictorState)` |
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 2A.1 | **`[Generator] LmpSourceGenerator : IIncrementalGenerator`** — Register pipeline with `ForAttributeWithMetadataName("LMP.LmpSignatureAttribute")` | Generator discovered by compiler (Roslyn test harness) |
-| 2A.2 | **`EquatableArray<T>`** helper — Wraps `ImmutableArray<T>` with element-wise equality for incremental caching | Test: two arrays with same elements are equal |
-| 2A.3 | **Model records** — `OutputTypeModel`(Namespace, TypeName, Instructions, `EquatableArray<OutputFieldModel>` OutputFields, IsPartialRecord). `OutputFieldModel`(Name, ClrTypeName, Description, IsRequired). Never store `ISymbol`/`SyntaxNode`. | Test: model equality works |
-| 2A.4 | **`ExtractOutputModel` transform** — Read `[LmpSignature]` attribute, extract TOutput properties. Description priority: XML docs > `[Description]` on params > `[Description]` on properties. | Test: model has correct fields and descriptions from known source |
+**Resolution:** Combine both. `IPredictor` has all runtime members (`Name`, `Instructions`, `Demos`, `Config`) **plus** `GetState()` and `LoadState()` for artifact round-trip. The source generator emits typed `GetState()`/`LoadState()` implementations that serialize `Demos` through the type-safe `JsonSerializerContext`.
 
-### 2B — Diagnostics
+### D8. `Example` — typed vs non-generic
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 2B.1 | **LMP003** — Error when `[LmpSignature]` on non-`partial record`. Skip generation. | Test: `public record Foo` → LMP003; `public partial class Foo` → LMP003 |
-| 2B.2 | **LMP001** — Warning when output property lacks `[Description]`. Continue generation; use property name as fallback. | Test: property without `[Description]` → LMP001 with property name |
-| 2B.3 | **LMP002** — Error when output property type not JSON-serializable (`Delegate`, `IntPtr`, `Span<T>`, `Stream`, etc.). Skip generation. | Test: `Action<string>` property → LMP002 |
+| Spec | Form |
+|---|---|
+| `public-api.md` §4.4 | `Example<TInput, TLabel>(TInput Input, TLabel Label)` |
+| `compiler-optimizer.md` §2–5 | Non-generic `Example` with indexer `example["field"]` and `WithInputs() -> object` |
 
-### 2C — PromptBuilder Emission
+**Resolution:** Both are needed. Define a non-generic abstract base class `Example` with `WithInputs() -> object` and string indexer. `Example<TInput, TLabel>` inherits from it with typed access. Optimizers work with `Example` (non-generic); users construct `Example<TInput, TLabel>` (typed). The non-generic `Example` stores data as `JsonElement` dictionaries internally.
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 2C.1 | **`PromptBuilderEmitter`** — Emit `file static class {TypeName}PromptBuilder` with `BuildMessages(TInput input, IReadOnlyList<(TInput, TOutput)>? demos, string? lastError)` → `IList<ChatMessage>`. Bake instructions + field descriptions as `const string`. | Snapshot test: `.g.cs` matches golden file |
-| 2C.2 | **System message** — Instructions + input/output field descriptions. Use raw string literals. | Snapshot test: system message content correct |
-| 2C.3 | **Demo pairs** — User(`FormatInput(demo.Input)`) → Assistant(JSON `demo.Output`). | Test: 2 demos → 6 messages total (sys + 4 demo + 1 input) |
-| 2C.4 | **Retry feedback** — When `lastError` non-null, append `"Previous attempt failed: {lastError}. Try again."` to final user message. | Test: lastError appears in last message |
+### D9. Module discovery for source generator
 
-### 2D — JsonTypeInfo Emission
+| Spec | Mechanism |
+|---|---|
+| `source-generator.md` §2 line 84 | `ForAttributeWithMetadataName("LMP.LmpModuleAttribute")` |
+| All usage examples | `class Foo : LmpModule` — no attribute |
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 2D.1 | **`JsonContextEmitter`** — Emit `[JsonSerializable(typeof(TOutput))] internal partial class {TypeName}JsonContext : JsonSerializerContext` with camelCase. | Snapshot test: matches golden file |
-| 2D.2 | **File headers** — `// <auto-generated />`, `#nullable enable`, `[GeneratedCode("LMP.Generators", "1.0.0")]`. Hint names: `{TypeName}.PromptBuilder.g.cs`, `{TypeName}.JsonContext.g.cs`. | Snapshot test: headers correct |
+**Resolution:** Use **base-type check** via `CreateSyntaxProvider`. No `[LmpModule]` attribute required — scanning for `: LmpModule` base class is sufficient and avoids user boilerplate. The source-gen spec's mention of `LmpModuleAttribute` is an implementation alternative; the base-type check is preferred.
 
-### 2E — Predictor Implementation
+### D10. `Trace` class vs `Trace` record
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 2E.1 | **`PredictAsync` body** — 1) `PromptBuilder.BuildMessages(input, Demos, lastError)` → `ChatMessage[]`, 2) `_client.GetResponseAsync<TOutput>(messages, Config, ct)`, 3) record trace if `Trace` set, 4) return `TOutput`. | Integration test: `Predictor<TicketInput, ClassifyTicket>` with FakeChatClient → typed output |
-| 2E.2 | **Retry loop** — Loop up to `maxRetries` (default 3). On `LmpAssertionException`, capture message, rebuild prompt with feedback, retry. After max → throw `LmpMaxRetriesExceededException`. | Test: assertion failure triggers retry; max exceeded throws |
-| 2E.3 | **`GetState()` / `LoadState()`** — Serialize/restore Instructions + Demos + Config via `PredictorState` + `JsonElement` dictionaries. | Test: round-trip preserves state |
-| 2E.4 | **`FakeChatClient`** — Test helper implementing `IChatClient`, returns pre-configured JSON responses keyed by system prompt. Place in shared test infrastructure. | Test: returns configured response for given signature |
+| Spec | Definition |
+|---|---|
+| `public-api.md` §4.5 | `record Trace(object Predictor, object Input, object Output)` — single entry |
+| `runtime-execution.md` §2.4 | `sealed class Trace` with `List<TraceEntry>` — multi-entry container |
 
-### 2F — Module Predictor Discovery
-
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 2F.1 | **Module pipeline stage** — Scan classes extending `LmpModule`, extract `Predictor<,>` fields → `ModuleModel`(Namespace, TypeName, `EquatableArray<PredictorFieldModel>`). `PredictorFieldModel`(FieldName, InputTypeName, OutputTypeName). | Test: module with 2 fields → model has 2 entries |
-| 2F.2 | **`GetPredictors()` emitter** — `partial class {Module} { public override ... GetPredictors() => [("name", _field), ...]; }` Strips `_` prefix for name. Hint: `{Module}.Predictors.g.cs`. | Snapshot test: matches golden file |
-| 2F.3 | **End-to-end integration** — `TicketInput` + `[LmpSignature] ClassifyTicket` + module + `FakeChatClient` → `PredictAsync` returns typed result. | Test passes deterministically |
-
-**Entry:** Phase 1 complete.
-**Exit:** `dotnet build` produces `.g.cs` files. `PredictAsync` works end-to-end. Deterministic output. LMP001/002/003 fire correctly. All snapshot + integration tests pass.
+**Resolution:** Use the `runtime-execution.md` form — `sealed class Trace` with `Record<TIn,TOut>()` method and `IReadOnlyList<TraceEntry> Entries`. This is what the optimizer actually needs: a container that captures all predictor calls during one `ForwardAsync` execution.
 
 ---
 
-## Phase 3 — Reasoning Modules
+## Phase 1: Abstractions
 
-**Goal:** Thin wrappers (<100 LOC each) around `Predictor` that augment prediction strategy.
+**Goal:** Define the foundational types. No runtime behavior, no code generation — just type contracts.
 
-**Spec:** `runtime-execution.md` §4, `source-generator.md` §6
+**Spec references:** `public-api.md` §4, `phased-plan.md` Phase 1, `runtime-execution.md` appendix, `artifact-format.md` §3
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 3.1 | **ChainOfThought extended record (source gen)** — When `ChainOfThought<TIn, TOut>` found, emit `internal partial record {TOut}WithReasoning` with `[Description("Think step by step")] [JsonPropertyOrder(-1)] required string Reasoning` + all original TOutput props. Emit corresponding `JsonSerializerContext`. | Snapshot test: extended record matches golden file |
-| 3.2 | **`ChainOfThought<TIn, TOut>` class** — Wraps inner `Predictor<TIn, TOutWithReasoning>`. `PredictAsync`: call inner → strip Reasoning → return TOut. Reasoning in trace. Delegates Instructions/Demos/Config. Implements `IPredictor`. | Test: returns `ClassifyTicket`; reasoning captured in trace |
-| 3.3 | **`BestOfN<TIn, TOut>` class** — Constructor `(IChatClient, int n, Func<TIn, TOut, float> reward)`. `PredictAsync`: N concurrent calls via `Task.WhenAll`, return highest-scored. Implements `IPredictor`. | Test: N=3, returns best; verify all 3 calls concurrent |
-| 3.4 | **`Refine<TIn, TOut>` class** — Holds `_predictor` (initial) + `_refiner` (critique). Constructor `(IChatClient, int maxIterations = 2)`. `PredictAsync`: predict → loop(critique → re-predict). Both recorded in trace. | Test: maxIterations=2 → 3 LM calls total |
-| 3.5 | **`RefineCritiqueInput<TOutput>` record** — Combines original input context + previous output for refiner. | Test: fields accessible |
+### 1.1 — Solution Skeleton ✅ COMPLETE
 
-**Entry:** Phase 2 complete.
-**Exit:** All three modules work against FakeChatClient. CoT has reasoning in trace. BestOfN runs N parallel calls. Refine iterates. All tests pass.
+Create the repository structure, solution file, and build infrastructure.
+
+**Tasks:**
+- [x] Create `global.json` pinning .NET 10 SDK
+- [x] Create `Directory.Build.props` with shared properties: `net10.0`, `LangVersion=preview`, nullable enabled, `TreatWarningsAsErrors`, XML doc generation
+- [x] Create `Directory.Packages.props` for central package management (`Microsoft.Extensions.AI`, `Microsoft.CodeAnalysis.CSharp`, xUnit, Moq/NSubstitute)
+- [x] Create `.editorconfig` with C# 14 conventions
+- [x] Create `LMP.slnx` solution file (`.slnx` is .NET 10 default format)
+- [x] Create 5 `src/` project stubs per `AGENTS.md`:
+  - `LMP.Abstractions` (net10.0, no deps)
+  - `LMP.Core` (net10.0, refs Abstractions + M.E.AI)
+  - `LMP.SourceGen` (netstandard2.0, refs CodeAnalysis)
+  - `LMP.Modules` (net10.0, refs Core)
+  - `LMP.Optimizers` (net10.0, refs Core)
+- [x] Create 5 `test/` project stubs per `AGENTS.md`:
+  - `LMP.Abstractions.Tests`, `LMP.Core.Tests`, `LMP.SourceGen.Tests`, `LMP.Modules.Tests`, `LMP.Optimizers.Tests`
+- [x] Wire `LMP.SourceGen` as `<ProjectReference ... OutputItemType="Analyzer" ReferenceOutputAssembly="false">` in `LMP.Core`
+- [x] Verify `dotnet build` passes with zero errors on the solution
+- [x] Verify `dotnet test` passes (no tests yet, but framework loads)
+- [x] Add `<RootNamespace>` to `LMP.Modules.csproj` and `LMP.Optimizers.csproj` (decide: `LMP` vs `LMP.Modules` / `LMP.Optimizers`)
+- [x] Add `Microsoft.Extensions.AI.Abstractions` PackageReference to `LMP.Abstractions.csproj` (needed for `ChatOptions` in `IPredictor`)
+
+**Status:** ✅ Skeleton complete. Phase 1 types implemented.
+
+### 1.2 — LmpSignatureAttribute
+
+The source generator's entry point. Placed on `partial record` output types only.
+
+**Spec:** `public-api.md` §4.1
+
+**Tasks:**
+- [x] Create `LmpSignatureAttribute` in `LMP.Abstractions` namespace `LMP`
+  - `[AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]`
+  - Primary constructor: `LmpSignatureAttribute(string instructions)`
+  - `public string Instructions { get; }` read-only property
+- [x] XML doc comments on class and `Instructions` property
+- [x] Unit test: `new LmpSignatureAttribute("Classify tickets").Instructions == "Classify tickets"`
+
+**Completion criteria:** A consumer can write `[LmpSignature("Classify tickets")]` on a partial record and compile.
+
+### 1.3 — IPredictor Interface and Artifact Records
+
+The non-generic interface exposed to optimizers for predictor discovery and artifact round-trip.
+
+**Spec:** `runtime-execution.md` §3.2, `artifact-format.md` §3, §5
+
+**Tasks:**
+- [x] Create `IPredictor` interface in `LMP.Abstractions` (per **D3**, **D7**):
+  - `string Name { get; set; }`
+  - `string Instructions { get; set; }`
+  - `IList Demos { get; }` — non-generic `System.Collections.IList`
+  - `ChatOptions Config { get; set; }` — M.E.AI's ChatOptions per **D5**
+  - `PredictorState GetState()`
+  - `void LoadState(PredictorState state)`
+- [x] Create `ModuleState` sealed record in `LMP.Abstractions` per `artifact-format.md` §3:
+  - `string Version`, `string Module`, `Dictionary<string, PredictorState> Predictors`
+- [x] Create `PredictorState` sealed record:
+  - `string Instructions`, `List<DemoEntry> Demos`, `Dictionary<string, JsonElement>? Config`
+- [x] Create `DemoEntry` sealed record:
+  - `Dictionary<string, JsonElement> Input`, `Dictionary<string, JsonElement> Output`
+- [x] Create `ModuleStateSerializerContext` per `artifact-format.md` §3:
+  - `[JsonSourceGenerationOptions(PropertyNamingPolicy = CamelCase, WriteIndented = true, DefaultIgnoreCondition = WhenWritingNull)]`
+  - `[JsonSerializable(typeof(ModuleState))]`
+  - `public partial class ModuleStateSerializerContext : JsonSerializerContext`
+- [x] Unit tests: `PredictorState` record equality, `ModuleState` round-trips with `with` expressions
+
+**Completion criteria:** `IPredictor` compiles with all members; `ModuleState` serializes/deserializes correctly.
+
+### 1.4 — Example Base Class and Example\<TInput, TLabel\>
+
+Training data types used by optimizers and evaluators.
+
+**Spec:** `public-api.md` §4.4, `compiler-optimizer.md` §2 (per **D8**)
+
+**Tasks:**
+- [x] Create non-generic `Example` abstract class in `LMP.Abstractions`:
+  - `abstract object WithInputs()` — returns input portion for `ForwardAsync`
+  - `abstract object GetLabel()` — returns label portion for metrics
+  - String indexer `this[string fieldName]` — accesses label fields by name (via `JsonElement`)
+- [x] Create `Example<TInput, TLabel>` sealed record inheriting `Example`:
+  - `TInput Input`, `TLabel Label` positional properties
+  - `override object WithInputs() => Input!`
+  - `override object GetLabel() => Label!`
+  - Typed `TInput WithTypedInputs() => Input` convenience method
+- [x] XML doc comments on all public members
+- [x] Unit tests: construction, `WithInputs()`, record equality, typed access
+
+**Completion criteria:** `new Example<TicketInput, ClassifyTicket>(input, label)` works; `WithInputs()` returns input; `GetLabel()` returns label.
+
+### 1.5 — Trace and TraceEntry
+
+Execution recording for optimizer trace collection.
+
+**Spec:** `runtime-execution.md` §2.4
+
+**Tasks:**
+- [x] Create `Trace` sealed class in `LMP.Abstractions`:
+  - `private readonly List<TraceEntry> _entries`
+  - `IReadOnlyList<TraceEntry> Entries { get; }`
+  - `void Record<TInput, TOutput>(string predictorName, TInput input, TOutput output)` — appends entry
+  - `void Clear()` — resets for reuse
+- [x] Create `TraceEntry` sealed record: `(string PredictorName, object Input, object Output)`
+- [x] Unit tests: `Record()` appends entry, `Entries` returns recorded data, `Clear()` resets
+
+**Completion criteria:** `trace.Record("classify", input, output)` appends; `trace.Entries[0].PredictorName == "classify"`.
+
+### 1.6 — Demo Record
+
+Non-generic demo type used by optimizers when filling predictor Demos.
+
+**Spec:** `compiler-optimizer.md` §4 (Demo Type)
+
+**Tasks:**
+- [x] Create `Demo` sealed record in `LMP.Abstractions`: `(object Input, object Output)`
+- [x] Unit test: construction and equality
+
+**Completion criteria:** `new Demo(inputObj, outputObj)` works and compares by value.
+
+### 1.7 — Predictor\<TInput, TOutput\> Class Shell
+
+The core primitive. Shell only in Phase 1 — `PredictAsync` wired in Phase 2.
+
+**Spec:** `public-api.md` §4.2, `runtime-execution.md` §2.1
+
+**Tasks:**
+- [x] Create `Predictor<TInput, TOutput>` in `LMP.Core` namespace `LMP`:
+  - Constraint: `where TOutput : class`
+  - Constructor: `Predictor(IChatClient client)`
+  - `public string Name { get; set; }` — set by source-gen `GetPredictors()`
+  - `public string Instructions { get; set; }` — defaults from `[LmpSignature]` (wired in Phase 2)
+  - `public List<Example<TInput, TOutput>> Demos { get; set; } = []` (per **D4**)
+  - `public ChatOptions Config { get; set; } = new()` (per **D5**)
+  - Implements `IPredictor` explicitly:
+    - `IList IPredictor.Demos => Demos` (the `List<>` implements `IList`)
+    - `PredictorState GetState()` — stub (full impl in Phase 2/4)
+    - `void LoadState(PredictorState state)` — stub
+  - `PredictAsync(TInput, CancellationToken)` -> throws `NotImplementedException` until Phase 2
+- [x] Unit test: construction, property defaults, `IPredictor` interface satisfaction, `IPredictor.Demos` returns the same list
+
+**Completion criteria:** `new Predictor<TicketInput, ClassifyTicket>(client)` compiles; casting to `IPredictor` exposes `Name`, `Instructions`, `Demos`, `Config`.
+
+### 1.8 — LmpModule Base Class
+
+Abstract base class for composable LM programs with save/load.
+
+**Spec:** `public-api.md` §4.3, `runtime-execution.md` §3, `artifact-format.md` §4
+
+**Tasks:**
+- [x] Create `LmpModule` abstract class in `LMP.Core` namespace `LMP`:
+  - `public Trace? Trace { get; set; }`
+  - `public abstract Task<object> ForwardAsync(object input, CancellationToken ct = default)` (per **D6**)
+  - `public abstract IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()` (per **D3**)
+  - `SaveAsync(string path, CancellationToken ct = default)` — concrete implementation per `artifact-format.md` §4:
+    - Builds `ModuleState` from `GetPredictors()`, calling `GetState()` on each
+    - Serializes via `ModuleStateSerializerContext.Default.ModuleState`
+    - Atomic write: temp file -> `File.Move(overwrite: true)`
+  - `LoadAsync(string path, CancellationToken ct = default)` — concrete implementation:
+    - Deserializes `ModuleState` via `ModuleStateSerializerContext`
+    - Iterates `GetPredictors()`, calls `LoadState()` on each matching predictor
+  - `EnableTracing()` — sets `Trace = new Trace()` (for optimizer use)
+  - `CollectTraces() -> IReadOnlyList<TraceEntry>` — returns `Trace.Entries` and clears
+- [x] Unit test with a manual `LmpModule` subclass:
+  - Override `GetPredictors()` manually (source-gen tested in Phase 2)
+  - SaveAsync writes valid JSON matching `artifact-format.md` schema
+  - LoadAsync reads it back, predictors have restored state
+
+**Completion criteria:** `module.SaveAsync("test.json")` writes JSON; `module.LoadAsync("test.json")` restores predictor state.
+
+### 1.9 — LmpAssert / LmpSuggest / Exceptions
+
+Runtime assertions for LM output validation.
+
+**Spec:** `runtime-execution.md` §6, `public-api.md` §4.6
+
+**Tasks:**
+- [x] Create `LmpAssertionException : Exception` in `LMP.Abstractions`:
+  - `public object? FailedResult { get; }` property
+  - `public string AssertionMessage { get; }` — the user-provided message
+  - Constructor: `(string message, object? failedResult)`
+- [x] Create `LmpMaxRetriesExceededException : Exception`:
+  - `public int Attempts { get; }`
+  - `public LmpAssertionException? LastAssertion { get; }`
+- [x] Create `LmpAssert` static class in `LMP.Core`:
+  - `static void That<T>(T result, Func<T, bool> predicate, string? message = null)`
+  - Throws `LmpAssertionException` when predicate returns false
+- [x] Create `LmpSuggest` static class in `LMP.Core`:
+  - `static void That<T>(T result, Func<T, bool> predicate, string? message = null)`
+  - Logs warning via `ILogger` (if available), never throws
+- [x] Unit tests:
+  - `LmpAssert.That(5, x => x > 0)` — passes silently
+  - `LmpAssert.That(-1, x => x > 0, "Must be positive")` — throws `LmpAssertionException` with `FailedResult = -1`
+  - `LmpSuggest.That(-1, x => x > 0)` — no exception
+
+**Completion criteria:** Assert throws on failure with correct exception type; Suggest never throws.
+
+### 1.10 — IRetriever and IOptimizer Interfaces
+
+Contracts for RAG and optimization.
+
+**Spec:** `public-api.md` §4.7–4.8, `compiler-optimizer.md` §2
+
+**Tasks:**
+- [x] Create `IRetriever` interface in `LMP.Abstractions` per `public-api.md` §4.7:
+  - `Task<string[]> RetrieveAsync(string query, int k, CancellationToken ct = default)`
+- [x] Create `IOptimizer` interface in `LMP.Abstractions` (per **D2**):
+  - `Task<TModule> CompileAsync<TModule>(TModule module, IReadOnlyList<Example> trainSet, Func<Example, object, float> metric, CancellationToken ct = default) where TModule : LmpModule`
+- [x] XML doc comments on both interfaces
+- [x] Unit tests: mock implementations satisfy both interface contracts
+
+**Completion criteria:** Interfaces compile; mock implementations can be instantiated and called.
+
+### Phase 1 Exit Criteria
+
+- ✅ `LMP.Abstractions` compiles with zero warnings — contains: `LmpSignatureAttribute`, `IPredictor`, `ModuleState`, `PredictorState`, `DemoEntry`, `Example<TIn,TLabel>`, `Trace`, `TraceEntry`, `LmpAssert`, `LmpSuggest`, `LmpAssertionException`, `LmpMaxRetriesExceededException`, `IRetriever`, `IOptimizer`, `LmpModule`
+- ✅ `LMP.Core` compiles with zero warnings — contains: `Predictor<TIn,TOut>` (shell)
+- ✅ All other projects compile (empty stubs — already verified)
+- ✅ All public types have XML doc comments
+- ✅ 67 unit tests pass for: attribute construction, record equality, `Example.WithInputs()`, assertion behavior, `Trace.Record()`, serialization round-trip, `IPredictor` interface satisfaction
+- ✅ `dotnet build && dotnet test` succeeds with zero errors and zero warnings
+
+> **Status: ✅ PHASE 1 COMPLETE.** All abstractions and type contracts implemented. Next: Phase 2 (Source Generator + Core Predictor).
 
 ---
 
-## Phase 4 — Evaluation + BootstrapFewShot
+## Phase 2: Source Generator + Core Predictor
 
-**Goal:** First phase where LMP *programmatically improves* an LM program — DSPy's core insight.
+**Goal:** Wire the source generator to `[LmpSignature]` types and make `PredictAsync` work end-to-end.
 
-**Spec:** `compiler-optimizer.md`, `artifact-format.md`
+**Spec references:** `source-generator.md`, `runtime-execution.md` §2, `diagnostics.md`
 
-### 4A — Evaluator
+**Entry criteria:** Phase 1 complete; `Microsoft.Extensions.AI` configured.
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 4A.1 | **`Evaluator` static class** — `EvaluateAsync<TModule>(module, devSet, metric, maxConcurrency=4, ct)` using `Parallel.ForEachAsync`. Returns `EvaluationResult`. | Test: 10 examples → correct average score |
-| 4A.2 | **`EvaluationResult`** — `PerExample` (list), `AverageScore`, `MinScore`, `MaxScore`, `Count`. **`ExampleResult`** — `Example`, `Output` (object), `Score`. | Test: aggregation math correct |
-| 4A.3 | **Error swallowing** — If `ForwardAsync` throws, record score=0, log warning, continue. | Test: 1 of 5 throws → avg over all 5, failed=0 |
+### 2.1 — Generator Project Setup (Partially Done)
 
-### 4B — BootstrapFewShot
+**Spec:** `source-generator.md` §2
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 4B.1 | **`BootstrapFewShot : IOptimizer`** — Constructor `(int maxDemos=4, int maxRounds=1, float metricThreshold=1.0f)` | Test: defaults correct |
-| 4B.2 | **CompileAsync — trace collection** — Clone module. For each training example (parallel): enable tracing → `ForwardAsync` → score → if ≥ threshold, collect traces per predictor into `ConcurrentDictionary<string, ConcurrentBag<Demo>>`. Swallow failures. | Test: 10 examples, 7 pass → 7 traces |
-| 4B.3 | **CompileAsync — demo assignment** — For each predictor: take up to `maxDemos` from successful traces → assign `Demos`. Return student. | Test: maxDemos=4, 7 traces → 4 demos per predictor |
-| 4B.4 | **Module cloning** — Deep copy via source-generated helper or manual pattern. Each predictor's demos/instructions independent. | Test: modify original after clone → clone unaffected |
+**Tasks:**
+- [x] Configure `LMP.SourceGen.csproj` targeting `netstandard2.0`:
+  - `<EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>`
+  - `<IsRoslynComponent>true</IsRoslynComponent>`
+  - PackageReference: `Microsoft.CodeAnalysis.CSharp` >= 4.12
+- [x] Create `LmpGenerator : IIncrementalGenerator` skeleton with empty `Initialize()` method
+  - `[Generator]` attribute (note: spec uses `[Generator(LanguageNames.CSharp)]` but `[Generator]` also works)
+- [ ] Create `EquatableArray<T>` helper struct for incremental model cache correctness
+- [ ] Wire `LMP.SourceGen` as analyzer reference in consumer test projects (`LMP.Core.Tests`, integration test projects)
+- [ ] Verify `dotnet build` runs the generator (empty — no output yet)
 
-### 4C — BootstrapRandomSearch
+**Status:** `LMP.SourceGen.csproj` is properly configured. `LmpSourceGenerator.cs` exists with `[Generator]` and empty `Initialize()`. Remaining: `EquatableArray<T>` helper and test project wiring.
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 4C.1 | **`BootstrapRandomSearch : IOptimizer`** — Constructor `(int numTrials=8, int maxDemos=4, float metricThreshold=1.0f, int? seed=null)` | Test: defaults correct |
-| 4C.2 | **CompileAsync** — Split 80/20. Run N `BootstrapFewShot` with shuffled subsets. Evaluate all on validation split. Return best. Seed → deterministic. | Test: 3 trials → returns best; seeded runs are reproducible |
+**Completion criteria:** `dotnet build` triggers the generator; no errors.
 
-### 4D — Save/Load + JSONL
+### 2.2 — Output Type Model Extraction
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 4D.1 | **`SaveAsync` implementation** — `GetPredictors()` → `ModuleState` → `ModuleStateSerializerContext` → atomic write (temp→rename). Per `artifact-format.md` §4. | Test: file exists, valid JSON, matches schema |
-| 4D.2 | **`LoadAsync` implementation** — Deserialize → iterate predictors → `LoadState()`. | Test: save → load into fresh module → same state |
-| 4D.3 | **Round-trip integration** — Optimize → save → load → evaluate → same score. | Test: pre/post optimization scores differ; load preserves post score |
-| 4D.4 | **JSONL loader** — `Example.LoadFromJsonl<TInput, TLabel>(string path)`. One JSON object per line. | Test: 3-line JSONL → 3 typed examples |
+Read `[LmpSignature]` types at build time.
 
-### 4E — Full Integration
+**Spec:** `source-generator.md` §2 (pipeline), `diagnostics.md` (LMP003)
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 4E.1 | **Optimize-evaluate loop** — Module + FakeChatClient + train set → `BootstrapFewShot.CompileAsync` → `Evaluator.EvaluateAsync` → verify demos filled, score computable. Save/load round-trip. | End-to-end test passes |
+**Tasks:**
+- [ ] Implement `ForAttributeWithMetadataName("LMP.LmpSignatureAttribute")` pipeline:
+  - Predicate: `node is RecordDeclarationSyntax`
+  - Transform: `ExtractOutputModel(ctx, ct)`
+- [ ] Create `OutputTypeModel` record: Namespace, TypeName, Instructions, OutputFields (EquatableArray), IsPartialRecord, Location
+- [ ] Create `OutputFieldModel` record: Name, ClrTypeName, FullyQualifiedTypeName, Description (nullable), IsRequired, Location
+- [ ] Extract `[Description]` from output type properties per `source-generator.md` §3
+- [ ] Extract input type descriptions with priority order: XML doc `<param>` -> `[Description]` on ctor params -> `[Description]` on properties
+- [ ] Report **LMP003** diagnostic for non-partial-record types per `diagnostics.md` — skip generation entirely
+- [ ] Unit test (Roslyn `CSharpGeneratorDriver`): model extraction from sample source text; LMP003 fires on `class` and non-partial `record`
 
-**Entry:** Phase 2 complete (Phase 3 recommended).
-**Exit:** Evaluator scores modules. BootstrapFewShot fills demos. RandomSearch finds best. Save/Load round-trips. Integration test passes.
+**Completion criteria:** Generator extracts correct metadata from `[LmpSignature]` records; LMP003 fires and skips non-partial types.
+
+### 2.3 — PromptBuilder Emission
+
+Generate the prompt assembly code.
+
+**Spec:** `source-generator.md` §3
+
+**Tasks:**
+- [ ] Create `PromptBuilderEmitter` that generates `file static class {TypeName}PromptBuilder`:
+  - `private const string Instructions = "..."` — from `[LmpSignature]`
+  - `private const string FieldDescriptions = "..."` — markdown of input/output fields from `[Description]` / XML docs
+  - `public static IList<ChatMessage> BuildMessages(TInput input, IReadOnlyList<(TInput, TOutput)>? demos = null)`:
+    - System message: Instructions + FieldDescriptions
+    - Demo pairs: User=FormatInput(demoInput), Assistant=FormatOutput(demoOutput)
+    - Current input: User=FormatInput(input)
+  - `public static string DefaultInstructions` — returns Instructions constant
+  - `private static string FormatInput(TInput input)` — formats each input field
+  - `private static string FormatOutput(TOutput output)` — JSON-serializes using generated JsonContext
+- [ ] Generated file attributes: `// <auto-generated />`, `#nullable enable`, `[GeneratedCode("LMP.Generators", "1.0.0")]`
+- [ ] Use `file` access modifier to prevent namespace pollution
+- [ ] Hint name: `{TypeName}.PromptBuilder.g.cs`
+- [ ] Snapshot test using Verify library: generated code matches golden file
+
+**Completion criteria:** `dotnet build` produces `ClassifyTicket.PromptBuilder.g.cs` with correct prompt assembly.
+
+### 2.4 — JsonTypeInfo Emission
+
+Generate STJ source-gen context for structured output.
+
+**Spec:** `source-generator.md` §4
+
+**Tasks:**
+- [ ] Create `JsonContextEmitter` that generates `file partial class {TypeName}JsonContext : JsonSerializerContext`:
+  - `[JsonSourceGenerationOptions(PropertyNamingPolicy = CamelCase, DefaultIgnoreCondition = WhenWritingNull)]`
+  - `[JsonSerializable(typeof(TOutput))]`
+- [ ] Hint name: `{TypeName}.JsonContext.g.cs`
+- [ ] Snapshot test: verify generated context code
+
+**Completion criteria:** `dotnet build` produces `ClassifyTicket.JsonContext.g.cs`; STJ source gen picks it up.
+
+### 2.5 — GetPredictors() Emission
+
+Generate predictor discovery on `LmpModule` subclasses.
+
+**Spec:** `source-generator.md` §5
+
+**Tasks:**
+- [ ] Implement module discovery pipeline using `CreateSyntaxProvider` (per **D9**):
+  - Predicate: `ClassDeclarationSyntax` with base type `LmpModule`
+  - Transform: walk all fields/properties, identify `Predictor<,>` or subclasses (ChainOfThought, BestOfN, etc.)
+  - Use `IsPredictorType()` helper walking base types to match `LMP.Predictor<TInput, TOutput>`
+- [ ] Create `ModuleModel` record: Namespace, TypeName, PredictorFields (EquatableArray)
+- [ ] Create `PredictorFieldModel`: FieldName, InputTypeFQN, OutputTypeFQN
+- [ ] Create `ModuleEmitter` that generates `partial class {ModuleName}`:
+  - `public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()` (per **D3**)
+  - Returns list of `(fieldName, fieldReference)` for each Predictor field
+  - Strips `_` prefix from field names for the Name string
+- [ ] Hint name: `{ModuleName}.Predictors.g.cs`
+- [ ] Snapshot test: module with 2 predictor fields -> generated `GetPredictors()` returning both
+
+**Completion criteria:** A module with `_classify` and `_draft` predictor fields gets a generated `GetPredictors()` returning `[("classify", _classify), ("draft", _draft)]`.
+
+### 2.6 — Diagnostics LMP001 and LMP002
+
+Build-time diagnostics for output type validation.
+
+**Spec:** `diagnostics.md`
+
+**Tasks:**
+- [ ] Create `LmpDiagnostics` static class with `DiagnosticDescriptor` fields for LMP001, LMP002, LMP003
+- [ ] Implement **LMP001**: warn on output properties missing `[Description]` per `diagnostics.md`
+  - Still generate code — use property name as fallback description
+  - Message: `"Property '{0}' on output type '{1}' is missing a [Description] attribute"`
+- [ ] Implement **LMP002**: error on non-serializable output property types per `diagnostics.md`
+  - Skip generation for the entire type
+  - Blocklist: `Delegate`, `IntPtr`, `UIntPtr`, `Span<T>`, `ReadOnlySpan<T>`, `Stream`, `Func<>`, `Action<>`, `Expression<>`, etc.
+  - Message: `"Property '{0}' on output type '{1}' is not serializable by System.Text.Json"`
+- [ ] Analyzer tests using `Microsoft.CodeAnalysis.Testing`:
+  - LMP001 fires on property without `[Description]`
+  - LMP002 fires on `Action<string>` property
+  - LMP003 fires on non-partial record and on class
+  - Verify code compiles when all diagnostics are satisfied
+
+**Completion criteria:** All 3 diagnostics fire correctly; code-fix for LMP001 adds `[Description("TODO")]`.
+
+### 2.7 — Predictor\<TInput, TOutput\>.PredictAsync Implementation
+
+Wire the core prediction flow.
+
+**Spec:** `runtime-execution.md` §2.2
+
+**Tasks:**
+- [ ] Implement `PredictAsync(TInput input, CancellationToken ct)` in `Predictor<TIn,TOut>`:
+  1. Build messages via source-gen `PromptBuilder<TIn,TOut>.BuildMessages(input, Demos)`
+  2. Call `_client.GetResponseAsync<TOutput>(messages, Config, ct)`
+  3. Record trace: `module?.Trace?.Record(Name, input, result)`
+  4. Return typed `TOutput`
+- [ ] Add internal `Trace? Trace` property on `Predictor` — set by `LmpModule` before calls
+- [ ] Implement `PredictAsync` overload with retry-on-assertion per `runtime-execution.md` §2.5:
+  - Accepts `string? lastError` parameter
+  - PromptBuilder appends error feedback to final user message: `"Previous attempt failed: {lastError}. Try again."`
+  - Retry loop: up to `maxRetries` (default 3), catches `LmpAssertionException`, feeds message back
+- [ ] Implement `GetState()` on Predictor — serializes `Instructions`, `Demos` (via JsonElement conversion), and optionally `Config`
+- [ ] Implement `LoadState(PredictorState)` on Predictor — restores Instructions and Demos
+- [ ] Create `FakeChatClient` test infrastructure that returns canned `TOutput` JSON
+- [ ] Integration test: `Predictor<TicketInput, ClassifyTicket>.PredictAsync()` -> `FakeChatClient` -> typed `ClassifyTicket`
+- [ ] Integration test: retry-on-assertion appends error feedback and re-calls
+
+**Completion criteria:** End-to-end prediction works against `FakeChatClient`; retry-on-assertion re-invokes with error context.
+
+### 2.8 — Module-Level JsonSerializerContext Emission
+
+Source generator emits per-module `JsonSerializerContext` for typed save/load of predictor demos.
+
+**Spec:** `runtime-execution.md` §3.3, `source-generator.md` §5
+
+**Tasks:**
+- [ ] Extend `ModuleEmitter` to generate a `JsonSerializerContext` per module:
+  - `[JsonSerializable(typeof(ModuleState))]` (shared)
+  - `[JsonSerializable(typeof(PredictorState<TInput, TOutput>))]` per predictor type pair
+- [ ] Hint name: `{ModuleName}.JsonContext.g.cs`
+- [ ] Snapshot test: module with 2 predictor types -> generated context with all serializable types
+
+**Completion criteria:** Source-gen produces module-specific `JsonSerializerContext` for AOT-safe save/load.
+
+### Phase 2 Exit Criteria
+
+- `dotnet build` on a project with `[LmpSignature]` produces `*.g.cs` files containing PromptBuilder, JsonTypeInfo, and GetPredictors
+- `Predictor<TicketInput, ClassifyTicket>.PredictAsync()` runs against `FakeChatClient` and returns typed `ClassifyTicket`
+- Rebuilding produces identical generated source (determinism verified by snapshot tests)
+- LMP001 fires on properties without `[Description]`; LMP002 fires on non-serializable types; LMP003 fires on non-partial records
+- `SaveAsync`/`LoadAsync` round-trips with source-gen `JsonSerializerContext`
+- All snapshot tests and integration tests pass deterministically
 
 ---
 
-## Phase 5 — Agents + RAG
+## Phase 3: Reasoning Modules
 
-**Goal:** `ReActAgent` and `IRetriever`-based RAG composition.
+**Goal:** Build thin wrappers around `Predictor<TIn, TOut>` in `LMP.Modules`. Each module <100 LOC.
 
-**Spec:** `runtime-execution.md` §5 + §7
+**Spec references:** `runtime-execution.md` §4, `phased-plan.md` Phase 3
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 5.1 | **`ReActAgent<TIn, TOut>`** — Constructor `(IChatClient, IEnumerable<AIFunction> tools, int maxSteps=5)`. Wraps client with `ChatClientBuilder().UseFunctionInvocation().Build()`. `PredictAsync`: build messages, set `ChatOptions.Tools`, call `GetResponseAsync<TOutput>`. Record final trace. Implements `IPredictor`. | Test: agent with mock calculator tool → calls tool, returns typed result |
-| 5.2 | **Tool registration** — Document `AIFunctionFactory.Create(method)` pattern in sample. | Test: AIFunction has correct description |
-| 5.3 | **`InMemoryRetriever`** — Simple `IRetriever` for testing: keyword/substring match over document list. | Test: query → matching documents returned |
-| 5.4 | **RAG module example** — `ForwardAsync`: retrieve passages → augmented input → predict. | Test: retrieves context, passes to predictor, returns typed result |
-| 5.5 | **Agent optimizability** — `GetPredictors()` discovers ReActAgent; optimizer can fill its demos. | Test: BootstrapFewShot can optimize a module containing ReActAgent |
+**Entry criteria:** Phase 2 complete; `PredictAsync` works; source generator emits PromptBuilder.
 
-**Entry:** Phase 2 complete. M.E.AI `AIFunction`/`FunctionInvokingChatClient` available.
-**Exit:** ReActAgent does Think→Act→Observe. RAG module retrieves + predicts. Both optimizable. Tests pass.
+### 3.1 — ChainOfThought\<TInput, TOutput\>
+
+**Spec:** `runtime-execution.md` §4.1, `source-generator.md` §6
+
+**Tasks:**
+- [ ] Extend source generator with CoT discovery pipeline per `source-generator.md` §2 line 93–99:
+  - `CreateSyntaxProvider` scanning for `ChainOfThought<TIn, TOut>` generic usages
+  - Extract `TOut` type symbol from generic argument
+  - Emit `{TypeName}WithReasoning` internal record:
+    - `[Description("Think step by step...")] [JsonPropertyOrder(-1)] public required string Reasoning { get; init; }`
+    - All original `TOutput` fields copied with their `[Description]` attributes
+  - Emit corresponding `{TypeName}WithReasoningJsonContext : JsonSerializerContext`
+  - Hint name: `{TypeName}.ChainOfThought.g.cs`
+- [ ] Implement `ChainOfThought<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
+  - Wraps inner `Predictor<TIn, {TOut}WithReasoning>`
+  - `PredictAsync` calls inner predictor, strips Reasoning, returns `TOut`
+  - Delegates `Instructions`, `Demos`, `Config`, `Name` to inner predictor
+  - Reasoning captured in trace via inner predictor's trace recording
+- [ ] Snapshot test: `ClassifyTicket` usage -> emits `ClassifyTicketWithReasoning` record + JsonContext
+- [ ] Unit test against `FakeChatClient`: output has Category+Urgency, reasoning in trace
+
+**Completion criteria:** `ChainOfThought<TicketInput, ClassifyTicket>` produces typed output; reasoning visible in trace entries.
+
+### 3.2 — BestOfN\<TInput, TOutput\>
+
+**Spec:** `runtime-execution.md` §4.2
+
+**Tasks:**
+- [ ] Implement `BestOfN<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
+  - Constructor: `(IChatClient client, int n, Func<TIn, TOut, float> reward)`
+  - `PredictAsync`: fire N concurrent predictions via `Task.WhenAll`, score each with reward, return highest
+  - Delegates learnable state (`Instructions`, `Demos`, `Config`) to all N inner predictors
+- [ ] Unit test: N=3, mock returns 3 different outputs with different scores -> best returned
+- [ ] Verify true parallelism: all N `GetResponseAsync` calls made concurrently (not sequentially)
+
+**Completion criteria:** `BestOfN` with N=5 makes 5 parallel calls, scores each, returns the best.
+
+### 3.3 — Refine\<TInput, TOutput\>
+
+**Spec:** `runtime-execution.md` §4.3
+
+**Tasks:**
+- [ ] Create `RefineCritiqueInput<TOutput>` record: `(TInput OriginalInput, TOutput PreviousOutput)`
+- [ ] Implement `Refine<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
+  - Constructor: `(IChatClient client, int maxIterations = 2)`
+  - `PredictAsync`: initial predict -> for each iteration: critique previous output -> re-predict with critique context
+  - Each iteration is a separate `PredictAsync` call recorded in trace
+- [ ] Unit test: at least 2 rounds execute; final result is from last iteration
+
+**Completion criteria:** `Refine` executes predict -> refine loop; trace shows multiple predictor calls.
+
+### Phase 3 Exit Criteria
+
+- `ChainOfThought` produces output with reasoning captured in trace
+- `BestOfN` invokes N parallel calls and selects the best result by reward function
+- `Refine` executes at least two rounds of predict -> critique -> re-predict
+- All module tests pass against `FakeChatClient`
 
 ---
 
-## Phase 6 — Advanced Optimization (Post-MVP)
+## Phase 4: Evaluation + BootstrapFewShot
+
+**Goal:** Add `Evaluator` and foundational optimizers. First phase where LMP can programmatically improve an LM program.
+
+**Spec references:** `compiler-optimizer.md`, `artifact-format.md`
+
+**Entry criteria:** Phase 2 complete; Phase 3 recommended but not required.
+
+### 4.1 — Evaluator
+
+**Spec:** `compiler-optimizer.md` §3
+
+**Tasks:**
+- [ ] Implement `Evaluator` static class in `LMP.Optimizers` namespace `LMP.Optimizers`:
+  - `static Task<EvaluationResult> EvaluateAsync<TModule>(TModule module, IReadOnlyList<Example> devSet, Func<Example, object, float> metric, int maxConcurrency = 4, CancellationToken ct = default) where TModule : LmpModule`
+  - Uses `Parallel.ForEachAsync` for concurrent evaluation
+  - Calls `module.ForwardAsync(example.WithInputs(), ct)` per example
+  - Scores with `metric(example, output)`
+  - Collects into `ConcurrentBag<ExampleResult>`
+- [ ] Create `EvaluationResult` sealed record: `PerExample` (IReadOnlyList\<ExampleResult\>), `AverageScore`, `MinScore`, `MaxScore`, `Count`
+- [ ] Create `ExampleResult` sealed record: `Example`, `Output` (object), `Score` (float)
+- [ ] Unit test: evaluator with 5 examples, mock module -> correct average, min, max scores
+
+**Completion criteria:** `Evaluator.EvaluateAsync` runs module on dev set and returns correct aggregate score.
+
+### 4.2 — Module Cloning
+
+**Spec:** `compiler-optimizer.md` §4 (Clone)
+
+**Tasks:**
+- [ ] Add `Clone<TModule>()` method to `LmpModule`:
+  - Source generator emits per-module clone implementation using `with` expressions on records
+  - Clones all Predictor fields with independent Demos lists
+- [ ] Extend `ModuleEmitter` to generate `Clone<TModule>()` override
+- [ ] Unit test: cloned module has independent demo lists (modifying clone doesn't affect original)
+
+**Completion criteria:** `module.Clone<T>()` returns a deep copy with independent predictor state.
+
+### 4.3 — BootstrapFewShot
+
+**Spec:** `compiler-optimizer.md` §4
+
+**Tasks:**
+- [ ] Implement `BootstrapFewShot : IOptimizer` in `LMP.Optimizers`:
+  - Constructor: `(int maxDemos = 4, int maxRounds = 1, float metricThreshold = 1.0f)`
+  - `CompileAsync<TModule>` algorithm:
+    1. `teacher = module.Clone<TModule>()` — deep copy
+    2. For each example in trainSet (via `Parallel.ForEachAsync`):
+       a. `teacher.EnableTracing()`
+       b. `output = await teacher.ForwardAsync(example.WithInputs(), ct)`
+       c. `score = metric(example, output)`
+       d. If `score >= metricThreshold`: collect traces into `ConcurrentDictionary<string, ConcurrentBag<Demo>>`
+    3. For each predictor in student (`module.GetPredictors()`):
+       `predictor.Demos = successfulTraces[pred.Name].Take(maxDemos)`
+    4. Return student module
+  - Swallow exceptions on failed examples (except `OperationCanceledException`)
+- [ ] Integration test: optimizer fills predictor Demos from successful teacher traces
+- [ ] Verify thread-safe trace collection works with concurrent executions
+
+**Completion criteria:** `BootstrapFewShot.CompileAsync` fills `predictor.Demos` from successful traces.
+
+### 4.4 — BootstrapRandomSearch
+
+**Spec:** `compiler-optimizer.md` §5
+
+**Tasks:**
+- [ ] Implement `BootstrapRandomSearch : IOptimizer` in `LMP.Optimizers`:
+  - Constructor: `(int numTrials = 8, int maxDemos = 4, float metricThreshold = 1.0f, int? seed = null)`
+  - `CompileAsync<TModule>` algorithm:
+    1. Split trainSet -> 80/20 (train/validation) using `seed` for determinism
+    2. For each trial (1..numTrials):
+       a. Shuffle trainSplit with different random order
+       b. `candidate = await BootstrapFewShot.CompileAsync(module.Clone(), shuffled, metric)`
+    3. Evaluate all candidates on validation set via `Task.WhenAll(candidates.Select(c => Evaluator.EvaluateAsync(...)))`
+    4. Return candidate with highest `AverageScore`
+- [ ] Integration test: N=3 trials returns the best-scoring candidate
+- [ ] Test deterministic seeding produces same result
+
+**Completion criteria:** `BootstrapRandomSearch` runs N trials and returns the best module by evaluation score.
+
+### 4.5 — SaveAsync / LoadAsync Round-Trip Integration
+
+**Spec:** `artifact-format.md` §4–5
+
+**Tasks:**
+- [ ] Verify `SaveAsync` writes JSON matching `artifact-format.md` schema:
+  - Contains `version: "1.0"`, `module`, `predictors` map
+  - Each predictor has `instructions`, `demos` array, optional `config`
+  - Atomic write (temp file -> rename)
+- [ ] Verify `LoadAsync` reads JSON and populates predictor state correctly
+- [ ] Integration test: optimize -> save -> load into fresh module -> predict produces same results
+- [ ] Test forward compatibility: unknown JSON properties are ignored
+
+**Completion criteria:** Full round-trip: optimize -> save -> load -> predict.
+
+### 4.6 — JSONL Dataset Loader
+
+**Spec:** `compiler-optimizer.md` §3 (metric usage patterns)
+
+**Tasks:**
+- [ ] Implement `Example.LoadFromJsonl<TInput, TLabel>(string path)` static utility
+  - Parse each line as `{"input": {...}, "label": {...}}`
+  - Uses STJ source gen for deserialization
+  - Returns `IReadOnlyList<Example<TInput, TLabel>>`
+- [ ] Unit test: load sample JSONL file -> correct typed Example list
+
+**Completion criteria:** JSONL training data loads into typed `Example` records.
+
+### Phase 4 Exit Criteria
+
+- `Evaluator.EvaluateAsync` returns aggregate score across dev set
+- `BootstrapFewShot.CompileAsync` fills predictor Demos from successful traces
+- `BootstrapRandomSearch` runs N parallel trials, returns best by evaluation score
+- Module cloning produces independent copies
+- Optimized module saved to JSON, loaded back, predicts identically
+- Integration test demonstrates measurable score improvement after optimization
+
+---
+
+## Phase 5: Agents + RAG
+
+**Goal:** Add `ReActAgent<TIn, TOut>` and RAG composition patterns.
+
+**Spec references:** `runtime-execution.md` §5, `public-api.md` §4.7
+
+**Entry criteria:** Phase 2 complete; M.E.AI `AIFunction` / `FunctionInvokingChatClient` available.
+
+### 5.1 — ReActAgent\<TInput, TOutput\>
+
+**Spec:** `runtime-execution.md` §5
+
+**Tasks:**
+- [ ] Implement `ReActAgent<TIn, TOut>` in `LMP.Modules`:
+  - Constructor: `(IChatClient client, IList<AIFunction> tools, int maxSteps = 10)`
+  - Wraps client with `ChatClientBuilder(client).UseFunctionInvocation().Build()` for automatic tool dispatch
+  - `PredictAsync(TInput input, CancellationToken ct)`:
+    - Build messages: System = instructions, User = `FormatInput(input)`
+    - Set `ChatOptions.Tools = [.. _tools]`
+    - Call `_client.GetResponseAsync<TOutput>(messages, options, ct)` — M.E.AI handles Think -> Act -> Observe internally
+    - Record trace of final (input, output)
+  - Expose `Instructions`, `Config` for optimizer access
+  - Implements `IPredictor` so it's discoverable by `GetPredictors()`
+- [ ] Integration test with mock tools (via `AIFunctionFactory.Create`): agent calls tool, returns typed result
+- [ ] Verify agent is optimizable: discoverable by `GetPredictors()`, demos fillable
+
+**Completion criteria:** `ReActAgent` executes Think -> Act -> Observe loop with >=1 tool call.
+
+### 5.2 — RAG Composition Example
+
+**Spec:** `public-api.md` §4.7 usage example
+
+**Tasks:**
+- [ ] Create sample `RagQaModule : LmpModule` demonstrating IRetriever + Predictor composition:
+  - Constructor injects `IRetriever` and `IChatClient`
+  - `ForwardAsync`: retrieves passages -> builds `QaInput` with context -> predicts via `Predictor<QaInput, QaOutput>`
+- [ ] Create `FakeRetriever` for testing (in-memory keyword search)
+- [ ] Integration test: question -> retrieve context -> predict answer -> typed output
+
+**Completion criteria:** RAG module retrieves context and passes it to predictor; output is typed.
+
+### Phase 5 Exit Criteria
+
+- `ReActAgent` executes a tool-use loop against mock tools
+- RAG module works with fake retriever
+- Agent and RAG tests pass against `FakeChatClient` + mock tools
+- Agent is optimizable via `GetPredictors()` discovery
+
+---
+
+## Phase 6: Advanced Optimization (Post-MVP)
 
 **Goal:** `MIPROv2` — Bayesian optimization over instructions and demos.
 
-**Spec:** `compiler-optimizer.md` §MIPROv2
+**Spec references:** `compiler-optimizer.md` §6
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 6.1 | **Instruction proposal** — LM generates N candidate instructions per predictor given task + fields + samples. | Test: N diverse instruction strings |
-| 6.2 | **Minimal TPE sampler** — Categorical-only (~300 LOC). `l(x)`/`g(x)` frequency distributions, gamma=0.25. | Test: proposals favor high-scoring regions after reporting |
-| 6.3 | **`MIPROv2 : IOptimizer`** — Phase 1: bootstrap demo pool. Phase 2: propose instructions. Phase 3: Bayesian search over (instruction × demo subset) per predictor. | Test: trials converge toward higher scores |
-| 6.4 | **Integration** — MIPROv2 ≥ BootstrapRandomSearch on same dataset. | Test: score comparison |
+**Entry criteria:** Phase 4 + Phase 5 complete.
 
-**Entry:** Phase 4 complete. Phase 5 recommended.
-**Exit:** MIPROv2 runs Bayesian optimization. Trials converge.
+### 6.1 — MIPROv2 Optimizer
 
----
+**Tasks:**
+- [ ] Bootstrap demo pool (reuse BootstrapFewShot to generate initial demo candidates)
+- [ ] Implement instruction proposal module: LM-generated instruction candidates via `IChatClient`
+- [ ] Implement TPE sampler (~300 LOC for categorical-only) or integrate ML.NET AutoML tuners
+- [ ] Implement Bayesian search loop: each trial samples (instruction index x demo set index) per predictor
+- [ ] Evaluate trial candidates using `Evaluator.EvaluateAsync`
+- [ ] Return best trial by evaluation score
+- [ ] Integration test demonstrating convergence over multiple trials
 
-## Phase 7 — Tooling (Post-MVP)
-
-**Goal:** CLI tool and developer experience.
-
-**Spec:** `phased-plan.md` Phase 7
-
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 7.1 | **`dotnet lmp optimize`** — Loads module assembly, runs optimizer, writes artifact JSON. Uses `System.CommandLine`. | CLI produces artifact |
-| 7.2 | **`dotnet lmp eval`** — Loads module + dataset, runs Evaluator, prints metric scores. | CLI prints scores |
-| 7.3 | **`dotnet lmp inspect`** — Pretty-prints saved module params. | CLI shows formatted state |
-| 7.4 | **Sample data** — 10-20 train + 10 validation examples for ticket triage in `data/`. | JSONL parses correctly |
-| 7.5 | **End-to-end demo** — `samples/LMP.Samples.TicketTriage/` per `mvp-demo-script.md`. Works without API key (mock mode). | `dotnet run` completes < 10 min |
-
-**Entry:** Phase 4 complete.
-**Exit:** CLI commands work. Demo runs end-to-end.
+**Completion criteria:** `MIPROv2` outperforms `BootstrapRandomSearch` on instruction + demo search.
 
 ---
 
-## Phase 8 — Advanced (Post-MVP)
+## Phase 7: Tooling (Post-MVP)
 
-**Goal:** Experimental .NET platform features.
+**Goal:** CLI tool and Aspire integration.
 
-**Spec:** `phased-plan.md` Phase 8
+**Spec references:** `phased-plan.md` Phase 7
 
-| # | Task | Completion Criteria |
-|---|------|---------------------|
-| 8.1 | **`[Predict]` partial method** — Source gen emits method body (PromptBuilder → PredictAsync). | Partial methods compile + execute |
-| 8.2 | **C# 14 interceptors** — Zero-dispatch PredictAsync: compiler inlines prompt builder. | Differential test: intercepted = standard output |
-| 8.3 | **`ProgramOfThought<TIn, TOut>`** — LM generates C# → Roslyn scripting executes → typed result. | Sandbox execution returns correct output |
+**Entry criteria:** Phase 4 complete; Phase 6 recommended.
 
-**Entry:** Phase 2 complete. C# 14 interceptors available.
-**Exit:** All features opt-in. Default behavior unchanged.
+### 7.1 — CLI Tool (`dotnet lmp`)
 
----
+**Tasks:**
+- [ ] `dotnet lmp optimize` — wraps `IOptimizer.CompileAsync()`; loads module, runs optimization, writes saved JSON
+- [ ] `dotnet lmp eval` — loads module + dataset, runs `Evaluator`, prints per-metric scores
+- [ ] `dotnet lmp inspect` — pretty-prints saved module parameters JSON
 
-## Implementation Priority
+### 7.2 — Aspire Integration
 
-| Priority | Phase | Complexity | Key Risk |
-|---|---|---|---|
-| **P0** | 0: Repo Skeleton | Trivial | None |
-| **P0** | 1: Abstractions | Simple | Over-engineering before usage patterns clear |
-| **P0** | 2: Source Gen + Predictor | **Complex** | Generator debugging; netstandard2.0 API limits |
-| **P1** | 3: Reasoning Modules | Medium | Source gen extending TOutput for CoT |
-| **P1** | 4: Eval + BootstrapFewShot | **Complex** | Teacher trace collection reliability |
-| **P1** | 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface |
-| **P2** | 6: MIPROv2 | **Complex** | Bayesian search backend |
-| **P2** | 7: Tooling | Medium | CLI ergonomics |
-| **P3** | 8: Advanced | **Complex** | C# 14 interceptor API newness |
+**Tasks:**
+- [ ] `AddLmpOptimizer()` extension method for Aspire
+- [ ] Dashboard telemetry for optimization runs
 
 ---
 
-## Key Architecture Decisions
+## Phase 8: Advanced (Post-MVP)
 
-1. **Separate `TInput` / `TOutput`** — NOT DSPy's single Signature. Matches `IChatClient.GetResponseAsync<T>()`.
-2. **Source generator emits:** PromptBuilder, JsonTypeInfo, GetPredictors(), CoT extended output, diagnostics.
-3. **LMP depends ONLY on `IChatClient`** from `Microsoft.Extensions.AI`.
-4. **`Predictor<TIn, TOut>`** — core primitive with learnable state (Demos, Instructions, Config).
-5. **`LmpModule` + `ForwardAsync()`** — plain C# composition, no graphs, no IR.
-6. **Optimizers return same module type** with parameters filled — no new types.
-7. **`CompileAsync` naming** — aligns with DSPy "compilation" terminology.
-8. **`SaveAsync`/`LoadAsync`** — simple JSON on `LmpModule`, no archive format.
-9. **Source gen targets `netstandard2.0`** — separate `LMP.SourceGen` project.
-10. **Three diagnostics:** LMP001 (missing description), LMP002 (non-serializable), LMP003 (non-partial record).
+**Goal:** Experimental features pushing the .NET platform advantage.
 
----
+**Spec references:** `phased-plan.md` Phase 8
 
-## Spec Discrepancies to Resolve
+**Entry criteria:** Phase 2 complete; C# 14 interceptor feature available.
 
-1. **Generator project name:** `AGENTS.md` → `LMP.SourceGen`. `source-generator.md` → `LMP.Generators`. **Use `LMP.SourceGen`** — generator MUST be netstandard2.0, separate from net10.0 `LMP.Core`.
-
-2. **`IOptimizer` method name:** `public-api.md` → `CompileAsync`. `phased-plan.md` Phase 1 → `OptimizeAsync`. **Use `CompileAsync`** — aligns with DSPy "compile" terminology and `compiler-optimizer.md`.
-
-3. **`Predictor.Demos` type:** `public-api.md` → `IReadOnlyList<(TInput, TOutput)>`. `runtime-execution.md` → `List<Example<TInput, TOutput>>`. `IPredictor.Demos` → `IList`. **Use `List<(TInput, TOutput)>`** on generic class, expose as `IList` via `IPredictor`.
-
-4. **`Predictor.Config` type:** `public-api.md` → `PredictorConfig` record. `runtime-execution.md` → `ChatOptions` directly. **Use `ChatOptions`** — don't reinvent what M.E.AI provides.
-
-5. **`docs/03-implementation/`** references v1 concepts (ProgramGraph, StepDescriptor, binding tiers). **Ignore** — follow `AGENTS.md` + `docs/02-specs/`.
-
-6. **`ForwardAsync` signature:** `public-api.md` → `Task<object> ForwardAsync(object input, CancellationToken)`. `runtime-execution.md` → typed overrides. **Use untyped abstract base**, users write typed wrappers.
+- [ ] C# 14 interceptors for zero-dispatch `PredictAsync` optimization
+- [ ] `[Predict]` partial method sugar — source gen emits method body
+- [ ] `ProgramOfThought<TIn, TOut>` — LM generates C# code -> Roslyn scripting executes -> structured result
 
 ---
 
-*Generated from comprehensive spec analysis. No code implemented yet.*
+## Implementation Priority Summary
+
+| Priority | Phase | Est. Complexity | Key Risk | Status |
+|---|---|---|---|---|
+| **P0** | Phase 1: Abstractions | Simple | Over-engineering before usage patterns clear | 1.1 ✅, 1.2–1.10 pending |
+| **P0** | Phase 2: Source Generator + Core Predictor | Complex | Generator debugging; netstandard2.0 constraints; snapshot test infra | 2.1 partial, rest pending |
+| **P1** | Phase 3: Reasoning Modules | Medium | CoT source-gen trigger for extended output types | Not started |
+| **P1** | Phase 4: Evaluation + BootstrapFewShot | Complex | Thread-safe trace collection; module cloning source-gen | Not started |
+| **P1** | Phase 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface area | Not started |
+| **P2** | Phase 6: Advanced Optimization (MIPROv2) | Complex | Bayesian search backend / TPE sampler | Not started |
+| **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | Not started |
+| **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | Not started |
+
+---
+
+## Phase Dependency Graph
+
+```
+Phase 1 --> Phase 2 --+--> Phase 3 --+
+                      |              +--> Phase 4 --+--> Phase 6 --> Phase 7
+                      +--------------+              |
+                      +--> Phase 5 -----------------+
+                      +--> Phase 8 (independent, needs only Phase 2)
+```
+
+Phase 4 recommends Phase 3 but does not require it. Phase 6 requires both Phase 4 and Phase 5.
+
+---
+
+## Key Architecture Decisions (for reference)
+
+1. **Separate `TInput` / `TOutput` types** — NOT DSPy's single Signature class. Matches `IChatClient.GetResponseAsync<T>()`.
+2. **Source generator emits:** PromptBuilder, JsonTypeInfo, GetPredictors(), ChainOfThought extended output, module JsonSerializerContext, module Clone(), diagnostics.
+3. **LMP depends ONLY on `IChatClient`** from `Microsoft.Extensions.AI`. No other LM abstraction.
+4. **`Predictor<TInput, TOutput>`** is the core primitive with learnable state (Demos, Instructions, Config).
+5. **`LmpModule`** with `ForwardAsync()` is plain C# composition — no graphs, no IR.
+6. **Optimizers** return the same module type with parameters filled in — no new types.
+7. **`CompileAsync`** naming aligns with DSPy's "compilation" terminology.
+8. **`SaveAsync`/`LoadAsync`** on `LmpModule` — simple JSON, no archive format, atomic writes.
+9. **Source generator targets `netstandard2.0`** — separate `LMP.SourceGen` project.
+10. **Three diagnostics only:** LMP001 (missing description — warning), LMP002 (non-serializable — error), LMP003 (non-partial record — error).
+
+---
+
+*Generated from spec analysis. Solution skeleton complete (Phase 1.1). Implementation starts at Phase 1.2.*

@@ -1,1 +1,1 @@
-// Placeholder — Phase 1 types will be added here.
+// This file intentionally left empty. Types are in separate files.
