@@ -63,22 +63,26 @@ public static class Evaluator
             Count: scores.Length);
     }
 
+    // ── Typed overloads (module output and dataset label may differ) ──
+
     /// <summary>
     /// Evaluates a typed module against a development set using a typed float metric.
-    /// This overload eliminates the need for runtime casts in the metric function.
+    /// The module's output type and dataset label type may differ.
+    /// When they match, the compiler infers all three type parameters automatically.
     /// </summary>
     /// <typeparam name="TInput">The module's input type.</typeparam>
-    /// <typeparam name="TOutput">The module's output type (also the label type).</typeparam>
+    /// <typeparam name="TPredicted">The module's output type.</typeparam>
+    /// <typeparam name="TExpected">The dataset label (ground truth) type.</typeparam>
     /// <param name="module">The typed module to evaluate.</param>
-    /// <param name="devSet">The set of typed examples to evaluate against.</param>
+    /// <param name="devSet">The set of typed examples.</param>
     /// <param name="metric">Typed scoring function: (predicted, expected) → score in [0, 1].</param>
     /// <param name="maxConcurrency">Maximum number of concurrent evaluations. Default is 4.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Aggregate evaluation results including per-example scores.</returns>
-    public static Task<EvaluationResult> EvaluateAsync<TInput, TOutput>(
-        LmpModule<TInput, TOutput> module,
-        IReadOnlyList<Example<TInput, TOutput>> devSet,
-        Func<TOutput, TOutput, float> metric,
+    public static Task<EvaluationResult> EvaluateAsync<TInput, TPredicted, TExpected>(
+        LmpModule<TInput, TPredicted> module,
+        IReadOnlyList<Example<TInput, TExpected>> devSet,
+        Func<TPredicted, TExpected, float> metric,
         int maxConcurrency = 4,
         CancellationToken cancellationToken = default)
         => EvaluateAsync(module, (IReadOnlyList<Example>)devSet,
@@ -87,19 +91,21 @@ public static class Evaluator
     /// <summary>
     /// Evaluates a typed module against a development set using a typed bool metric.
     /// <c>true</c> maps to <c>1.0f</c>, <c>false</c> maps to <c>0.0f</c>.
+    /// The module's output type and dataset label type may differ.
     /// </summary>
     /// <typeparam name="TInput">The module's input type.</typeparam>
-    /// <typeparam name="TOutput">The module's output type (also the label type).</typeparam>
+    /// <typeparam name="TPredicted">The module's output type.</typeparam>
+    /// <typeparam name="TExpected">The dataset label (ground truth) type.</typeparam>
     /// <param name="module">The typed module to evaluate.</param>
-    /// <param name="devSet">The set of typed examples to evaluate against.</param>
+    /// <param name="devSet">The set of typed examples.</param>
     /// <param name="metric">Typed predicate: (predicted, expected) → correct?</param>
     /// <param name="maxConcurrency">Maximum number of concurrent evaluations. Default is 4.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Aggregate evaluation results including per-example scores.</returns>
-    public static Task<EvaluationResult> EvaluateAsync<TInput, TOutput>(
-        LmpModule<TInput, TOutput> module,
-        IReadOnlyList<Example<TInput, TOutput>> devSet,
-        Func<TOutput, TOutput, bool> metric,
+    public static Task<EvaluationResult> EvaluateAsync<TInput, TPredicted, TExpected>(
+        LmpModule<TInput, TPredicted> module,
+        IReadOnlyList<Example<TInput, TExpected>> devSet,
+        Func<TPredicted, TExpected, bool> metric,
         int maxConcurrency = 4,
         CancellationToken cancellationToken = default)
         => EvaluateAsync(module, (IReadOnlyList<Example>)devSet,

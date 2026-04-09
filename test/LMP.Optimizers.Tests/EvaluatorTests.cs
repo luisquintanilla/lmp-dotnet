@@ -462,6 +462,92 @@ public class EvaluatorTests
 
     #endregion
 
+    #region Cross-Type Evaluator (TPredicted ≠ TExpected)
+
+    private record DetailedAnswer(string Answer, float Confidence, string Reasoning);
+    private record GroundTruth(string Answer);
+
+    private sealed class DetailedAnswerModule : LmpModule<string, DetailedAnswer>
+    {
+        private readonly DetailedAnswer _output;
+
+        public DetailedAnswerModule(DetailedAnswer output) => _output = output;
+
+        public override Task<DetailedAnswer> ForwardAsync(
+            string input, CancellationToken cancellationToken = default)
+            => Task.FromResult(_output);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_CrossType_Float_ScoresCorrectly()
+    {
+        var module = new DetailedAnswerModule(new DetailedAnswer("Paris", 0.95f, "Capital of France"));
+        var devSet = new List<Example<string, GroundTruth>>
+        {
+            new("What is the capital of France?", new GroundTruth("Paris")),
+            new("What is the capital of Germany?", new GroundTruth("Berlin")),
+        };
+
+        var result = await Evaluator.EvaluateAsync<string, DetailedAnswer, GroundTruth>(
+            module, devSet,
+            (predicted, expected) => predicted.Answer == expected.Answer ? 1f : 0f);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(0.5f, result.AverageScore);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_CrossType_Bool_ScoresCorrectly()
+    {
+        var module = new DetailedAnswerModule(new DetailedAnswer("Paris", 0.9f, "r"));
+        var devSet = new List<Example<string, GroundTruth>>
+        {
+            new("q1", new GroundTruth("Paris")),
+            new("q2", new GroundTruth("Paris")),
+        };
+
+        var result = await Evaluator.EvaluateAsync<string, DetailedAnswer, GroundTruth>(
+            module, devSet,
+            (predicted, expected) => predicted.Answer == expected.Answer);
+
+        Assert.Equal(1f, result.AverageScore);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_CrossType_Float_UsesConfidenceFromPredicted()
+    {
+        var module = new DetailedAnswerModule(new DetailedAnswer("Paris", 0.75f, "r"));
+        var devSet = new List<Example<string, GroundTruth>>
+        {
+            new("q", new GroundTruth("Paris")),
+        };
+
+        var result = await Evaluator.EvaluateAsync<string, DetailedAnswer, GroundTruth>(
+            module, devSet,
+            (predicted, expected) =>
+                predicted.Answer == expected.Answer ? predicted.Confidence : 0f);
+
+        Assert.Equal(0.75f, result.AverageScore);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_CrossType_StringLabel()
+    {
+        var module = new DetailedAnswerModule(new DetailedAnswer("42", 0.99f, "computed"));
+        var devSet = new List<Example<string, string>>
+        {
+            new("What is 6*7?", "42"),
+        };
+
+        var result = await Evaluator.EvaluateAsync<string, DetailedAnswer, string>(
+            module, devSet,
+            (predicted, expected) => predicted.Answer == expected ? 1f : 0f);
+
+        Assert.Equal(1f, result.AverageScore);
+    }
+
+    #endregion
+
     #region Test Helpers
 
     private sealed class InputCapturingModule : LmpModule
