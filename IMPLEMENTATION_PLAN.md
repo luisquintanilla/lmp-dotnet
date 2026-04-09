@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 5.1 complete — 619 tests passing. Next: Phase 5.2 (RAG Composition Example).
+> **Status:** Phase 5.2 complete — 644 tests passing. Next: Phase 6.1 (MIPROv2 Optimizer).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -34,7 +34,7 @@
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :white_check_mark: Phase 4.4 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :white_check_mark: Complete (Phase 4.5) |
-| Test projects | `AGENTS.md` | :white_check_mark: 619 tests passing (Phases 1–5.1) |
+| Test projects | `AGENTS.md` | :white_check_mark: 644 tests passing (Phases 1–5.2) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -870,16 +870,18 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Completion criteria:** `ReActAgent` executes Think -> Act -> Observe loop with >=1 tool call.
 
-### 5.2 — RAG Composition Example
+### 5.2 — RAG Composition Example ✅ COMPLETE
 
-**Spec:** `public-api.md` §4.7 usage example
+**Spec:** `public-api.md` §4.7 usage example, `runtime-execution.md` §7
 
 **Tasks:**
-- [ ] Create sample `RagQaModule : LmpModule` demonstrating IRetriever + Predictor composition:
+- [x] Create sample `RagQaModule : LmpModule` demonstrating IRetriever + Predictor composition:
   - Constructor injects `IRetriever` and `IChatClient`
-  - `ForwardAsync`: retrieves passages -> builds `QaInput` with context -> predicts via `Predictor<QaInput, QaOutput>`
-- [ ] Create `FakeRetriever` for testing (in-memory keyword search)
-- [ ] Integration test: question -> retrieve context -> predict answer -> typed output
+  - `ForwardAsync`: retrieves passages -> builds `AnswerInput` with context -> predicts via `Predictor<AnswerInput, AnswerWithContext>`
+  - `GetPredictors()` exposes the predictor for optimizer discovery
+  - `LmpAssert` validates confidence in [0.0, 1.0]
+- [x] Create `FakeRetriever` for testing (in-memory keyword-based search with score ranking)
+- [x] 25 tests: constructor validation, typed + object ForwardAsync, trace recording, confidence validation, GetPredictors/optimizer compatibility, cancellation, FakeRetriever behavior
 
 **Completion criteria:** RAG module retrieves context and passes it to predictor; output is typed.
 
