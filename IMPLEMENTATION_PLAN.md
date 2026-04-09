@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 complete — 852 tests passing. All phases done.
+> **Status:** Phase 8 complete + samples — 852 tests passing. All phases done.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -37,6 +37,7 @@
 | `LMP.Cli` — CLI tool (`dotnet lmp`) | `cli.md` | :white_check_mark: Phase 7.1 complete (inspect, optimize, eval commands) |
 | `LMP.Aspire.Hosting` — Aspire integration | `phased-plan.md` Phase 7 | :white_check_mark: Phase 7.2 complete (AddLmpOptimizer, LmpTelemetry) |
 | Test projects | `AGENTS.md` | :white_check_mark: 756 tests passing (Phases 1–7.2) |
+| End-to-end sample (`LMP.Samples.TicketTriage`) | `phased-plan.md` Phase 7, `mvp-demo-script.md` | :white_check_mark: Phase 7.3 complete (18 train + 10 dev examples, mock client demo) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -967,6 +968,23 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 - Fixed pre-existing syntax error in `OptimizeCommand.cs` (missing closing brace)
 
 **Status:** ✅ Complete. 756 total tests pass (90 Abstractions + 86 Core + 274 SourceGen + 122 Modules + 108 Optimizers + 40 Cli + 36 Aspire.Hosting).
+
+### 7.3 — End-to-End Sample (`LMP.Samples.TicketTriage`) ✅ COMPLETE
+
+**Tasks:**
+- [x] `samples/LMP.Samples.TicketTriage/` — Console app demonstrating the full LMP workflow
+- [x] Type definitions: `TicketInput`, `ClassifyTicket`, `DraftReply` with `[LmpSignature]` and `[Description]`
+- [x] `SupportTriageModule : LmpModule` — two-step module (classify → draft) with assertions, tracing, GetPredictors, CloneCore
+- [x] `Program.cs` — 7-step demo: single prediction, chain-of-thought, module composition, evaluation, BootstrapFewShot optimization, save/load
+- [x] Mock `IChatClient` for deterministic demo without API key
+- [x] `data/train.jsonl` (18 examples) and `data/dev.jsonl` (10 examples) dataset files
+- [x] Added to `LMP.slnx` under `/samples/` folder
+
+**Implementation notes:**
+- Mock client classifies tickets by keyword matching (billing/technical/account/general) and drafts responses by category
+- `metricThreshold: 0.3f` on BootstrapFewShot so demos are collected with the deterministic mock
+- Predictor `Name` properties must match `GetPredictors()` keys for demo collection to work
+- ChainOfThought records `ChainOfThoughtResult<T>` in trace (not `T`), so `AddDemo` cast fails when optimizing CoT predictors — sample uses plain Predictor in module, CoT shown standalone
 
 ---
 

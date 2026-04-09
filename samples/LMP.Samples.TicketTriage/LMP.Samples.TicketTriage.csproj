@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LMP.Samples.TicketTriage</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LMP.Modules\LMP.Modules.csproj" />
+    <ProjectReference Include="..\..\src\LMP.Optimizers\LMP.Optimizers.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
