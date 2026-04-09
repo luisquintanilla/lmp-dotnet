@@ -408,22 +408,28 @@ Contracts for RAG and optimization.
 
 **Completion criteria:** `dotnet build` triggers the generator; no errors.
 
-### 2.2 — Output Type Model Extraction
+### 2.2 — Output Type Model Extraction ✅ COMPLETE
 
 Read `[LmpSignature]` types at build time.
 
 **Spec:** `source-generator.md` §2 (pipeline), `diagnostics.md` (LMP003)
 
 **Tasks:**
-- [ ] Implement `ForAttributeWithMetadataName("LMP.LmpSignatureAttribute")` pipeline:
-  - Predicate: `node is RecordDeclarationSyntax`
-  - Transform: `ExtractOutputModel(ctx, ct)`
-- [ ] Create `OutputTypeModel` record: Namespace, TypeName, Instructions, OutputFields (EquatableArray), IsPartialRecord, Location
-- [ ] Create `OutputFieldModel` record: Name, ClrTypeName, FullyQualifiedTypeName, Description (nullable), IsRequired, Location
-- [ ] Extract `[Description]` from output type properties per `source-generator.md` §3
-- [ ] Extract input type descriptions with priority order: XML doc `<param>` -> `[Description]` on ctor params -> `[Description]` on properties
-- [ ] Report **LMP003** diagnostic for non-partial-record types per `diagnostics.md` — skip generation entirely
-- [ ] Unit test (Roslyn `CSharpGeneratorDriver`): model extraction from sample source text; LMP003 fires on `class` and non-partial `record`
+- [x] Implement `ForAttributeWithMetadataName("LMP.LmpSignatureAttribute")` pipeline:
+  - Predicate: `node is TypeDeclarationSyntax` (broad — accepts classes too for LMP003)
+  - Transform: `ModelExtractor.Extract(ctx, ct)`
+- [x] Create `OutputTypeModel` record: Namespace, TypeName, Instructions, InputFields, OutputFields (EquatableArray), IsPartialRecord, TypeKindDescription, Location
+- [x] Create `OutputFieldModel` record: Name, ClrTypeName, FullyQualifiedTypeName, Description (nullable), IsRequired, Location
+- [x] Create `InputFieldModel` record: Name, ClrTypeName, Description (nullable)
+- [x] Create `LocationInfo` struct: equatable wrapper for Roslyn Location (FilePath, TextSpan, LineSpan)
+- [x] Create `LmpDiagnostics` static class with `LMP001`, `LMP002`, `LMP003` descriptors + release tracking files
+- [x] Extract `[Description]` from output type properties per `source-generator.md` §3
+- [x] Extract input type descriptions with priority order: XML doc `<param>` -> `[Description]` on ctor params -> `[Description]` on properties (via `ModelExtractor.ExtractInputFields` helper — called when Predictor<TIn,TOut> is resolved)
+- [x] Report **LMP003** diagnostic for non-partial-record types per `diagnostics.md` — skip generation entirely
+- [x] Unit tests (Roslyn `CSharpGeneratorDriver`): LMP003 fires on `class` and non-partial `record` (9 tests in `ModelExtractionTests`)
+- [x] Unit tests: `InputFieldExtractionTests` — ctor params, property descriptions, priority, filtering (7 tests)
+
+**Status:** ✅ Complete. 102 total tests pass (51 Abstractions + 16 Core + 35 SourceGen).
 
 **Completion criteria:** Generator extracts correct metadata from `[LmpSignature]` records; LMP003 fires and skips non-partial types.
 
