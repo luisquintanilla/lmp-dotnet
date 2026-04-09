@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 2.6 complete — 231 tests passing. Next: Phase 2.7 (Predictor PredictAsync Implementation).
+> **Status:** Phase 2.6 complete — 256 tests passing. Next: Phase 2.7 (Predictor PredictAsync Implementation).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -537,7 +537,7 @@ Build-time diagnostics for output type validation.
   - Primitives, nullable value types, arrays, List<>, Dictionary<>, DateTime all serializable
   - Action<>, Action, Func<>, IntPtr, UIntPtr, CancellationToken, custom delegates, Task<>, Task all non-serializable
 
-**Status:** ✅ Complete. 231 total tests pass (51 Abstractions + 16 Core + 164 SourceGen). All three diagnostics (LMP001, LMP002, LMP003) implemented and tested. LMP001 is a warning that allows code gen. LMP002 is an error that suppresses all code gen for the type. LMP003 was already implemented in Phase 2.2.
+**Status:** ✅ Complete. 256 total tests pass (51 Abstractions + 16 Core + 189 SourceGen). All three diagnostics (LMP001, LMP002, LMP003) implemented and tested. LMP001 is a warning that allows code gen. LMP002 is an error that suppresses all code gen for the type. LMP003 was already implemented in Phase 2.2. Additional 25 diagnostic integration tests added in `DiagnosticTests.cs` covering LMP001/LMP002 firing, location, code gen suppression, combined scenarios, and SerializabilityChecker coverage via Stream/Task/Expression/CancellationToken types.
 
 **Completion criteria:** All 3 diagnostics fire correctly; LMP002 skips code generation.
 
