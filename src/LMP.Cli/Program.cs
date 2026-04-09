@@ -39,6 +39,7 @@ public static class Program
                 "optimize" => await OptimizeCommand.ExecuteAsync(args[1..]),
                 "eval" => await EvalCommand.ExecuteAsync(args[1..]),
                 "--help" or "-h" => PrintUsageAndReturn(),
+                "--version" => PrintVersion(),
                 _ => PrintUnknownCommand(args[0])
             };
         }
@@ -52,6 +53,13 @@ public static class Program
             await Console.Error.WriteLineAsync($"ERROR: {ex.Message}");
             return ExitCodes.UnknownError;
         }
+    }
+
+    private static int PrintVersion()
+    {
+        var version = typeof(Program).Assembly.GetName().Version;
+        Console.WriteLine($"dotnet-lmp {version?.ToString(3) ?? "0.0.0"}");
+        return ExitCodes.Success;
     }
 
     private static int PrintUsageAndReturn()
@@ -81,7 +89,8 @@ public static class Program
               eval        Evaluate a module against a dataset
 
             Options:
-              --help, -h  Show this help message
+              --help, -h     Show this help message
+              --version      Show version information
 
             Run 'dotnet lmp <command> --help' for command-specific help.
             """);

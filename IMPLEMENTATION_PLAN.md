@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 7.1 complete — 717 tests passing. Next: Phase 7.2 (Aspire Integration).
+> **Status:** Phase 7.2 complete — 756 tests passing. Next: Phase 8 (Advanced — Interceptors).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -35,7 +35,8 @@
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :white_check_mark: Complete (Phase 4.5) |
 | `LMP.Cli` — CLI tool (`dotnet lmp`) | `cli.md` | :white_check_mark: Phase 7.1 complete (inspect, optimize, eval commands) |
-| Test projects | `AGENTS.md` | :white_check_mark: 717 tests passing (Phases 1–7.1) |
+| `LMP.Aspire.Hosting` — Aspire integration | `phased-plan.md` Phase 7 | :white_check_mark: Phase 7.2 complete (AddLmpOptimizer, LmpTelemetry) |
+| Test projects | `AGENTS.md` | :white_check_mark: 756 tests passing (Phases 1–7.2) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -946,13 +947,26 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 - Manual arg parsing (no `System.CommandLine` dependency) for 3 commands
 - Exit codes per CLI spec: 0=success, 1=unknown, 2=invalid args, 3=project not found, 4=compile failed, 5=eval failed, 6=artifact error, 7=input parse error
 - `--json` flag on inspect/eval for machine-readable output
-- 37 new tests: argument parsing, file not found, invalid JSON, formatted/JSON output, FormatDemoFields, CLI entry point dispatch
+- `--dev <path>` flag on optimize for post-optimization validation scoring
+- `--version` flag on main entry point
+- Early validation of `--optimizer` name (rejects unknown optimizers at arg parse time)
+- 40 tests: argument parsing, file not found, invalid JSON, formatted/JSON output, FormatDemoFields, CLI entry point dispatch, --version, --dev, unknown optimizer
 
-### 7.2 — Aspire Integration
+### 7.2 — Aspire Integration ✅ COMPLETE
 
 **Tasks:**
-- [ ] `AddLmpOptimizer()` extension method for Aspire
-- [ ] Dashboard telemetry for optimization runs
+- [x] `AddLmpOptimizer()` extension method for Aspire
+- [x] Dashboard telemetry for optimization runs
+
+**Deliverables:**
+- `src/LMP.Aspire.Hosting/` — New project with `Aspire.Hosting` dependency
+  - `LmpOptimizerResource` — Custom Aspire resource representing an optimization run
+  - `LmpOptimizerResourceBuilderExtensions` — `AddLmpOptimizer<TModule>()`, `WithTrainData()`, `WithDevData()`, `WithOptimizer<T>()`, `WithOutputPath()`, `WithMaxConcurrency()` builder pattern
+  - `LmpTelemetry` — `ActivitySource` + `Meter` with instruments for optimization lifecycle (trial scores, durations, evaluation metrics)
+- `test/LMP.Aspire.Hosting.Tests/` — 36 tests covering resource construction, telemetry, and builder extensions
+- Fixed pre-existing syntax error in `OptimizeCommand.cs` (missing closing brace)
+
+**Status:** ✅ Complete. 756 total tests pass (90 Abstractions + 86 Core + 274 SourceGen + 122 Modules + 108 Optimizers + 40 Cli + 36 Aspire.Hosting).
 
 ---
 
@@ -980,7 +994,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 | **P1** | Phase 4: Evaluation + BootstrapFewShot | Complex | Thread-safe trace collection; module cloning source-gen | ✅ Complete |
 | **P1** | Phase 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface area | ✅ Complete |
 | **P2** | Phase 6: Advanced Optimization (MIPROv2) | Complex | Bayesian search backend / TPE sampler | ✅ Complete |
-| **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | 7.1 ✅ Complete |
+| **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | ✅ Complete |
 | **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | Not started |
 
 ---

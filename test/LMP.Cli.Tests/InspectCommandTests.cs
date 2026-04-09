@@ -267,5 +267,12 @@ public class InspectCommandTests : IDisposable
         Assert.Equal(Program.ExitCodes.Success, exitCode);
     }
 
+    [Fact]
+    public async Task Main_Version_ReturnsSuccess()
+    {
+        var exitCode = await Program.Main(["--version"]);
+        Assert.Equal(Program.ExitCodes.Success, exitCode);
+    }
+
     #endregion
 }

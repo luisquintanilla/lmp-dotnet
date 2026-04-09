@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>LMP.Aspire.Hosting</RootNamespace>
+    <Description>Aspire hosting integration for LMP Language Model Programming framework</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LMP.Aspire.Hosting.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LMP.Optimizers\LMP.Optimizers.csproj" />
+  </ItemGroup>
+</Project>

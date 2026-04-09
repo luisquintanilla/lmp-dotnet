@@ -14,6 +14,7 @@ internal static class OptimizeCommand
     {
         string? project = null;
         string? train = null;
+        string? dev = null;
         string? output = null;
         string optimizer = "random";
         int numTrials = 8;
@@ -28,6 +29,9 @@ internal static class OptimizeCommand
                     break;
                 case "--train" when i + 1 < args.Length:
                     train = args[++i];
+                    break;
+                case "--dev" when i + 1 < args.Length:
+                    dev = args[++i];
                     break;
                 case "--output" when i + 1 < args.Length:
                     output = args[++i];
@@ -73,14 +77,23 @@ internal static class OptimizeCommand
             return Program.ExitCodes.InvalidArguments;
         }
 
+        var normalizedOptimizer = optimizer.ToLowerInvariant();
+        if (normalizedOptimizer is not ("bootstrap" or "random"))
+        {
+            await Console.Error.WriteLineAsync(
+                $"ERROR [args] Unknown optimizer '{optimizer}'. Supported: bootstrap, random.");
+            return Program.ExitCodes.InvalidArguments;
+        }
+
         output ??= Path.Combine(Path.GetDirectoryName(project) ?? ".", "lmp-output", "module-state.json");
 
-        return await RunOptimizeAsync(project, train, output, optimizer, numTrials, maxDemos, CancellationToken.None);
+        return await RunOptimizeAsync(project, train, dev, output, normalizedOptimizer, numTrials, maxDemos, CancellationToken.None);
     }
 
     internal static async Task<int> RunOptimizeAsync(
         string project,
         string trainPath,
+        string? devPath,
         string outputPath,
         string optimizerName,
         int numTrials,
@@ -140,12 +153,20 @@ internal static class OptimizeCommand
         }
 
         // Step 5: Create optimizer
-        IOptimizer opt = optimizerName.ToLowerInvariant() switch
+        IOptimizer opt;
+        switch (optimizerName.ToLowerInvariant())
         {
-            "bootstrap" => new BootstrapFewShot(maxDemos),
-            "random" => new BootstrapRandomSearch(numTrials, maxDemos),
-            _ => new BootstrapRandomSearch(numTrials, maxDemos)
-        };
+            case "bootstrap":
+                opt = new BootstrapFewShot(maxDemos);
+                break;
+            case "random":
+                opt = new BootstrapRandomSearch(numTrials, maxDemos);
+                break;
+            default:
+                await Console.Error.WriteLineAsync(
+                    $"ERROR [args] Unknown optimizer '{optimizerName}'. Supported: bootstrap, random.");
+                return Program.ExitCodes.InvalidArguments;
+        }
 
         // Step 6: Run optimization
         await Console.Error.WriteLineAsync($"""
@@ -197,6 +218,35 @@ internal static class OptimizeCommand
             await Console.Error.WriteLineAsync($"  {name}: {predictor.Demos.Count} demos");
         }
 
+        // Step 9: Evaluate on dev set if provided
+        if (!string.IsNullOrEmpty(devPath))
+        {
+            if (!File.Exists(devPath))
+            {
+                await Console.Error.WriteLineAsync($"ERROR [input] Dev file not found: {devPath}");
+                return Program.ExitCodes.InputParseError;
+            }
+
+            try
+            {
+                var devSet = discovery.Runner.LoadDataset(devPath);
+                var evalResult = await Evaluator.EvaluateAsync(
+                    module, devSet, metric, cancellationToken: cancellationToken);
+
+                await Console.Error.WriteLineAsync($"""
+
+                    Validation ({devSet.Count} examples):
+                      Average score  : {evalResult.AverageScore:F4}
+                      Min score      : {evalResult.MinScore:F4}
+                      Max score      : {evalResult.MaxScore:F4}
+                    """);
+            }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync($"WARNING [eval] Dev set evaluation failed: {ex.Message}");
+            }
+        }
+
         return Program.ExitCodes.Success;
     }
 
@@ -211,6 +261,7 @@ internal static class OptimizeCommand
             Options:
               --project <path>     Required. Path to the .csproj file.
               --train <path>       Required. Path to training JSONL file.
+              --dev <path>         Optional. Path to dev/validation JSONL file for scoring after optimization.
               --output <path>      Output path for saved module state. Default: <project-dir>/lmp-output/module-state.json
               --optimizer <name>   Optimizer: "random" (default) or "bootstrap".
               --num-trials <int>   Number of trials for random search. Default: 8.

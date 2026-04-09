@@ -66,6 +66,14 @@ public class OptimizeCommandTests
         Assert.Equal(Program.ExitCodes.InvalidArguments, exitCode);
     }
 
+    [Fact]
+    public async Task UnknownOptimizer_ReturnsInvalidArguments()
+    {
+        var exitCode = await OptimizeCommand.ExecuteAsync(
+            ["--project", "test.csproj", "--train", "data.jsonl", "--optimizer", "miprov2"]);
+        Assert.Equal(Program.ExitCodes.InvalidArguments, exitCode);
+    }
+
     #endregion
 
     #region Project Not Found
@@ -76,11 +84,21 @@ public class OptimizeCommandTests
         var exitCode = await OptimizeCommand.RunOptimizeAsync(
             project: "nonexistent.csproj",
             trainPath: "data.jsonl",
+            devPath: null,
             outputPath: "output.json",
             optimizerName: "random",
             numTrials: 4,
             maxDemos: 2,
             CancellationToken.None);
+        Assert.Equal(Program.ExitCodes.ProjectNotFound, exitCode);
+    }
+
+    [Fact]
+    public async Task DevFlagAccepted_PassesThroughToRun()
+    {
+        // --dev flag is accepted during parsing; with nonexistent project, build fails first
+        var exitCode = await OptimizeCommand.ExecuteAsync(
+            ["--project", "test.csproj", "--train", "data.jsonl", "--dev", "dev.jsonl"]);
         Assert.Equal(Program.ExitCodes.ProjectNotFound, exitCode);
     }
 
