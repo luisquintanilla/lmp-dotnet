@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 7.2 complete — 756 tests passing. Next: Phase 8 (Advanced — Interceptors).
+> **Status:** Phase 8 in progress — 778 tests passing. Next: `[Predict]` partial method sugar or C# 14 interceptors.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -980,7 +980,18 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 - [ ] C# 14 interceptors for zero-dispatch `PredictAsync` optimization
 - [ ] `[Predict]` partial method sugar — source gen emits method body
-- [ ] `ProgramOfThought<TIn, TOut>` — LM generates C# code -> Roslyn scripting executes -> structured result
+- [x] `ProgramOfThought<TIn, TOut>` — LM generates C# code -> Roslyn scripting executes -> structured result
+
+**Implementation notes (ProgramOfThought):**
+- `ProgramOfThought<TIn, TOut>` extends `Predictor<TIn, TOut>` in `LMP.Modules`
+- Two-step flow: (1) internal `Predictor<TIn, CodeGenerationOutput>` asks LM to generate C# code, (2) Roslyn scripting executes it
+- `CodeGenerationOutput` record: `Reasoning` + `Code` fields with `[Description]` attributes for LM guidance
+- `ScriptGlobals<TInput>` exposes `Input` property to generated scripts
+- Sandboxed execution: restricted imports (System, System.Linq, System.Collections.Generic, System.Text, System.Text.Json), configurable timeout (default 30s)
+- Automatic retry on compilation errors, runtime errors, and timeout — error fed back to LM
+- JSON round-trip conversion for structural type matching (anonymous types → TOutput)
+- Added `Microsoft.CodeAnalysis.CSharp.Scripting` 5.3.0 dependency to LMP.Modules
+- 22 new tests: constructor, ExecuteCodeAsync (arithmetic, Linq, Fibonacci, Input globals, compilation/runtime errors, null, timeout), PredictAsync E2E (success, trace, input access, retry, max retries, validation), Clone, serialization
 
 ---
 
@@ -995,7 +1006,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 | **P1** | Phase 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface area | ✅ Complete |
 | **P2** | Phase 6: Advanced Optimization (MIPROv2) | Complex | Bayesian search backend / TPE sampler | ✅ Complete |
 | **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | ✅ Complete |
-| **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | Not started |
+| **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | ProgramOfThought ✅ |
 
 ---
 
