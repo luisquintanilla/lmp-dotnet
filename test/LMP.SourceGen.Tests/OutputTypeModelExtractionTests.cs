@@ -136,7 +136,7 @@ public class OutputTypeModelExtractionTests
     }
 
     [Fact]
-    public void ValidPartialRecord_ProducesNoSourceOutput()
+    public void ValidPartialRecord_ProducesJsonContextSourceOutput()
     {
         var source = """
             using System.ComponentModel;
@@ -159,8 +159,11 @@ public class OutputTypeModelExtractionTests
             compilation, out _, out _);
 
         var runResult = driver.GetRunResult();
-        // No source emitted yet — emitters come in Phase 2.3
-        Assert.Empty(runResult.GeneratedTrees);
+        // JsonContext emitted for valid partial records
+        Assert.Single(runResult.GeneratedTrees);
+        var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
+        Assert.Contains("MyOutputJsonContext", generatedSource);
+        Assert.Contains("JsonSerializerContext", generatedSource);
     }
 
     #endregion

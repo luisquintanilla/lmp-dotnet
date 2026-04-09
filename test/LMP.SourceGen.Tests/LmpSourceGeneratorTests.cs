@@ -50,15 +50,20 @@ public class LmpSourceGeneratorTests
         // No generator diagnostics
         Assert.Empty(diagnostics);
 
-        // No compilation errors (warnings are okay for now since generator is empty)
+        // No compilation errors from user source.
+        // Note: Generated JsonSerializerContext files produce expected errors because
+        // the STJ source generator isn't running in this test compilation — it would
+        // normally generate the abstract member implementations.
+        var generatedTrees = driver.GetRunResult().GeneratedTrees.ToHashSet();
         var errors = outputCompilation.GetDiagnostics()
             .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Where(d => d.Location.SourceTree is null || !generatedTrees.Contains(d.Location.SourceTree))
             .ToArray();
         Assert.Empty(errors);
     }
 
     [Fact]
-    public void Generator_ProducesNoOutput_WhenEmpty()
+    public void Generator_EmitsJsonContext_ForValidPartialRecord()
     {
         var source = """
             using LMP;
@@ -76,12 +81,15 @@ public class LmpSourceGeneratorTests
 
         var generator = new LmpSourceGenerator();
         GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
-        driver.RunGeneratorsAndUpdateCompilation(
+        driver = driver.RunGeneratorsAndUpdateCompilation(
             compilation, out _, out _);
 
         var runResult = driver.GetRunResult();
-        // Empty generator produces no generated trees
-        Assert.Empty(runResult.GeneratedTrees);
+        // Generator should emit JsonContext for the valid partial record
+        Assert.Single(runResult.GeneratedTrees);
+        var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
+        Assert.Contains("TestOutputJsonContext", generatedSource);
+        Assert.Contains("JsonSerializerContext", generatedSource);
     }
 
     private static CSharpCompilation CreateCompilation(string source)
@@ -98,6 +106,8 @@ public class LmpSourceGeneratorTests
                 MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
                 MetadataReference.CreateFromFile(typeof(LmpSignatureAttribute).Assembly.Location),
                 MetadataReference.CreateFromFile(typeof(System.ComponentModel.DescriptionAttribute).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(System.Text.Json.JsonSerializer).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(System.Text.Json.Serialization.JsonSerializerContext).Assembly.Location),
                 .. GetNetCoreReferences(),
             ],
             options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));

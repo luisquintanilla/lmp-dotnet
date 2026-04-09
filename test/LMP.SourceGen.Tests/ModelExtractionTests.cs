@@ -154,8 +154,10 @@ public class ModelExtractionTests
         var (diagnostics, runResult) = RunGenerator(source);
 
         Assert.Empty(diagnostics);
-        // Phase 2.2 doesn't emit code yet — that's Phase 2.3+
-        Assert.Empty(runResult.GeneratedTrees);
+        // JsonContext is emitted for valid partial records
+        Assert.Single(runResult.GeneratedTrees);
+        var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
+        Assert.Contains("ClassifyTicketJsonContext", generatedSource);
     }
 
     [Fact]
@@ -213,8 +215,10 @@ public class ModelExtractionTests
         var lmp003 = Assert.Single(diagnostics);
         Assert.Contains("InvalidOutput", lmp003.GetMessage());
 
-        // No generated code for either (Phase 2.2 doesn't emit)
-        Assert.Empty(runResult.GeneratedTrees);
+        // JsonContext generated for the valid partial record only
+        Assert.Single(runResult.GeneratedTrees);
+        var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
+        Assert.Contains("ValidOutputJsonContext", generatedSource);
     }
 
     [Fact]

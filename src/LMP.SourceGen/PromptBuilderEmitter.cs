@@ -1,4 +1,6 @@
 using System.Text;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
 
 namespace LMP.SourceGen;
 
@@ -10,15 +12,10 @@ namespace LMP.SourceGen;
 internal static class PromptBuilderEmitter
 {
     /// <summary>
-    /// Generates the full PromptBuilder source code for the given output type model.
-    /// Returns <c>null</c> if the model does not have enough information to generate
-    /// (e.g., missing <see cref="OutputTypeModel.InputTypeName"/>).
+    /// Generates the full PromptBuilder source code for the given model.
     /// </summary>
-    internal static string? GenerateSource(OutputTypeModel model)
+    internal static string GenerateSource(PromptBuilderModel model)
     {
-        if (model.InputTypeName is null)
-            return null;
-
         var sb = new StringBuilder(2048);
 
         // Header
@@ -34,17 +31,13 @@ internal static class PromptBuilderEmitter
         // Namespace
         if (!string.IsNullOrEmpty(model.Namespace))
         {
-            sb.Append("namespace ");
-            sb.Append(model.Namespace);
-            sb.AppendLine(";");
+            sb.Append("namespace ").Append(model.Namespace).AppendLine(";");
             sb.AppendLine();
         }
 
         // Class declaration
         sb.AppendLine("[GeneratedCode(\"LMP.Generators\", \"1.0.0\")]");
-        sb.Append("file static class ");
-        sb.Append(model.TypeName);
-        sb.AppendLine("PromptBuilder");
+        sb.Append("file static class ").Append(model.OutputTypeName).AppendLine("PromptBuilder");
         sb.AppendLine("{");
 
         // Instructions constant
@@ -56,9 +49,6 @@ internal static class PromptBuilderEmitter
         sb.AppendLine();
 
         // DefaultInstructions property
-        sb.AppendLine("    /// <summary>");
-        sb.AppendLine("    /// Returns the default instructions from the <c>[LmpSignature]</c> attribute.");
-        sb.AppendLine("    /// </summary>");
         sb.AppendLine("    public static string DefaultInstructions => Instructions;");
         sb.AppendLine();
 
@@ -80,75 +70,52 @@ internal static class PromptBuilderEmitter
     }
 
     /// <summary>
-    /// Emits the PromptBuilder source into the <see cref="Microsoft.CodeAnalysis.SourceProductionContext"/>.
-    /// Skips emission if the model is not ready (missing input type info).
+    /// Emits the PromptBuilder source into the <see cref="SourceProductionContext"/>.
     /// </summary>
-    public static void Emit(Microsoft.CodeAnalysis.SourceProductionContext context, OutputTypeModel model)
+    public static void Emit(SourceProductionContext context, PromptBuilderModel model)
     {
         var source = GenerateSource(model);
-        if (source is null)
-            return;
-
         context.AddSource(
-            $"{model.TypeName}.PromptBuilder.g.cs",
-            Microsoft.CodeAnalysis.Text.SourceText.From(source, Encoding.UTF8));
+            $"{model.OutputTypeName}.PromptBuilder.g.cs",
+            SourceText.From(source, Encoding.UTF8));
     }
 
     private static void EmitInstructionsConstant(StringBuilder sb, string instructions)
     {
         sb.AppendLine("    private const string Instructions =");
-        sb.Append("        \"");
-        sb.Append(EscapeStringLiteral(instructions));
-        sb.AppendLine("\";");
+        sb.Append("        \"").Append(EscapeStringLiteral(instructions)).AppendLine("\";");
     }
 
-    private static void EmitFieldDescriptions(StringBuilder sb, OutputTypeModel model)
+    private static void EmitFieldDescriptions(StringBuilder sb, PromptBuilderModel model)
     {
         sb.AppendLine("    private const string FieldDescriptions =");
         sb.AppendLine("        \"\"\"");
 
-        // Input fields
         if (model.InputFields.Count > 0)
         {
             sb.AppendLine("        Input Fields:");
             foreach (var field in model.InputFields)
             {
-                sb.Append("        - ");
-                sb.Append(field.Name);
-                sb.Append(" (");
-                sb.Append(field.ClrTypeName);
-                sb.Append(')');
+                sb.Append("        - ").Append(field.Name)
+                  .Append(" (").Append(field.ClrTypeName).Append(')');
                 if (!string.IsNullOrEmpty(field.Description))
-                {
-                    sb.Append(": ");
-                    sb.Append(field.Description);
-                }
+                    sb.Append(": ").Append(field.Description);
                 sb.AppendLine();
             }
         }
 
-        // Blank line between input and output if both present
         if (model.InputFields.Count > 0 && model.OutputFields.Count > 0)
-        {
             sb.AppendLine();
-        }
 
-        // Output fields
         if (model.OutputFields.Count > 0)
         {
             sb.AppendLine("        Output Fields:");
             foreach (var field in model.OutputFields)
             {
-                sb.Append("        - ");
-                sb.Append(field.Name);
-                sb.Append(" (");
-                sb.Append(field.ClrTypeName);
-                sb.Append(')');
+                sb.Append("        - ").Append(field.Name)
+                  .Append(" (").Append(field.ClrTypeName).Append(')');
                 if (!string.IsNullOrEmpty(field.Description))
-                {
-                    sb.Append(": ");
-                    sb.Append(field.Description);
-                }
+                    sb.Append(": ").Append(field.Description);
                 sb.AppendLine();
             }
         }
@@ -156,20 +123,12 @@ internal static class PromptBuilderEmitter
         sb.AppendLine("        \"\"\";");
     }
 
-    private static void EmitBuildMessages(StringBuilder sb, OutputTypeModel model)
+    private static void EmitBuildMessages(StringBuilder sb, PromptBuilderModel model)
     {
-        var inputType = model.InputTypeName!;
-        var outputType = model.TypeName;
-
         sb.AppendLine("    public static IList<ChatMessage> BuildMessages(");
-        sb.Append("        ");
-        sb.Append(inputType);
-        sb.AppendLine(" input,");
-        sb.Append("        IReadOnlyList<(");
-        sb.Append(inputType);
-        sb.Append(" Input, ");
-        sb.Append(outputType);
-        sb.AppendLine(" Output)>? demos = null)");
+        sb.Append("        ").Append(model.InputTypeName).AppendLine(" input,");
+        sb.Append("        IReadOnlyList<(").Append(model.InputTypeName)
+          .Append(" Input, ").Append(model.OutputTypeName).AppendLine(" Output)>? demos = null)");
         sb.AppendLine("    {");
         sb.AppendLine("        var messages = new List<ChatMessage>();");
         sb.AppendLine();
@@ -194,13 +153,9 @@ internal static class PromptBuilderEmitter
         sb.AppendLine("    }");
     }
 
-    private static void EmitFormatInput(StringBuilder sb, OutputTypeModel model)
+    private static void EmitFormatInput(StringBuilder sb, PromptBuilderModel model)
     {
-        var inputType = model.InputTypeName!;
-
-        sb.Append("    private static string FormatInput(");
-        sb.Append(inputType);
-        sb.AppendLine(" input)");
+        sb.Append("    private static string FormatInput(").Append(model.InputTypeName).AppendLine(" input)");
 
         if (model.InputFields.Count == 0)
         {
@@ -211,11 +166,8 @@ internal static class PromptBuilderEmitter
         if (model.InputFields.Count == 1)
         {
             var field = model.InputFields[0];
-            sb.Append("        => $\"");
-            sb.Append(field.Name);
-            sb.Append(": {input.");
-            sb.Append(field.Name);
-            sb.AppendLine("}\";");
+            sb.Append("        => $\"").Append(field.Name)
+              .Append(": {input.").Append(field.Name).AppendLine("}\";");
             return;
         }
 
@@ -224,21 +176,15 @@ internal static class PromptBuilderEmitter
         for (int i = 0; i < model.InputFields.Count; i++)
         {
             var field = model.InputFields[i];
-            sb.Append("            ");
-            sb.Append(field.Name);
-            sb.Append(": {input.");
-            sb.Append(field.Name);
-            sb.Append('}');
-            sb.AppendLine();
+            sb.Append("            ").Append(field.Name)
+              .Append(": {input.").Append(field.Name).AppendLine("}");
         }
         sb.AppendLine("            \"\"\";");
     }
 
-    private static void EmitFormatOutput(StringBuilder sb, OutputTypeModel model)
+    private static void EmitFormatOutput(StringBuilder sb, PromptBuilderModel model)
     {
-        sb.Append("    private static string FormatOutput(");
-        sb.Append(model.TypeName);
-        sb.AppendLine(" output)");
+        sb.Append("    private static string FormatOutput(").Append(model.OutputTypeName).AppendLine(" output)");
         sb.AppendLine("        => System.Text.Json.JsonSerializer.Serialize(output);");
     }
 

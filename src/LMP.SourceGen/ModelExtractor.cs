@@ -70,7 +70,7 @@ internal static class ModelExtractor
     /// <summary>
     /// Extracts output field metadata from an <c>[LmpSignature]</c> output type's properties.
     /// </summary>
-    private static EquatableArray<OutputFieldModel> ExtractOutputFields(
+    internal static EquatableArray<OutputFieldModel> ExtractOutputFields(
         INamedTypeSymbol typeSymbol, CancellationToken ct)
     {
         var builder = ImmutableArray.CreateBuilder<OutputFieldModel>();
