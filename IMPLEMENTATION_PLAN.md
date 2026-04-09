@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 3.3 complete — 403 tests passing. Next: Phase 4 (Evaluation + BootstrapFewShot).
+> **Status:** Phase 4.1 complete — 430 tests passing. Next: Phase 4.2 (Module Cloning).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -703,22 +703,29 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Entry criteria:** Phase 2 complete; Phase 3 recommended but not required.
 
-### 4.1 — Evaluator
+### 4.1 — Evaluator ✅ COMPLETE
 
 **Spec:** `compiler-optimizer.md` §3
 
 **Tasks:**
-- [ ] Implement `Evaluator` static class in `LMP.Optimizers` namespace `LMP.Optimizers`:
+- [x] **Prerequisite:** Added non-generic `Example` abstract base record per D8 — `WithInputs() -> object`, `GetLabel() -> object`. `Example<TInput, TLabel>` now sealed and inherits from `Example`.
+- [x] **Prerequisite:** Updated `IOptimizer` to non-generic signature per D2 — `CompileAsync<TModule>(TModule, IReadOnlyList<Example>, Func<Example, object, float>, CancellationToken)`
+- [x] Implement `Evaluator` static class in `LMP.Optimizers` namespace `LMP.Optimizers`:
   - `static Task<EvaluationResult> EvaluateAsync<TModule>(TModule module, IReadOnlyList<Example> devSet, Func<Example, object, float> metric, int maxConcurrency = 4, CancellationToken ct = default) where TModule : LmpModule`
   - Uses `Parallel.ForEachAsync` for concurrent evaluation
   - Calls `module.ForwardAsync(example.WithInputs(), ct)` per example
   - Scores with `metric(example, output)`
   - Collects into `ConcurrentBag<ExampleResult>`
-- [ ] Create `EvaluationResult` sealed record: `PerExample` (IReadOnlyList\<ExampleResult\>), `AverageScore`, `MinScore`, `MaxScore`, `Count`
-- [ ] Create `ExampleResult` sealed record: `Example`, `Output` (object), `Score` (float)
-- [ ] Unit test: evaluator with 5 examples, mock module -> correct average, min, max scores
+  - Empty devSet returns zeroed result without throwing
+- [x] Create `EvaluationResult` sealed record: `PerExample` (IReadOnlyList\<ExampleResult\>), `AverageScore`, `MinScore`, `MaxScore`, `Count`
+- [x] Create `ExampleResult` sealed record: `Example`, `Output` (object), `Score` (float)
+- [x] 22 unit tests covering: argument validation (5), empty devSet (1), basic evaluation with aggregates (4), metric data access (2), ForwardAsync integration (3), concurrency limit tracking (2), cancellation (1), error propagation (1), result record types (3)
+- [x] Updated ExampleTests: +4 new tests for `GetLabel()`, base type, non-generic list, sealed check
+- [x] Updated IOptimizerTests: aligned with non-generic `Example` signature + added metric data access test
 
-**Completion criteria:** `Evaluator.EvaluateAsync` runs module on dev set and returns correct aggregate score.
+**Status:** ✅ Complete. 430 total tests pass (56 Abstractions + 35 Core + 71 Modules + 22 Optimizers + 246 SourceGen). Evaluator runs module on dev set with concurrent evaluation, scores each result, and returns correct aggregate statistics.
+
+**Completion criteria:** ✅ `Evaluator.EvaluateAsync` runs module on dev set and returns correct aggregate score.
 
 ### 4.2 — Module Cloning
 

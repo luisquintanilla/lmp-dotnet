@@ -12,17 +12,15 @@ public interface IOptimizer
     /// parameters filled in.
     /// </summary>
     /// <typeparam name="TModule">The module type.</typeparam>
-    /// <typeparam name="TInput">The input type for training examples.</typeparam>
-    /// <typeparam name="TLabel">The label type for training examples.</typeparam>
     /// <param name="module">The module to optimize.</param>
     /// <param name="trainSet">Training examples.</param>
-    /// <param name="metric">Scoring function: (expected label, actual output) → score.</param>
+    /// <param name="metric">Scoring function: (example, actual output) → score in [0, 1].</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The optimized module with learnable parameters filled in.</returns>
-    Task<TModule> CompileAsync<TModule, TInput, TLabel>(
+    Task<TModule> CompileAsync<TModule>(
         TModule module,
-        IReadOnlyList<Example<TInput, TLabel>> trainSet,
-        Func<TLabel, object, float> metric,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
         CancellationToken cancellationToken = default)
         where TModule : LmpModule;
 }

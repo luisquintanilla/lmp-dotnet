@@ -16,9 +16,19 @@ public class ExampleTests
     {
         var example = new Example<string, int>("test input", 99);
 
-        var input = example.WithInputs();
+        object input = example.WithInputs();
 
         Assert.Equal("test input", input);
+    }
+
+    [Fact]
+    public void GetLabel_ReturnsLabel()
+    {
+        var example = new Example<string, int>("test input", 99);
+
+        object label = example.GetLabel();
+
+        Assert.Equal(99, label);
     }
 
     [Fact]
@@ -60,6 +70,41 @@ public class ExampleTests
 
         Assert.Same(input, example.Input);
         Assert.Same(label, example.Label);
-        Assert.Same(input, example.WithInputs());
+        Assert.Equal(input, example.WithInputs());
+        Assert.Equal(label, example.GetLabel());
+    }
+
+    [Fact]
+    public void BaseType_IsExample()
+    {
+        Example<string, int> typed = new("hello", 42);
+
+        Example untyped = typed;
+
+        Assert.Equal("hello", untyped.WithInputs());
+        Assert.Equal(42, untyped.GetLabel());
+    }
+
+    [Fact]
+    public void NonGenericList_WorksWithTypedExamples()
+    {
+        var examples = new List<Example>
+        {
+            new Example<string, int>("a", 1),
+            new Example<string, int>("b", 2),
+            new Example<string, int>("c", 3),
+        };
+
+        Assert.Equal(3, examples.Count);
+        Assert.Equal("a", examples[0].WithInputs());
+        Assert.Equal(2, examples[1].GetLabel());
+    }
+
+    [Fact]
+    public void Sealed_CannotBeInherited()
+    {
+        var exampleType = typeof(Example<string, int>);
+
+        Assert.True(exampleType.IsSealed);
     }
 }
