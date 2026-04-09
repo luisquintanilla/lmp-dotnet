@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>LMP.Samples.GEPA</RootNamespace>
+    <UserSecretsId>c9f54a3b-7ea6-4d1c-b039-4bae5f8c2d73</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,5 +15,12 @@
 
   <ItemGroup>
     <None Update="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
   </ItemGroup>
 </Project>

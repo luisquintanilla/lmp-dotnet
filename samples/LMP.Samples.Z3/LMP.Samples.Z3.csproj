@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>LMP.Samples.Z3</RootNamespace>
+    <UserSecretsId>b8e43f2a-6d95-4c0b-af28-3a9d4e7b1c62</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,5 +16,12 @@
 
   <ItemGroup>
     <None Update="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
   </ItemGroup>
 </Project>
