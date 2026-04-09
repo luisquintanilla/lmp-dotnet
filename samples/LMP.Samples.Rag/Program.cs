@@ -73,11 +73,8 @@ var dataDir = Path.Combine(AppContext.BaseDirectory, "data");
 var devSet = Example.LoadFromJsonl<QuestionInput, AnswerOutput>(
     Path.Combine(dataDir, "dev.jsonl"));
 
-Func<Example, object, float> metric = (example, output) =>
+Func<AnswerOutput, AnswerOutput, float> metric = (prediction, label) =>
 {
-    var label = (AnswerOutput)example.GetLabel();
-    var prediction = (AnswerOutput)output;
-
     // Score: do predicted keywords overlap with expected answer keywords?
     var expectedWords = ExtractKeywords(label.Answer);
     var matchCount = expectedWords.Count(kw =>

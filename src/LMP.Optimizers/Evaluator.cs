@@ -62,4 +62,46 @@ public static class Evaluator
             MaxScore: scores.Max(),
             Count: scores.Length);
     }
+
+    /// <summary>
+    /// Evaluates a typed module against a development set using a typed float metric.
+    /// This overload eliminates the need for runtime casts in the metric function.
+    /// </summary>
+    /// <typeparam name="TInput">The module's input type.</typeparam>
+    /// <typeparam name="TOutput">The module's output type (also the label type).</typeparam>
+    /// <param name="module">The typed module to evaluate.</param>
+    /// <param name="devSet">The set of typed examples to evaluate against.</param>
+    /// <param name="metric">Typed scoring function: (predicted, expected) → score in [0, 1].</param>
+    /// <param name="maxConcurrency">Maximum number of concurrent evaluations. Default is 4.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Aggregate evaluation results including per-example scores.</returns>
+    public static Task<EvaluationResult> EvaluateAsync<TInput, TOutput>(
+        LmpModule<TInput, TOutput> module,
+        IReadOnlyList<Example<TInput, TOutput>> devSet,
+        Func<TOutput, TOutput, float> metric,
+        int maxConcurrency = 4,
+        CancellationToken cancellationToken = default)
+        => EvaluateAsync(module, (IReadOnlyList<Example>)devSet,
+            Metric.Create(metric), maxConcurrency, cancellationToken);
+
+    /// <summary>
+    /// Evaluates a typed module against a development set using a typed bool metric.
+    /// <c>true</c> maps to <c>1.0f</c>, <c>false</c> maps to <c>0.0f</c>.
+    /// </summary>
+    /// <typeparam name="TInput">The module's input type.</typeparam>
+    /// <typeparam name="TOutput">The module's output type (also the label type).</typeparam>
+    /// <param name="module">The typed module to evaluate.</param>
+    /// <param name="devSet">The set of typed examples to evaluate against.</param>
+    /// <param name="metric">Typed predicate: (predicted, expected) → correct?</param>
+    /// <param name="maxConcurrency">Maximum number of concurrent evaluations. Default is 4.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Aggregate evaluation results including per-example scores.</returns>
+    public static Task<EvaluationResult> EvaluateAsync<TInput, TOutput>(
+        LmpModule<TInput, TOutput> module,
+        IReadOnlyList<Example<TInput, TOutput>> devSet,
+        Func<TOutput, TOutput, bool> metric,
+        int maxConcurrency = 4,
+        CancellationToken cancellationToken = default)
+        => EvaluateAsync(module, (IReadOnlyList<Example>)devSet,
+            Metric.Create(metric), maxConcurrency, cancellationToken);
 }

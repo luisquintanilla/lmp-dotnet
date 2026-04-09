@@ -75,11 +75,8 @@ var dataDir = Path.Combine(AppContext.BaseDirectory, "data");
 var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
     Path.Combine(dataDir, "dev.jsonl"));
 
-Func<Example, object, float> metric = (example, output) =>
+Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
 {
-    var label = (DraftReply)example.GetLabel();
-    var prediction = (DraftReply)output;
-
     // Simple metric: does the reply mention the expected category keyword?
     var keywords = ExtractKeywords(label.ReplyText);
     var matchCount = keywords.Count(kw =>
@@ -103,8 +100,10 @@ Console.WriteLine("────────────────────�
 var trainSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
     Path.Combine(dataDir, "train.jsonl"));
 
+// Wrap the typed metric for the optimizer (which uses the untyped signature)
+var untypedMetric = Metric.Create(metric);
 var optimizer = new BootstrapFewShot(maxDemos: 3, metricThreshold: 0.3f);
-var optimized = await optimizer.CompileAsync(module, trainSet, metric);
+var optimized = await optimizer.CompileAsync(module, trainSet, untypedMetric);
 
 var optimizedScore = await Evaluator.EvaluateAsync(optimized, devSet, metric);
 
