@@ -747,6 +747,8 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Completion criteria:** `module.Clone<T>()` returns a deep copy with independent predictor state.
 
+**Status:** ✅ Complete. 485 total tests pass (59 Abstractions + 59 Core + 71 Modules + 22 Optimizers + 274 SourceGen). Clone infrastructure implemented: `Predictor.Clone()` via MemberwiseClone + independent Demos/Config, `LmpModule.Clone<TModule>()` via source-gen `CloneCore()` with UnsafeAccessor for readonly fields.
+
 ### 4.3 — BootstrapFewShot
 
 **Spec:** `compiler-optimizer.md` §4

@@ -642,7 +642,7 @@ public class ModuleEmitterTests
         var source = ModuleEmitter.GenerateSource(model);
 
         Assert.Contains("[UnsafeAccessor(UnsafeAccessorKind.Field, Name = \"<Classify>k__BackingField\")]", source);
-        Assert.Contains("__cloneRef__Classify_", source);
+        Assert.Contains("__cloneRef_Classify", source);
     }
 
     [Fact]
