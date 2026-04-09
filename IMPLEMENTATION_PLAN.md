@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 3.1 complete — 351 tests passing. Next: Phase 3.2 (BestOfN).
+> **Status:** Phase 3.2 complete — 376 tests passing. Next: Phase 3.3 (Refine).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -30,11 +30,11 @@
 | `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
-| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.1 (ChainOfThought) complete |
+| `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.2 (BestOfN) complete |
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 351 tests passing (Phases 1–3.1) |
+| Test projects | `AGENTS.md` | :white_check_mark: 376 tests passing (Phases 1–3.2) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -653,19 +653,24 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Completion criteria:** ✅ `ChainOfThought<TicketInput, ClassifyTicket>` produces typed output; reasoning visible in trace entries.
 
-### 3.2 — BestOfN\<TInput, TOutput\>
+### 3.2 — BestOfN\<TInput, TOutput\> ✅ COMPLETE
 
 **Spec:** `runtime-execution.md` §4.2
 
 **Tasks:**
-- [ ] Implement `BestOfN<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
+- [x] Implement `BestOfN<TIn, TOut> : Predictor<TIn, TOut>` in `LMP.Modules`:
   - Constructor: `(IChatClient client, int n, Func<TIn, TOut, float> reward)`
   - `PredictAsync`: fire N concurrent predictions via `Task.WhenAll`, score each with reward, return highest
   - Delegates learnable state (`Instructions`, `Demos`, `Config`) to all N inner predictors
-- [ ] Unit test: N=3, mock returns 3 different outputs with different scores -> best returned
-- [ ] Verify true parallelism: all N `GetResponseAsync` calls made concurrently (not sequentially)
+- [x] Unit test: N=3, mock returns 3 different outputs with different scores -> best returned
+- [x] Verify true parallelism: all N `GetResponseAsync` calls made concurrently (not sequentially)
+- [x] Made `FakeChatClient` thread-safe for concurrent BestOfN access
+- [x] Created `DelayedFakeChatClient` for timing-based concurrency verification
+- [x] 25 tests in `BestOfNTests`: constructor validation, inheritance, IPredictor interface, learnable state, N=1/3/5 prediction, reward selection, custom reward, trace recording, cancellation, validation, demos/instructions in prompt, concurrency timing
 
-**Completion criteria:** `BestOfN` with N=5 makes 5 parallel calls, scores each, returns the best.
+**Status:** ✅ Complete. 376 total tests pass (51 Abstractions + 35 Core + 44 Modules + 246 SourceGen). BestOfN fires N parallel predictions via `Task.WhenAll`, scores each with the reward function, and returns the highest-scoring candidate. All candidates recorded in trace.
+
+**Completion criteria:** ✅ `BestOfN` with N=5 makes 5 parallel calls, scores each, returns the best.
 
 ### 3.3 — Refine\<TInput, TOutput\>
 
