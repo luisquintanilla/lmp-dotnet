@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LMP.Cli</RootNamespace>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>lmp</ToolCommandName>
+    <PackageId>LMP.Cli</PackageId>
+    <Version>0.1.0</Version>
+    <Description>CLI for the LMP Language Model Programming framework</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LMP.Cli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LMP.Optimizers\LMP.Optimizers.csproj" />
+  </ItemGroup>
+</Project>

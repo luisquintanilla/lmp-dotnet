@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/LMP.Abstractions/LMP.Abstractions.csproj" />
+    <Project Path="src/LMP.Cli/LMP.Cli.csproj" />
     <Project Path="src/LMP.Core/LMP.Core.csproj" />
     <Project Path="src/LMP.Modules/LMP.Modules.csproj" />
     <Project Path="src/LMP.Optimizers/LMP.Optimizers.csproj" />
@@ -8,6 +9,7 @@
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/LMP.Abstractions.Tests/LMP.Abstractions.Tests.csproj" />
+    <Project Path="test/LMP.Cli.Tests/LMP.Cli.Tests.csproj" />
     <Project Path="test/LMP.Core.Tests/LMP.Core.Tests.csproj" />
     <Project Path="test/LMP.Modules.Tests/LMP.Modules.Tests.csproj" />
     <Project Path="test/LMP.Optimizers.Tests/LMP.Optimizers.Tests.csproj" />

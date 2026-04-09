@@ -13,13 +13,15 @@ src/
 ├── LMP.Core/               # Predictor<TIn,TOut>, LmpModule, assertions
 ├── LMP.SourceGen/          # Roslyn IIncrementalGenerator
 ├── LMP.Modules/            # ChainOfThought, BestOfN, Refine, ReActAgent
-└── LMP.Optimizers/         # Evaluator, BootstrapFewShot, BootstrapRandomSearch
+├── LMP.Optimizers/         # Evaluator, BootstrapFewShot, BootstrapRandomSearch, MIPROv2
+└── LMP.Cli/                # CLI tool (dotnet lmp): inspect, optimize, eval
 test/
 ├── LMP.Abstractions.Tests/
 ├── LMP.Core.Tests/
 ├── LMP.SourceGen.Tests/
 ├── LMP.Modules.Tests/
-└── LMP.Optimizers.Tests/
+├── LMP.Optimizers.Tests/
+└── LMP.Cli.Tests/
 ```
 
 ## Build & Test

@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 6.1 complete — 680 tests passing. Next: Phase 7.1 (CLI Tool).
+> **Status:** Phase 7.1 complete — 717 tests passing. Next: Phase 7.2 (Aspire Integration).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -34,7 +34,8 @@
 | `LMP.Optimizers` — Evaluator, Bootstrap*, MIPROv2 | `compiler-optimizer.md` | :white_check_mark: Phase 6.1 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch, MIPROv2+TPE) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :white_check_mark: Complete (Phase 4.5) |
-| Test projects | `AGENTS.md` | :white_check_mark: 680 tests passing (Phases 1–6.1) |
+| `LMP.Cli` — CLI tool (`dotnet lmp`) | `cli.md` | :white_check_mark: Phase 7.1 complete (inspect, optimize, eval commands) |
+| Test projects | `AGENTS.md` | :white_check_mark: 717 tests passing (Phases 1–7.1) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -930,12 +931,22 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Entry criteria:** Phase 4 complete; Phase 6 recommended.
 
-### 7.1 — CLI Tool (`dotnet lmp`)
+### 7.1 — CLI Tool (`dotnet lmp`) ✅ COMPLETE
 
 **Tasks:**
-- [ ] `dotnet lmp optimize` — wraps `IOptimizer.CompileAsync()`; loads module, runs optimization, writes saved JSON
-- [ ] `dotnet lmp eval` — loads module + dataset, runs `Evaluator`, prints per-metric scores
-- [ ] `dotnet lmp inspect` — pretty-prints saved module parameters JSON
+- [x] `dotnet lmp inspect` — reads saved module state JSON and pretty-prints (module name, predictors, instructions, demo counts, config)
+- [x] `dotnet lmp optimize` — builds user project, discovers `ILmpRunner` implementation, runs `IOptimizer.CompileAsync`, saves optimized state JSON
+- [x] `dotnet lmp eval` — builds user project, discovers `ILmpRunner`, optionally loads saved artifact, evaluates on JSONL dataset via `Evaluator.EvaluateAsync`
+
+**Implementation notes:**
+- Created `ILmpRunner` interface in `LMP.Abstractions` — user projects implement this to expose module factory, metric, and dataset loading to the CLI
+- `LMP.Cli` project as a .NET tool (`PackAsTool`, `ToolCommandName=lmp`)
+- `ProjectBuilder` — shells out to `dotnet build`, locates output DLL in standard paths
+- `RunnerDiscovery` — loads assembly via custom `AssemblyLoadContext`, scans for `ILmpRunner` implementations
+- Manual arg parsing (no `System.CommandLine` dependency) for 3 commands
+- Exit codes per CLI spec: 0=success, 1=unknown, 2=invalid args, 3=project not found, 4=compile failed, 5=eval failed, 6=artifact error, 7=input parse error
+- `--json` flag on inspect/eval for machine-readable output
+- 37 new tests: argument parsing, file not found, invalid JSON, formatted/JSON output, FormatDemoFields, CLI entry point dispatch
 
 ### 7.2 — Aspire Integration
 
@@ -969,7 +980,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 | **P1** | Phase 4: Evaluation + BootstrapFewShot | Complex | Thread-safe trace collection; module cloning source-gen | ✅ Complete |
 | **P1** | Phase 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface area | ✅ Complete |
 | **P2** | Phase 6: Advanced Optimization (MIPROv2) | Complex | Bayesian search backend / TPE sampler | ✅ Complete |
-| **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | Not started |
+| **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | 7.1 ✅ Complete |
 | **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | Not started |
 
 ---
