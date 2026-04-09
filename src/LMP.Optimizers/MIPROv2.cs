@@ -12,7 +12,9 @@ namespace LMP.Optimizers;
 public sealed class MIPROv2 : IOptimizer
 {
     private readonly IChatClient _proposalClient;
+    private readonly Func<Dictionary<string, int>, ISampler>? _samplerFactory;
     private readonly int _numTrials;
+    private List<TrialResult>? _lastTrialHistory;
     private readonly int _numInstructionCandidates;
     private readonly int _numDemoSubsets;
     private readonly int _maxDemos;
@@ -27,6 +29,10 @@ public sealed class MIPROv2 : IOptimizer
     /// Chat client used to generate instruction candidates in Phase 2.
     /// This can be a different (possibly cheaper) model than the one used by predictors.
     /// </param>
+    /// <param name="samplerFactory">
+    /// Optional factory that creates an <see cref="ISampler"/> given parameter cardinalities.
+    /// If <c>null</c>, uses <see cref="CategoricalTpeSampler"/> with the configured gamma and seed.
+    /// </param>
     /// <param name="numTrials">Number of Bayesian search trials. Default is 20.</param>
     /// <param name="numInstructionCandidates">
     /// Number of instruction variants to propose per predictor. Default is 5.
@@ -40,6 +46,7 @@ public sealed class MIPROv2 : IOptimizer
     /// </param>
     /// <param name="gamma">
     /// TPE quantile threshold (0, 1). Top gamma fraction of trials are "good". Default is 0.25.
+    /// Only used when <paramref name="samplerFactory"/> is null.
     /// </param>
     /// <param name="seed">Optional random seed for reproducibility.</param>
     /// <exception cref="ArgumentNullException">
@@ -54,6 +61,7 @@ public sealed class MIPROv2 : IOptimizer
     /// </exception>
     public MIPROv2(
         IChatClient proposalClient,
+        Func<Dictionary<string, int>, ISampler>? samplerFactory = null,
         int numTrials = 20,
         int numInstructionCandidates = 5,
         int numDemoSubsets = 5,
@@ -71,6 +79,7 @@ public sealed class MIPROv2 : IOptimizer
             throw new ArgumentOutOfRangeException(nameof(gamma), gamma, "Gamma must be in (0, 1).");
 
         _proposalClient = proposalClient;
+        _samplerFactory = samplerFactory;
         _numTrials = numTrials;
         _numInstructionCandidates = numInstructionCandidates;
         _numDemoSubsets = numDemoSubsets;
@@ -79,6 +88,14 @@ public sealed class MIPROv2 : IOptimizer
         _gamma = gamma;
         _seed = seed;
     }
+
+    /// <summary>
+    /// Trial history from the last <see cref="CompileAsync{TModule}"/> call.
+    /// Contains (configuration, score) pairs for each Bayesian search trial.
+    /// Useful with <see cref="TraceAnalyzer"/> for post-optimization analysis.
+    /// Returns <c>null</c> if <see cref="CompileAsync{TModule}"/> hasn't been called.
+    /// </summary>
+    public IReadOnlyList<TrialResult>? LastTrialHistory => _lastTrialHistory;
 
     /// <summary>
     /// Optimizes the module using three-phase MIPROv2:
@@ -141,9 +158,11 @@ public sealed class MIPROv2 : IOptimizer
                 ? subsets.Count : 1;
         }
 
-        var sampler = new CategoricalTpeSampler(cardinalities, _gamma, _seed);
+        var sampler = _samplerFactory?.Invoke(cardinalities)
+            ?? new CategoricalTpeSampler(cardinalities, _gamma, _seed);
         TModule bestCandidate = module;
         float bestScore = float.MinValue;
+        var trialHistory = new List<TrialResult>(_numTrials);
 
         for (int trial = 0; trial < _numTrials; trial++)
         {
@@ -180,7 +199,8 @@ public sealed class MIPROv2 : IOptimizer
             var result = await Evaluator.EvaluateAsync(
                 candidate, valSplit, metric, cancellationToken: cancellationToken);
 
-            sampler.Report(config, result.AverageScore);
+            sampler.Update(config, result.AverageScore);
+            trialHistory.Add(new TrialResult(new Dictionary<string, int>(config), result.AverageScore));
 
             if (result.AverageScore > bestScore)
             {
@@ -189,6 +209,7 @@ public sealed class MIPROv2 : IOptimizer
             }
         }
 
+        _lastTrialHistory = trialHistory;
         return bestCandidate;
     }
 

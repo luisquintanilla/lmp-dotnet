@@ -5,6 +5,7 @@
     <Project Path="src/LMP.Cli/LMP.Cli.csproj" />
     <Project Path="src/LMP.Core/LMP.Core.csproj" />
     <Project Path="src/LMP.Extensions.Evaluation/LMP.Extensions.Evaluation.csproj" />
+    <Project Path="src/LMP.Extensions.Z3/LMP.Extensions.Z3.csproj" />
     <Project Path="src/LMP.Modules/LMP.Modules.csproj" />
     <Project Path="src/LMP.Optimizers/LMP.Optimizers.csproj" />
     <Project Path="src/LMP.SourceGen/LMP.SourceGen.csproj" />
@@ -14,6 +15,7 @@
     <Project Path="test/LMP.Aspire.Hosting.Tests/LMP.Aspire.Hosting.Tests.csproj" />
     <Project Path="test/LMP.Cli.Tests/LMP.Cli.Tests.csproj" />
     <Project Path="test/LMP.Core.Tests/LMP.Core.Tests.csproj" />
+    <Project Path="test/LMP.Extensions.Z3.Tests/LMP.Extensions.Z3.Tests.csproj" />
     <Project Path="test/LMP.Modules.Tests/LMP.Modules.Tests.csproj" />
     <Project Path="test/LMP.Optimizers.Tests/LMP.Optimizers.Tests.csproj" />
     <Project Path="test/LMP.SourceGen.Tests/LMP.SourceGen.Tests.csproj" />
@@ -21,6 +23,7 @@
   <Folder Name="/samples/">
     <Project Path="samples/LMP.Samples.Evaluation/LMP.Samples.Evaluation.csproj" />
     <Project Path="samples/LMP.Samples.Middleware/LMP.Samples.Middleware.csproj" />
+    <Project Path="samples/LMP.Samples.AdvancedOptimizers/LMP.Samples.AdvancedOptimizers.csproj" />
     <Project Path="samples/LMP.Samples.MIPROv2/LMP.Samples.MIPROv2.csproj" />
     <Project Path="samples/LMP.Samples.TicketTriage/LMP.Samples.TicketTriage.csproj" />
   </Folder>

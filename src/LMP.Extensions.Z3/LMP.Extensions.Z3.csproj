@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>LMP.Extensions.Z3</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LMP.Extensions.Z3.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LMP.Abstractions\LMP.Abstractions.csproj" />
+    <ProjectReference Include="..\LMP.Optimizers\LMP.Optimizers.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Z3" />
+  </ItemGroup>
+</Project>

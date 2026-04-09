@@ -67,7 +67,7 @@ public class CategoricalTpeSamplerTests
         var sampler = new CategoricalTpeSampler(cardinalities, seed: 42);
 
         // Report one trial — not enough for TPE
-        sampler.Report(new Dictionary<string, int> { ["x"] = 0 }, 0.5f);
+        sampler.Update(new Dictionary<string, int> { ["x"] = 0 }, 0.5f);
 
         var config = sampler.Propose();
         Assert.InRange(config["x"], 0, 3);
@@ -84,10 +84,10 @@ public class CategoricalTpeSamplerTests
         var sampler = new CategoricalTpeSampler(cardinalities, gamma: 0.25, seed: 42);
 
         // Report enough trials so TPE kicks in (need >= 1/0.25 = 4)
-        sampler.Report(new Dictionary<string, int> { ["x"] = 0 }, 0.9f);
-        sampler.Report(new Dictionary<string, int> { ["x"] = 0 }, 0.8f);
-        sampler.Report(new Dictionary<string, int> { ["x"] = 1 }, 0.2f);
-        sampler.Report(new Dictionary<string, int> { ["x"] = 2 }, 0.1f);
+        sampler.Update(new Dictionary<string, int> { ["x"] = 0 }, 0.9f);
+        sampler.Update(new Dictionary<string, int> { ["x"] = 0 }, 0.8f);
+        sampler.Update(new Dictionary<string, int> { ["x"] = 1 }, 0.2f);
+        sampler.Update(new Dictionary<string, int> { ["x"] = 2 }, 0.1f);
 
         // After these trials, category 0 is strongly preferred (high scores)
         var config = sampler.Propose();
@@ -103,9 +103,9 @@ public class CategoricalTpeSamplerTests
         // Heavily bias category 0 as good
         for (int i = 0; i < 20; i++)
         {
-            sampler.Report(new Dictionary<string, int> { ["x"] = 0 }, 0.9f);
-            sampler.Report(new Dictionary<string, int> { ["x"] = 1 }, 0.1f);
-            sampler.Report(new Dictionary<string, int> { ["x"] = 2 }, 0.05f);
+            sampler.Update(new Dictionary<string, int> { ["x"] = 0 }, 0.9f);
+            sampler.Update(new Dictionary<string, int> { ["x"] = 1 }, 0.1f);
+            sampler.Update(new Dictionary<string, int> { ["x"] = 2 }, 0.05f);
         }
 
         // Propose many times and check that category 0 is proposed more often
@@ -127,7 +127,7 @@ public class CategoricalTpeSamplerTests
     public void Report_NullConfig_Throws()
     {
         var sampler = new CategoricalTpeSampler(new Dictionary<string, int> { ["x"] = 3 });
-        Assert.Throws<ArgumentNullException>(() => sampler.Report(null!, 0.5f));
+        Assert.Throws<ArgumentNullException>(() => sampler.Update(null!, 0.5f));
     }
 
     [Fact]
@@ -136,10 +136,10 @@ public class CategoricalTpeSamplerTests
         var sampler = new CategoricalTpeSampler(new Dictionary<string, int> { ["x"] = 3 });
         Assert.Equal(0, sampler.TrialCount);
 
-        sampler.Report(new Dictionary<string, int> { ["x"] = 1 }, 0.5f);
+        sampler.Update(new Dictionary<string, int> { ["x"] = 1 }, 0.5f);
         Assert.Equal(1, sampler.TrialCount);
 
-        sampler.Report(new Dictionary<string, int> { ["x"] = 2 }, 0.7f);
+        sampler.Update(new Dictionary<string, int> { ["x"] = 2 }, 0.7f);
         Assert.Equal(2, sampler.TrialCount);
     }
 
@@ -163,8 +163,8 @@ public class CategoricalTpeSamplerTests
             Assert.Equal(c1["a"], c2["a"]);
             Assert.Equal(c1["b"], c2["b"]);
 
-            sampler1.Report(c1, (float)i / 10);
-            sampler2.Report(c2, (float)i / 10);
+            sampler1.Update(c1, (float)i / 10);
+            sampler2.Update(c2, (float)i / 10);
         }
     }
 

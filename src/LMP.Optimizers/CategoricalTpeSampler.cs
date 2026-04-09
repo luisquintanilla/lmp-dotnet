@@ -5,7 +5,7 @@ namespace LMP.Optimizers;
 /// Maintains frequency-based surrogate models for "good" and "bad" trials,
 /// then proposes configurations that maximize the ratio l(x) / g(x).
 /// </summary>
-internal sealed class CategoricalTpeSampler
+public sealed class CategoricalTpeSampler : ISampler
 {
     private readonly Dictionary<string, int> _parameterCardinalities;
     private readonly double _gamma;
@@ -69,7 +69,7 @@ internal sealed class CategoricalTpeSampler
     /// </summary>
     /// <param name="config">The configuration that was evaluated.</param>
     /// <param name="score">The evaluation score (higher is better).</param>
-    public void Report(Dictionary<string, int> config, float score)
+    public void Update(Dictionary<string, int> config, float score)
     {
         ArgumentNullException.ThrowIfNull(config);
         _history.Add((new Dictionary<string, int>(config), score));

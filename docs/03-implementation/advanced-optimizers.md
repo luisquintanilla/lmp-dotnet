@@ -1,6 +1,6 @@
-# Advanced Optimizers — Extension Points and Roadmap
+# Advanced Optimizers — ISampler, SmacSampler, TraceAnalyzer, and Roadmap
 
-LMP ships with two optimizers out of the box. This document describes the `IOptimizer` extension model and explores three post-MVP directions: Z3 constraint-based demo selection, Infer.NET probabilistic search, and ML.NET AutoML integration.
+LMP's optimizer layer is designed around two extension points: `IOptimizer` (what to optimize) and `ISampler` (how to search). This document covers the built-in implementations, the sampling abstraction, and the roadmap for Z3 and GEPA.
 
 ## Built-In Optimizers
 
@@ -19,7 +19,7 @@ IOptimizer interface
 
 ### MIPROv2 (Bayesian Instruction + Demo Optimization)
 
-The most sophisticated optimizer. Tunes both **instructions** and **demos** using Bayesian optimization (TPE).
+The most sophisticated optimizer. Tunes both **instructions** and **demos** using Bayesian optimization.
 
 **3-Phase Algorithm:**
 
@@ -27,11 +27,134 @@ The most sophisticated optimizer. Tunes both **instructions** and **demos** usin
 
 2. **Propose Instructions** — Uses a separate LLM call (the `proposalClient`) to generate `numInstructionCandidates` instruction variants per predictor, informed by the task description and demo examples.
 
-3. **Bayesian Search** — Uses `CategoricalTpeSampler` (Tree-structured Parzen Estimator) to jointly search over instruction variants × demo subsets. Runs `numTrials` iterations, selecting the configuration with the highest metric score.
+3. **Bayesian Search** — Uses an `ISampler` (default: `CategoricalTpeSampler`) to jointly search over instruction variants × demo subsets. Runs `numTrials` iterations, selecting the configuration with the highest metric score.
 
-**Key parameters:** `proposalClient`, `numTrials`, `numInstructionCandidates`, `numDemoSubsets`, `maxDemos`, `metricThreshold`, `gamma`, `seed`
+**Key parameters:** `proposalClient`, `numTrials`, `numInstructionCandidates`, `numDemoSubsets`, `maxDemos`, `metricThreshold`, `gamma`, `seed`, `samplerFactory`
 
-**Why it matters:** MIPROv2 is the only optimizer that tunes *instructions*. BootstrapRandomSearch only selects demos. For tasks where prompt wording significantly affects quality, MIPROv2 can find instructions the developer wouldn't have written.
+**Trial History:** After calling `CompileAsync`, access `mipro.LastTrialHistory` to get the full `IReadOnlyList<TrialResult>` of (configuration, score) pairs. This enables post-optimization analysis with `TraceAnalyzer`.
+
+## The `ISampler` Abstraction
+
+```csharp
+public interface ISampler
+{
+    int TrialCount { get; }
+    Dictionary<string, int> Propose();
+    void Update(Dictionary<string, int> config, float score);
+}
+```
+
+`ISampler` defines how the Bayesian search explores the configuration space. The contract mirrors ML.NET's `ITuner` pattern:
+
+- **`Propose()`** — Returns the next configuration to evaluate. Keys are parameter names (e.g., `"classify_instr"`), values are categorical indices.
+- **`Update()`** — Reports the score for a previously proposed configuration. The sampler uses this feedback to guide future proposals.
+- **`TrialCount`** — Number of completed trials.
+
+Search space configuration (cardinalities per parameter) is handled by the constructor, not the interface. This keeps the contract minimal.
+
+### Injecting a Custom Sampler into MIPROv2
+
+MIPROv2 accepts an optional sampler factory. The factory receives the cardinalities dictionary (built at optimization time from the actual instruction/demo candidates) and returns an `ISampler`:
+
+```csharp
+var mipro = new MIPROv2(
+    proposalClient: client,
+    numTrials: 20,
+    samplerFactory: cardinalities => new SmacSampler(cardinalities, numTrees: 10, seed: 42));
+```
+
+If no factory is provided, MIPROv2 defaults to `CategoricalTpeSampler`.
+
+### CategoricalTpeSampler (Default)
+
+Tree-structured Parzen Estimator adapted for categorical parameters. Splits observations into "good" (top γ%) and "bad" groups, then proposes configurations that are more likely under the "good" distribution.
+
+```csharp
+var sampler = new CategoricalTpeSampler(cardinalities, gamma: 0.25, seed: 42);
+```
+
+**When to use:** Good default. Fast, handles independent parameters well. Best when parameters don't interact strongly.
+
+### SmacSampler (SMAC / Random Forest)
+
+Sequential Model-based Algorithm Configuration. Uses a random forest surrogate model to predict scores, then selects the configuration with the highest Expected Improvement.
+
+```csharp
+var sampler = new SmacSampler(cardinalities, numTrees: 10, seed: 42);
+```
+
+**Algorithm:**
+1. **Random init phase:** First `max(2 × numParams, 6)` trials use uniform random sampling.
+2. **Surrogate phase:** Fits a `CategoricalRandomForest` to all observed trials.
+3. **EI acquisition:** Evaluates Expected Improvement: `EI = (bestScore - μ) × Φ(z) + σ × φ(z)`.
+4. **Local search:** One-mutation neighborhood (cycle to next category per dimension). Max 20 iterations.
+5. **Random EI search:** 100 random configurations evaluated for EI.
+6. Returns the candidate with the highest EI.
+
+**When to use:** Better than TPE when parameters interact (e.g., certain instructions work better with certain demo sets). The random forest naturally captures these joint effects. Slightly higher per-trial cost due to forest fitting.
+
+**Implementation:** Zero dependencies. Includes an internal `CategoricalRandomForest` (~170 LOC) — bootstrap samples, variance-reduction splits, 10 trees.
+
+## TraceAnalyzer
+
+Empirical analysis of optimization trial history. Zero dependencies. Three capabilities:
+
+### Parameter Posteriors
+
+For each parameter value, compute the mean score ± standard error across all trials that used that value:
+
+```csharp
+var history = mipro.LastTrialHistory;
+var cardinalities = new Dictionary<string, int>
+{
+    ["classify_instr"] = 4, ["classify_demos"] = 4,
+    ["draft_instr"] = 4, ["draft_demos"] = 4
+};
+
+var posteriors = TraceAnalyzer.ComputePosteriors(history, cardinalities);
+
+foreach (var (param, values) in posteriors)
+{
+    foreach (var (valueIdx, post) in values.OrderByDescending(kv => kv.Value.Mean))
+        Console.WriteLine($"  {param}[{valueIdx}]: {post.Mean:F3} ± {post.StandardError:F3} (n={post.Count})");
+}
+```
+
+**Use case:** Identify which instruction variants or demo subsets consistently score well. High mean + low stderr = high confidence.
+
+### Interaction Detection
+
+ANOVA-style residual analysis that detects parameter pairs with synergy or conflict:
+
+```csharp
+var interactions = TraceAnalyzer.DetectInteractions(history);
+
+foreach (var ((p1, p2), strength) in interactions.OrderByDescending(kv => kv.Value))
+    Console.WriteLine($"  {p1} × {p2} = {strength:F4}");
+```
+
+High interaction strength means the score depends on the *combination* of those two parameters, not just their individual effects. This can guide the choice of sampler (SmacSampler handles interactions better than TPE).
+
+### Warm-Start Transfer Learning
+
+Convert posteriors from a previous optimization run into synthetic trials that seed a new sampler:
+
+```csharp
+// After first optimization
+var posteriors = TraceAnalyzer.ComputePosteriors(history, cardinalities);
+
+// Start a new optimization with transferred knowledge
+var warmSampler = new SmacSampler(cardinalities, seed: 123);
+TraceAnalyzer.WarmStart(warmSampler, posteriors, numSyntheticTrials: 5);
+
+var mipro2 = new MIPROv2(proposalClient: client, numTrials: 10,
+    samplerFactory: _ => warmSampler);
+```
+
+The warm-started sampler begins with knowledge of which parameter values tend to score well, rather than exploring from scratch. This is valuable when:
+- Re-optimizing after changing training data slightly
+- Transferring knowledge from a smaller pilot study
+- Adapting an optimized module to a related task
 
 ## The `IOptimizer` Extension Point
 
@@ -58,183 +181,64 @@ Any new optimizer implements this single method. The contract:
 Optimizers read and write module state through `LmpModule`:
 
 ```csharp
-// Get all predictors (each has Instructions + Demos)
 module.GetPredictors()  // → IReadOnlyList<(string Name, IPredictor Predictor)>
-
-// Set demos on a specific predictor
-predictor.Demos = selectedDemos;
-
-// Set instructions (MIPROv2 only today)
-predictor.Instructions = optimizedInstructions;
+predictor.Demos          // read/write demo collection
+predictor.Instructions   // read/write instruction text
 ```
-
-### Bootstrap Traces
-
-Both built-in optimizers use `BootstrapAsync` to generate candidate demos:
-
-```csharp
-var traces = await Bootstrapper.BootstrapAsync(module, trainSet, metric, maxDemos);
-```
-
-This runs the module on each training example, filters by metric threshold, and returns successful input→output traces as `Demo` instances.
-
-## Roadmap: Z3 Constraint-Based Demo Selection
-
-**Readiness: HIGH** — Can be implemented as a standalone `IOptimizer`.
-
-### Motivation
-
-BootstrapRandomSearch selects demos randomly. For structured tasks (e.g., ticket triage with 5 categories × 5 urgency levels), random selection often produces unbalanced demo sets. Z3 can enforce constraints:
-
-- Cover all categories
-- Minimize total token count
-- Maintain minimum per-category quality scores
-- Respect diversity requirements
-
-### Design Sketch
-
-```csharp
-public class Z3ConstrainedDemoSelector : IOptimizer
-{
-    public Task<TModule> CompileAsync<TModule>(...) where TModule : LmpModule
-    {
-        // 1. Bootstrap demo pool (same as BRS)
-        var pool = await Bootstrapper.BootstrapAsync(module, trainSet, metric, maxDemos);
-
-        // 2. Build Z3 model
-        var ctx = new Context();
-        var solver = ctx.MkOptimize();
-
-        // Boolean variable per demo: selected or not
-        var vars = pool.Select((d, i) => ctx.MkBoolConst($"d{i}")).ToArray();
-
-        // Constraint: exactly maxDemos selected
-        solver.Add(ctx.MkEq(
-            ctx.MkAdd(vars.Select(v => (ArithExpr)ctx.MkITE(v, ctx.MkInt(1), ctx.MkInt(0))).ToArray()),
-            ctx.MkInt(maxDemos)));
-
-        // Constraint: at least 1 demo per category
-        foreach (var category in categories)
-        {
-            var categoryVars = pool
-                .Select((d, i) => (d, i))
-                .Where(x => GetCategory(x.d) == category)
-                .Select(x => vars[x.i]);
-            solver.Add(ctx.MkOr(categoryVars.ToArray()));
-        }
-
-        // Objective: minimize total tokens
-        solver.MkMinimize(ctx.MkAdd(
-            pool.Select((d, i) => (ArithExpr)ctx.MkITE(vars[i],
-                ctx.MkInt(TokenCount(d)), ctx.MkInt(0))).ToArray()));
-
-        // 3. Solve and extract selected demos
-        solver.Check();
-        // ...assign selected demos to module predictors
-    }
-}
-```
-
-**Dependencies:** `Microsoft.Z3` NuGet package (MIT licensed, ~10 MB).
-
-**Trade-offs:**
-- ✅ Guaranteed constraint satisfaction (category coverage, token budgets)
-- ✅ Optimal within constraints (minimize tokens, maximize quality)
-- ❌ Requires user to define constraints (category extraction, token counting)
-- ❌ Demo pool must be pre-generated (still needs bootstrap phase)
-
-## Roadmap: Infer.NET Probabilistic Optimization
-
-**Readiness: HIGH** — Replaces `CategoricalTpeSampler` in MIPROv2 with richer probabilistic models.
-
-### Motivation
-
-MIPROv2's TPE sampler treats instruction and demo choices as independent categoricals. In reality, certain instructions work better with certain demo styles. Infer.NET's factor graphs can model these dependencies.
-
-### Design Sketch
-
-Replace the TPE inner loop of MIPROv2 with an Infer.NET model:
-
-```csharp
-// Factor graph: instruction choice → demo subset → expected score
-var instructionVar = Variable.Discrete(instructionPrior);
-var demoVars = Enumerable.Range(0, numDemoSlots)
-    .Select(_ => Variable.Discrete(demoPrior))
-    .ToArray();
-
-// Observed scores update the posterior
-Variable<double> score = Variable.GaussianFromMeanAndVariance(
-    ComputeExpectedScore(instructionVar, demoVars), noiseVariance);
-
-// After each trial, observe the actual score
-score.ObservedValue = trialScore;
-
-// Infer posterior → sample next configuration
-var engine = new InferenceEngine();
-var instrPosterior = engine.Infer<Discrete>(instructionVar);
-var nextInstruction = instrPosterior.Sample();
-```
-
-**Advantages over TPE:**
-- Models instruction-demo synergy (joint distribution)
-- Principled uncertainty quantification
-- Can incorporate prior knowledge (e.g., "longer instructions tend to work better")
-
-**Dependencies:** `Microsoft.ML.Probabilistic` (MIT licensed).
-
-**Trade-offs:**
-- ✅ Richer probabilistic model captures variable interactions
-- ✅ Better sample efficiency (fewer trials to find good configs)
-- ❌ More complex to configure (priors, noise model)
-- ❌ Higher per-trial computational cost
-
-## Roadmap: ML.NET AutoML
-
-**Readiness: LOW** — Significant architectural mismatch.
-
-### Why It's Challenging
-
-ML.NET AutoML is designed for tabular ML pipelines:
-
-```csharp
-// ML.NET's SearchSpace is for numeric/categorical hyperparameters
-var searchSpace = new SearchSpace<MyHyperParams>();
-
-// SweepableEstimator wraps an ML.NET data pipeline
-var pipeline = context.Auto().BinaryClassification(...);
-```
-
-LMP's search space is **symbolic** (instructions are strings, demos are structured examples), not numeric hyperparameters. The mapping doesn't naturally fit:
-
-| ML.NET Concept | LMP Equivalent | Fit |
-|---|---|---|
-| `SearchSpace<T>` | Instruction candidates × demo subsets | Poor — symbolic, not numeric |
-| `SweepableEstimator` | Module's `ForwardAsync` | Poor — no data pipeline |
-| `AutoMLExperiment` | `IOptimizer.CompileAsync` | Moderate — both iterate trials |
-| `TrialResult` | `EvaluationResult` | Good — both report scores |
-
-### If We Did It Anyway
-
-The adapter layer would encode symbolic choices as categorical integers, losing the semantic structure that TPE and Infer.NET can exploit. The effort-to-value ratio is unfavorable compared to Z3 and Infer.NET.
-
-**Recommendation:** Defer ML.NET AutoML integration unless the community identifies specific tabular-ML-adjacent use cases (e.g., optimizing embedding model selection, tuning temperature/top-p numerics).
 
 ## M.E.AI.Evaluation Integration
 
 LMP includes `LMP.Extensions.Evaluation`, a bridge adapter that connects Microsoft.Extensions.AI.Evaluation evaluators to LMP's metric system. This enables using production-grade evaluators (Coherence, Relevance, Groundedness) as LMP optimization metrics.
 
-See `samples/LMP.Samples.Evaluation` for a complete demo showing:
-- Custom `IEvaluator` bridged into LMP metrics via `EvaluationBridge`
-- LLM-as-judge pattern with `CoherenceEvaluator` (documented)
-- Combined multi-metric evaluation
-- Optimization using bridged M.E.AI metrics
+See `samples/LMP.Samples.Evaluation` for a complete demo.
+
+## Roadmap: Z3 Constraint-Based Demo Selection
+
+**Status: Planned** — Separate `LMP.Extensions.Z3` package.
+
+Z3 enables constraint-based demo selection: "Select exactly N demos, cover all categories, minimize tokens, maximize quality." Uses `Microsoft.Z3` (MIT, ~8 MB).
+
+```csharp
+var z3 = new Z3ConstrainedDemoSelector(
+    categoryExtractor: demo => ExtractCategory(demo),
+    maxDemos: 4,
+    metricThreshold: 1.0f);
+var optimized = await z3.CompileAsync(module, trainSet, metric);
+```
+
+## Roadmap: GEPA (Evolutionary Reflection-Driven Optimization)
+
+**Status: Planned** — In `LMP.Optimizers`.
+
+GEPA represents a fundamentally different optimization paradigm:
+
+- **MIPROv2:** "Config scored 0.45. Based on score patterns, try this next config." (Bayesian)
+- **GEPA:** "Config scored 0.45. The classify predictor output 'urgent' when the input was clearly routine. Propose: 'Be more conservative — only classify as urgent when the customer mentions safety or legal issues.'" (Evolutionary + Reflection)
+
+GEPA evolves **instructions only** using LLM-based reflection on execution traces. It captures full `Trace`/`TraceEntry` data (LMP's existing trace system IS what GEPA calls "Actionable Side Information"), sends failures to a reflection LLM for diagnosis, and proposes targeted instruction fixes.
+
+**Complements MIPROv2:** GEPA for instruction refinement (100-500 evals), then MIPROv2 for joint instruction+demo optimization (20 trials).
+
+## Architecture
+
+```
+LMP.Abstractions    ← ISampler interface (public contract)
+LMP.Optimizers      ← CategoricalTpeSampler : ISampler  (TPE, default)
+                    ← SmacSampler : ISampler             (SMAC/RF)
+                    ← TraceAnalyzer                      (posteriors, interactions, warm-start)
+                    ← MIPROv2 : IOptimizer               (accepts ISampler factory)
+                    ← GEPA : IOptimizer                  (planned — reflection + Pareto)
+LMP.Extensions.Z3  ← Z3ConstrainedDemoSelector           (planned — constraint-based demos)
+```
 
 ## Summary
 
-| Optimizer | Status | Tunes | Search Method |
+| Component | Status | Purpose | Dependencies |
 |---|---|---|---|
-| BootstrapRandomSearch | ✅ Shipped | Demos | Random sampling |
-| MIPROv2 | ✅ Shipped | Instructions + Demos | Bayesian TPE |
-| Z3 Constrained | 🗺️ Roadmap | Demos (constrained) | SMT solving |
-| Infer.NET Probabilistic | 🗺️ Roadmap | Instructions + Demos | Variational inference |
-| ML.NET AutoML | ⏸️ Deferred | — | — |
+| ISampler | ✅ Shipped | Sampling abstraction | None (in Abstractions) |
+| CategoricalTpeSampler | ✅ Shipped | TPE search | None |
+| SmacSampler | ✅ Shipped | SMAC/RF search | None |
+| TraceAnalyzer | ✅ Shipped | Post-optimization analysis | None |
+| MIPROv2 (history) | ✅ Shipped | Trial history export | None |
+| Z3 Constrained | 🗺️ Planned | Constraint-based demos | Microsoft.Z3 |
+| GEPA | 🗺️ Planned | Reflection-driven evolution | IChatClient |

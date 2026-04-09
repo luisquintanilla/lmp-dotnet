@@ -320,6 +320,57 @@ public class MIPROv2Tests
 
     #endregion
 
+    #region Custom ISampler Injection
+
+    [Fact]
+    public async Task CompileAsync_CustomSampler_IsUsed()
+    {
+        int proposeCallCount = 0;
+        var (module, _) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 15)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        // Provide a custom sampler factory that wraps TPE but counts calls
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            samplerFactory: cardinalities =>
+            {
+                var inner = new CategoricalTpeSampler(cardinalities, seed: 42);
+                return new CountingSampler(inner, () => proposeCallCount++);
+            },
+            numTrials: 3,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 2,
+            seed: 42);
+
+        var result = await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        Assert.NotNull(result);
+        Assert.Equal(3, proposeCallCount); // One per trial
+    }
+
+    /// <summary>
+    /// Wraps an ISampler and invokes a callback on each Propose() call.
+    /// </summary>
+    private sealed class CountingSampler(ISampler inner, Action onPropose) : ISampler
+    {
+        public int TrialCount => inner.TrialCount;
+
+        public Dictionary<string, int> Propose()
+        {
+            onPropose();
+            return inner.Propose();
+        }
+
+        public void Update(Dictionary<string, int> config, float score)
+            => inner.Update(config, score);
+    }
+
+    #endregion
+
     #region Core Algorithm
 
     [Fact]
