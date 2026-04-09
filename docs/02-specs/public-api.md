@@ -1,6 +1,10 @@
 # LMP Framework — Public API Specification
 
-> **Derived from:** `spec.org` §5 (Mental Model), §6 (Canonical Developer Experience), §12 (Public API Shape)
+> **Derived from:** `system-architecture.md` (v2 — rewritten from first principles)
+>
+> **Target:** .NET 10 / C# 14
+>
+> **Dependency:** `Microsoft.Extensions.AI` (`IChatClient`)
 >
 > **Audience:** Implementing developers. Every type, method, and pattern in this document is implementation-ready.
 
@@ -16,14 +20,32 @@ LMP's competitive advantage is _developer experience_. The public API surface is
 
 | Principle | Rationale |
 |---|---|
-| **Minimize public surface** | Every public type is a maintenance commitment. Internal types can evolve freely; public ones cannot. Expose the smallest set that enables the full authoring → compile → deploy story. |
+| **Minimize public surface** | Every public type is a maintenance commitment. Expose the smallest set that enables the full author → optimize → deploy story. |
 | **Maximize discoverability** | A developer with IntelliSense and no docs should be able to author a complete program. Attribute names, method names, and parameter names are self-documenting. |
-| **Attributes for authoring, fluent builders for configuration** | Signatures and programs are _authored_ — attributes are the natural C# idiom. Compile specs are _configuration_ — fluent builders give chainable, readable setup. |
+| **Separate `TInput` / `TOutput` types** | Mirrors how `IChatClient.GetResponseAsync<T>()` actually works. Input is messages; `T` is the output type. They are naturally separate — don't fight the platform. |
+| **Building blocks, not a framework** | Simple primitives that compose naturally via standard C# types. No directed graphs, no IR, no custom MSBuild SDKs. |
 | **CancellationToken everywhere** | Every async method accepts an optional `CancellationToken`. Non-negotiable for production .NET. |
 
 ---
 
 ## 2. Package Structure
+
+```
+LMP.sln
+├── src/
+│   ├── LMP.Abstractions/     # [LmpSignature], Predictor, LmpModule, Example, Trace, IRetriever, IOptimizer
+│   ├── LMP.Core/             # Source generator, PromptBuilder, JsonTypeInfo, diagnostics
+│   ├── LMP.Modules/          # ChainOfThought, BestOfN, Refine, ReActAgent
+│   └── LMP.Optimizers/       # Evaluator, BootstrapFewShot, BootstrapRandomSearch, IOptimizer impls
+│
+├── tests/
+│   ├── LMP.Core.Tests/
+│   ├── LMP.Modules.Tests/
+│   └── LMP.Optimizers.Tests/
+│
+└── samples/
+    └── LMP.Samples.TicketTriage/
+```
 
 ### LMP.Abstractions
 
@@ -31,900 +53,948 @@ Shared contracts consumed by all other packages. **Zero Roslyn dependency.**
 
 | Visibility | Types |
 |---|---|
-| **Public** | `LmpSignatureAttribute`, `InputAttribute`, `OutputAttribute`, `BindFromAttribute`, `LmpProgramAttribute`, `LmpProgram<TIn, TOut>`, `ProgramGraph`, `Step` (static factory), `IDocumentRetriever`, `ICompiledArtifactLoader`, `CompiledArtifact` |
-| **Internal** | Descriptor record types (`SignatureDescriptor`, `FieldDescriptor`, etc.), IR invariants, hash utilities |
+| **Public** | `LmpSignatureAttribute`, `Predictor<TInput, TOutput>`, `LmpModule`, `Example<TInput, TLabel>`, `Trace`, `LmpAssert`, `LmpSuggest`, `IRetriever`, `IOptimizer` |
+| **Internal** | Descriptor record types, hash utilities |
 
-### LMP.Runtime
+### LMP.Core
 
-Execution engine. Depends on `LMP.Abstractions`.
-
-| Visibility | Types |
-|---|---|
-| **Public** | `IServiceCollection` extension methods (`AddLmpPrograms`), runtime context interfaces |
-| **Internal** | Graph executor, step dispatchers, prompt assembler, trace collector, structured-output parser |
-
-### LMP.Compiler
-
-Optimization pipeline. Depends on `LMP.Abstractions`, `LMP.Runtime`, `LMP.Evaluation`.
+Source generator and runtime plumbing. Depends on `LMP.Abstractions`.
 
 | Visibility | Types |
 |---|---|
-| **Public** | `CompileSpec`, `IProgramCompiler`, `CompileReport`, `IOptimizerBackend`, `Metrics` (static factory), `Optimizers` (static factory) |
-| **Internal** | Search-space extractor, trial runner, constraint evaluator, candidate ranker, artifact emitter |
+| **Public** | `IServiceCollection` extension methods (`AddLmp`) |
+| **Internal** | `PromptBuilder<TIn, TOut>` (source-generated), `JsonTypeInfo<TOut>` (source-generated), prompt assembler, structured-output parser |
 
-### LMP.Evaluation
+### LMP.Modules
 
-Scoring integration. Depends on `LMP.Abstractions`.
+Reasoning strategies. Depends on `LMP.Abstractions`, `LMP.Core`.
 
 | Visibility | Types |
 |---|---|
-| **Public** | Evaluator integration wrappers, `IEvaluator` adapter interface |
-| **Internal** | Score aggregation, dataset loaders |
+| **Public** | `ChainOfThought<TIn, TOut>`, `BestOfN<TIn, TOut>`, `Refine<TIn, TOut>`, `ReActAgent<TIn, TOut>`, `ProgramOfThought<TIn, TOut>` *(post-MVP)* |
 
-> **Implementation Note:** `LMP.Roslyn` (analyzers + source generators) is a separate package that depends on `LMP.Abstractions` only. It is _not_ part of the public runtime API and is omitted from this document.
+### LMP.Optimizers
+
+Optimization pipeline. Depends on `LMP.Abstractions`, `LMP.Core`.
+
+| Visibility | Types |
+|---|---|
+| **Public** | `Evaluator`, `BootstrapFewShot`, `BootstrapRandomSearch`, `MIPROv2` *(post-MVP)* |
+
+> **Implementation Note:** `LMP.Core` contains the source generator (Roslyn `IIncrementalGenerator`). It ships as an analyzer package — consumers reference it like any other NuGet package and the generator runs automatically at `dotnet build`.
 
 ---
 
-## 3. Complete Type Reference
+## 3. Type Design: Separate TInput / TOutput
 
-### 3.1 Authoring Attributes
+This is a deliberate departure from DSPy, where a single `dspy.Signature` class mixes input and output fields. In LMP, input and output are separate C# types.
 
-#### `LmpSignatureAttribute`
+**Why:** M.E.AI's actual API is `chatClient.GetResponseAsync<T>()` where `T` is the output type and input is `ChatMessage[]`. They are naturally separate. Forcing them into one type fights the platform.
+
+### Input Types — Plain C# Records
+
+Input types require **no LMP attributes**. They are just data. Use standard `[Description]` from `System.ComponentModel` on constructor parameters:
+
+```csharp
+public record TicketInput(
+    [Description("The raw ticket text")] string TicketText,
+    [Description("Customer plan tier")] string AccountTier);
+```
+
+No `property:` prefix is needed on positional record parameters. The source generator reads input descriptions from three sources, in priority order:
+
+1. `[Description]` on constructor parameters
+2. `[Description]` on properties
+3. XML doc comments (`/// <param name="X">...</param>`)
+
+### Output Types — `partial record` with `[LmpSignature]`
+
+```csharp
+[LmpSignature("Classify a support ticket by category and urgency")]
+public partial record ClassifyTicket
+{
+    [Description("Category: billing, technical, account")]
+    public required string Category { get; init; }
+
+    [Description("Urgency from 1 (low) to 5 (critical)")]
+    public required int Urgency { get; init; }
+}
+```
+
+The `partial` keyword is required. At build time, the source generator reads the type and emits:
+
+- **`PromptBuilder<TIn, TOut>`** — assembles `ChatMessage[]` from instructions + demos + input fields
+- **`JsonTypeInfo<TOut>`** — zero-reflection JSON serialization via `System.Text.Json` source gen (AOT-safe)
+- **`GetPredictors()` on `LmpModule` subclasses** — zero-reflection predictor discovery
+- **Diagnostics** — IDE red squiggles for missing descriptions, non-serializable output types
+
+---
+
+## 4. Complete Type Reference — LMP.Abstractions
+
+### 4.1 `LmpSignatureAttribute`
 
 ```csharp
 namespace LMP;
 
 /// <summary>
-/// Marks a partial class as an LM signature — a typed contract
-/// defining inputs, outputs, and instructions for a single LM interaction.
+/// Marks a partial record as an LM output type — a typed contract
+/// defining instructions and output fields for a single LM interaction.
 /// </summary>
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
-public sealed class LmpSignatureAttribute : Attribute
+public sealed class LmpSignatureAttribute(string instructions) : Attribute
 {
     /// <summary>
-    /// Optional human-readable name. Defaults to the class name if omitted.
+    /// Task-level instructions sent to the LM. Describes what the LM should do.
+    /// Analyzer LMP001 fires if this is missing or blank.
     /// </summary>
-    public string? Name { get; set; }
-
-    /// <summary>
-    /// System-level instructions sent to the LM. Must not be empty.
-    /// Analyzer LMP002 fires if this is missing or blank.
-    /// </summary>
-    public required string Instructions { get; set; }
+    public string Instructions { get; } = instructions;
 }
 ```
 
-**Usage:**
+**Design notes:**
 
-```csharp
-[LmpSignature(Instructions = "Classify the severity of a support ticket.")]
-public partial class ClassifyTicket
-{
-    [Input(Description = "Raw ticket text")]
-    public required string TicketText { get; init; }
-
-    [Output(Description = "Severity: Low, Medium, High, Critical")]
-    public required string Severity { get; init; }
-}
-```
-
-**Why This Exists:** Signatures are the smallest authorable unit. The attribute triggers the source generator to emit a `SignatureDescriptor` at build time, enabling compile-time validation (field descriptions present, output types supported) without any runtime reflection.
+- The constructor takes `instructions` as a positional parameter — `[LmpSignature("...")]` is the canonical usage.
+- Placed on `partial record` **output types only**. Input types are plain records with no LMP attributes.
+- The source generator reads this at build time; no runtime reflection needed.
 
 ---
 
-#### `InputAttribute`
+### 4.2 `Predictor<TInput, TOutput>`
+
+The core primitive. Binds an input type to an output type. Contains learnable state that optimizers fill in.
 
 ```csharp
 namespace LMP;
 
 /// <summary>
-/// Marks a property as an input field of an LM signature.
+/// A typed LM call: takes TInput, returns TOutput via structured output.
+/// Contains learnable parameters (demos, instructions) that optimizers tune.
 /// </summary>
-[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
-public sealed class InputAttribute : Attribute
+public class Predictor<TInput, TOutput>
+    where TOutput : class
 {
-    /// <summary>
-    /// Human-readable description included in the LM prompt.
-    /// Analyzer LMP001 fires if missing.
-    /// </summary>
-    public required string Description { get; set; }
+    /// <summary>Creates a predictor bound to the given chat client.</summary>
+    public Predictor(IChatClient client);
 
     /// <summary>
-    /// Whether the field must be provided at runtime. Defaults to true.
+    /// Few-shot demonstration examples. Filled by optimizers.
+    /// Each demo is an (input, output) pair included in the prompt.
     /// </summary>
-    public bool IsRequired { get; set; } = true;
-}
-```
-
-#### `OutputAttribute`
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// Marks a property as an output field of an LM signature.
-/// </summary>
-[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
-public sealed class OutputAttribute : Attribute
-{
-    /// <summary>
-    /// Human-readable description guiding the LM's output.
-    /// Analyzer LMP001 fires if missing.
-    /// </summary>
-    public required string Description { get; set; }
+    public IReadOnlyList<(TInput Input, TOutput Output)> Demos { get; set; }
 
     /// <summary>
-    /// Whether the field must be present in the LM response. Defaults to true.
+    /// Task instructions. Defaults to the [LmpSignature] instructions.
+    /// Can be overridden by optimizers (e.g., MIPROv2 instruction generation).
     /// </summary>
-    public bool IsRequired { get; set; } = true;
-}
-```
-
-**Why This Exists:** Field descriptions are not optional documentation — they become part of the prompt. `IsRequired` informs structured-output parsing: optional fields use lenient deserialization.
-
----
-
-#### `BindFromAttribute`
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// Explicitly binds a step input property to a specific upstream output.
-/// Used when convention-based auto-binding (Tier 1) cannot resolve the source,
-/// or when the developer wants to override the default convention.
-/// </summary>
-[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
-public sealed class BindFromAttribute : Attribute
-{
-    /// <summary>
-    /// The binding expression identifying the source.
-    /// Uses dot notation: "stepName.PropertyName" (e.g., "retrieve-kb.Documents").
-    /// Use "input.PropertyName" to bind from the program input.
-    /// </summary>
-    public required string Source { get; set; }
-
-    public BindFromAttribute(string source) => Source = source;
-}
-```
-
-**Usage:**
-
-```csharp
-[LmpSignature(Instructions = "Classify the severity of a support ticket.")]
-public partial class ClassifyTicket
-{
-    [Input(Description = "Raw ticket text")]
-    [BindFrom("input.TicketText")]
-    public required string TicketText { get; init; }
-
-    [Input(Description = "Relevant knowledge base snippets")]
-    [BindFrom("retrieve-kb.Documents")]
-    public required IReadOnlyList<string> KnowledgeSnippets { get; init; }
-
-    [Output(Description = "Severity: Low, Medium, High, Critical")]
-    public required string Severity { get; init; }
-}
-```
-
-**Why This Exists:** `[BindFrom]` is Tier 2 of the three-tier binding model. Convention-based auto-binding (Tier 1) matches properties by name and type automatically. When names don't align or the binding is ambiguous, `[BindFrom]` provides explicit, compile-time-verified binding with zero runtime overhead — the source generator emits direct property assignment code. Diagnostic LMP007 fires as an informational hint when an expression-tree binding (Tier 4) is used where a `[BindFrom]` attribute would suffice.
-
-**Three-Tier Binding Model Summary:**
-
-| Tier | Mechanism | Resolution | Overhead |
-|------|-----------|-----------|----------|
-| Tier 1 | Convention-based auto-binding | Matching names/types between upstream outputs and downstream inputs | Zero — generated code |
-| Tier 2 | `[BindFrom]` attribute | Explicit source expression on the property | Zero — generated code |
-| Tier 3 | C# 14 interceptor-based lambda binding | Intercepted `bind:` lambdas lowered to generated code at compile time | Zero — generated code |
-| Tier 4 | Expression tree binding | `.Compile()` at runtime | Runtime cost — fallback only |
-
----
-
-#### `LmpProgramAttribute`
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// Marks a class as an LM program — a composable, compilable unit of LM logic.
-/// </summary>
-[AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
-public sealed class LmpProgramAttribute : Attribute
-{
-    /// <summary>
-    /// Stable program identifier used in artifacts, traces, and CLI commands.
-    /// Must be a compile-time constant.
-    /// </summary>
-    public required string Name { get; set; }
-
-    public LmpProgramAttribute(string name) => Name = name;
-}
-```
-
-**Usage:**
-
-```csharp
-[LmpProgram("support-triage")]
-public partial class SupportTriageProgram : LmpProgram<TicketInput, TriageResult>
-{
-    // ...
-}
-```
-
-**Why This Exists:** The `Name` string is the stable identity used in compiled artifacts, CLI commands (`dotnet lmp compile --program support-triage`), and runtime traces. Analyzer LMP004 enforces that this is a deterministic compile-time constant.
-
----
-
-### 3.2 Base Types
-
-#### `LmpProgram<TIn, TOut>`
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// Base class for all LM programs. Subclass this to define a
-/// directed graph of steps that together solve a business task.
-/// </summary>
-/// <typeparam name="TIn">Program input record type.</typeparam>
-/// <typeparam name="TOut">Program output record type.</typeparam>
-public abstract class LmpProgram<TIn, TOut>
-{
-    /// <summary>
-    /// Defines the program's step graph. Called once during initialization.
-    /// The returned graph is the authored logical structure that the runtime executes.
-    /// </summary>
-    public abstract ProgramGraph Build();
+    public string Instructions { get; set; }
 
     /// <summary>
-    /// Executes the program against a live input.
+    /// Predictor-level configuration overrides (temperature, max tokens, etc.).
     /// </summary>
-    public virtual Task<TOut> RunAsync(TIn input, CancellationToken ct = default);
-}
-```
-
-**Why This Exists:** The base class gives the framework a single extension point. `Build()` returns a declarative graph — enabling the compiler to inspect, optimize, and rewrite the graph without executing it. `RunAsync` is virtual so the runtime can inject compiled artifact overrides.
-
-> **Implementation Note:** The runtime resolves `LmpProgram<TIn, TOut>` from DI. The generated partial class wires constructor-injected services (e.g., `IChatClient`, `IDocumentRetriever`). Developers never call `new` on a program.
-
----
-
-#### `ProgramGraph`
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// A directed acyclic graph of steps defining control flow and data flow.
-/// Constructed via the fluent API returned by <see cref="Graph.StartWith"/>.
-/// </summary>
-public sealed class ProgramGraph
-{
-    // Internal: list of steps, edges, return projection
-    // Public surface is construction-only via fluent builder.
-}
-
-/// <summary>
-/// Entry point for building a <see cref="ProgramGraph"/> with fluent syntax.
-/// </summary>
-public static class Graph
-{
-    /// <summary>Begins a graph with the given step.</summary>
-    public static ProgramGraphBuilder StartWith(StepDefinition step);
-}
-
-public sealed class ProgramGraphBuilder
-{
-    /// <summary>Appends a step that executes after the previous step.</summary>
-    public ProgramGraphBuilder Then(StepDefinition step);
-
-    /// <summary>Defines the final output projection from the execution context.</summary>
-    public ProgramGraph Return<TOut>(Func<IProgramContext, TOut> projection);
-}
-```
-
-**Usage** (inside `Build()`):
-
-```csharp
-return Graph
-    .StartWith(retrieve)
-    .Then(triage)
-    .Then(groundednessCheck)
-    .Return(ctx => new TriageResult
-    {
-        Severity = ctx.Latest<TriageTicket>().Severity
-    });
-```
-
----
-
-#### `Step` (Static Factory)
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// Factory methods for creating program step definitions.
-/// Each method returns a <see cref="StepDefinition"/> for use in graph building.
-/// </summary>
-public static class Step
-{
-    /// <summary>
-    /// Creates a predict step that binds input data to a signature and calls the LM.
-    /// </summary>
-    /// <typeparam name="TSignature">The signature type decorated with [LmpSignature].</typeparam>
-    /// <param name="name">Stable step identifier (must be a compile-time constant).</param>
-    /// <param name="bind">Projection that builds the signature input from program input and context.</param>
-    public static StepDefinition Predict<TSignature>(
-        string name,
-        Func<dynamic, IProgramContext, TSignature> bind);
+    public PredictorConfig Config { get; set; }
 
     /// <summary>
-    /// Creates a retrieval step that queries a document store.
+    /// Executes a single LM call: builds prompt from instructions + demos + input,
+    /// calls IChatClient.GetResponseAsync&lt;TOutput&gt;(), returns typed output.
     /// </summary>
-    /// <param name="name">Stable step identifier.</param>
-    /// <param name="from">Projection that extracts the query string from program input.</param>
-    /// <param name="topK">Maximum number of documents to retrieve.</param>
-    public static StepDefinition Retrieve(
-        string name,
-        Func<dynamic, string> from,
-        int topK = 5);
-
-    /// <summary>
-    /// Creates an evaluation step that scores a prior step's output.
-    /// </summary>
-    /// <param name="name">Stable step identifier.</param>
-    /// <param name="after">The step whose output is evaluated.</param>
-    /// <param name="evaluator">The evaluator instance to run.</param>
-    public static StepDefinition Evaluate(
-        string name,
-        StepDefinition after,
-        object evaluator);
-
-    /// <summary>
-    /// Creates a conditional branch step.
-    /// </summary>
-    /// <param name="name">Stable step identifier.</param>
-    /// <param name="condition">Predicate evaluated at runtime against the context.</param>
-    /// <param name="then">Step to execute if the condition is true.</param>
-    public static StepDefinition If(
-        string name,
-        Func<IProgramContext, bool> condition,
-        StepDefinition then);
-
-    /// <summary>
-    /// Creates a repair step that re-runs a signature with evaluation feedback injected.
-    /// </summary>
-    /// <typeparam name="TSignature">The same signature type as the original predict step.</typeparam>
-    /// <param name="name">Stable step identifier.</param>
-    /// <param name="usingFeedbackFrom">Evaluation steps whose feedback is included in the repair prompt.</param>
-    public static StepDefinition Repair<TSignature>(
-        string name,
-        params ReadOnlySpan<StepDefinition> usingFeedbackFrom);
-}
-```
-
-**Why This Exists:** Static factory methods ensure a single, discoverable entry point for all step types. IntelliSense shows `Step.` and the developer sees every available step kind. Composition over inheritance. The `Repair` method uses `params ReadOnlySpan<StepDefinition>` for zero-allocation variadic calls — callers pass any number of feedback steps without allocating an array on the heap.
-
----
-
-### 3.3 Compilation Types
-
-#### `CompileSpec`
-
-```csharp
-namespace LMP.Compilation;
-
-/// <summary>
-/// Fluent builder that defines what to optimize, how to score, and what constraints apply.
-/// </summary>
-public sealed class CompileSpec
-{
-    /// <summary>Begins a compile spec targeting a specific program type.</summary>
-    public static CompileSpec For<TProgram>() where TProgram : class;
-
-    /// <summary>Path to the JSONL training dataset.</summary>
-    public CompileSpec WithTrainingSet(string path);
-
-    /// <summary>Path to the JSONL validation dataset.</summary>
-    public CompileSpec WithValidationSet(string path);
-
-    /// <summary>Defines the tunables the optimizer may vary.</summary>
-    public CompileSpec Optimize(Action<SearchSpaceBuilder> configure);
-
-    /// <summary>Defines the scoring objective.</summary>
-    public CompileSpec ScoreWith(WeightedObjective objective);
-
-    /// <summary>Defines hard constraints that candidates must satisfy.</summary>
-    public CompileSpec Constrain(Action<ConstraintBuilder> configure);
-
-    /// <summary>Selects the optimizer backend strategy.</summary>
-    public CompileSpec UseOptimizer(IOptimizerBackend backend);
-}
-
-public sealed class SearchSpaceBuilder
-{
-    public void Instructions(string step);
-    public void FewShotExamples(string step, int min, int max);
-    public void RetrievalTopK(string step, int min, int max);
-    public void Model(string step, string[] allowed);
-    public void Temperature(string step, double min, double max);
-}
-
-public sealed class ConstraintBuilder
-{
-    /// <summary>
-    /// Adds a hard constraint as a strongly-typed predicate.
-    /// The predicate receives trial metrics and returns true if the constraint is satisfied.
-    /// </summary>
-    public void Require(Func<TrialMetrics, bool> predicate, string description);
-}
-```
-
-**Full usage chain:**
-
-```csharp
-var spec = CompileSpec
-    .For<SupportTriageProgram>()
-    .WithTrainingSet("data/train.jsonl")
-    .WithValidationSet("data/val.jsonl")
-    .Optimize(s =>
-    {
-        s.Instructions(step: "triage");
-        s.FewShotExamples(step: "triage", min: 0, max: 6);
-        s.Model(step: "triage", allowed: ["gpt-4.1-mini", "gpt-4.1"]);
-        s.Temperature(step: "triage", min: 0.0, max: 0.7);
-    })
-    .ScoreWith(Metrics.Weighted(
-        ("routing_accuracy", 0.35),
-        ("severity_accuracy", 0.25),
-        ("groundedness", 0.20),
-        ("policy_pass_rate", 0.20)))
-    .Constrain(rules =>
-    {
-        rules.Require(m => m.PolicyPassRate == 1.0, "Policy pass rate must be 100%");
-        rules.Require(m => m.P95LatencyMs <= 2500, "P95 latency must not exceed 2500ms");
-        rules.Require(m => m.AvgCostUsd <= 0.03, "Average cost must not exceed $0.03");
-    })
-    .UseOptimizer(Optimizers.RandomSearch());
-```
-
-> **Implementation Note:** `Metrics.Weighted` accepts `params ReadOnlySpan<(string, double)>` for zero-allocation variadic metric definitions. Internally, metric aggregation (weighted average, sum) uses `System.Numerics.Tensors.TensorPrimitives` for SIMD-accelerated computation — `TensorPrimitives.Sum`, `TensorPrimitives.Average`, and `TensorPrimitives.CosineSimilarity` for embedding-based metrics. This matters during compilation where thousands of trial scores are aggregated.
-
----
-
-#### `IProgramCompiler`
-
-```csharp
-namespace LMP.Compilation;
-
-/// <summary>
-/// Runs candidate trials over a program and chooses the best valid variant.
-/// </summary>
-public interface IProgramCompiler
-{
-    /// <summary>
-    /// Executes the full optimization pipeline: search-space extraction,
-    /// candidate proposal, trial execution, constraint enforcement, selection,
-    /// and artifact emission.
-    /// </summary>
-    Task<CompileReport> CompileAsync(
-        CompileSpec spec,
+    public Task<TOutput> PredictAsync(
+        TInput input,
         CancellationToken cancellationToken = default);
 }
 ```
 
----
-
-#### `CompileReport`
+**Usage:**
 
 ```csharp
-namespace LMP.Compilation;
+var classifier = new Predictor<TicketInput, ClassifyTicket>(chatClient);
 
-/// <summary>
-/// The result of a compilation run. Contains all trials, the selected variant,
-/// metrics, and constraint evaluation results.
-/// </summary>
-public sealed record CompileReport
-{
-    /// <summary>All trials executed during compilation.</summary>
-    public required IReadOnlyList<TrialResult> Trials { get; init; }
+// Learnable state (filled by optimizers or set manually)
+classifier.Demos = [
+    (new TicketInput("I was charged twice", "Pro"),
+     new ClassifyTicket { Category = "billing", Urgency = 4 })
+];
+classifier.Config = new PredictorConfig { Temperature = 0.7f };
 
-    /// <summary>The best scoring variant that satisfied all hard constraints, or null if none.</summary>
-    public CompiledArtifact? BestArtifact { get; init; }
-
-    /// <summary>Per-trial constraint evaluation results.</summary>
-    public required IReadOnlyList<ConstraintResult> ConstraintResults { get; init; }
-
-    /// <summary>True if at least one valid candidate was found and an artifact was emitted.</summary>
-    public bool Approved => BestArtifact is not null;
-}
-
-public sealed record TrialResult(
-    string VariantId,
-    double ObjectiveScore,
-    IReadOnlyDictionary<string, double> Metrics,
-    bool SatisfiesAllConstraints);
-
-public sealed record ConstraintResult(
-    string ConstraintExpression,
-    string MetricName,
-    double ActualValue,
-    double Threshold,
-    bool Passed);
+// Predict
+var result = await classifier.PredictAsync(new TicketInput("SSO fails", "Enterprise"));
+// result.Category == "technical", result.Urgency == 5
 ```
 
-**Why This Exists:** The compile report is the developer's window into what the optimizer tried and why it chose (or rejected) each candidate.
+**Internals:** The source-generated `PromptBuilder<TInput, TOutput>` assembles `ChatMessage[]` → `IChatClient.GetResponseAsync<TOutput>()` using the source-generated `JsonTypeInfo<TOutput>`. No runtime reflection.
 
 ---
 
-#### `IOptimizerBackend`
+### 4.3 `LmpModule`
+
+Abstract base class for composable LM programs. Users override `ForwardAsync()` with their pipeline logic.
 
 ```csharp
-namespace LMP.Compilation;
+namespace LMP;
 
 /// <summary>
-/// Proposes candidate parameter configurations. Does NOT own trial execution,
-/// evaluation, constraint enforcement, or artifact generation.
+/// Base class for composable LM programs. Subclass this and override
+/// ForwardAsync() to define multi-step LM logic.
 /// </summary>
-public interface IOptimizerBackend
+public abstract class LmpModule
 {
     /// <summary>
-    /// Proposes the next candidate given the search space, objectives,
-    /// constraints, and all prior trial results.
+    /// Defines the module's execution logic. Override this to compose
+    /// predictors, assertions, and other modules.
     /// </summary>
-    ValueTask<CandidateProposal> ProposeNextAsync(
-        SearchSpaceDescriptor searchSpace,
-        ObjectiveDescriptor objective,
-        IReadOnlyList<ConstraintDescriptor> constraints,
-        IReadOnlyList<TrialResultDescriptor> priorTrials,
-        CancellationToken cancellationToken = default);
-}
-```
+    public abstract Task<object> ForwardAsync(object input, CancellationToken ct = default);
 
-> **Implementation Note:** The MVP backend is `Optimizers.RandomSearch()` — a bounded random sampler. This is intentionally simple. The architecture must prove that search-space extraction, trial execution, scoring, constraint enforcement, and artifact emission all work end-to-end before investing in sophisticated search strategies.
-
----
-
-### 3.4 Artifact Types
-
-#### `ICompiledArtifactLoader`
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// Persists and retrieves compiled artifacts.
-/// </summary>
-public interface ICompiledArtifactLoader
-{
-    /// <summary>Loads an artifact from the given path and validates compatibility.</summary>
-    Task<CompiledArtifact> LoadAsync(string path, CancellationToken ct = default);
-
-    /// <summary>Saves a compiled artifact as AOT-safe JSON.</summary>
-    Task SaveAsync(CompiledArtifact artifact, string path, CancellationToken ct = default);
-}
-```
-
-#### `CompiledArtifact`
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// A versioned, serializable representation of an optimized program variant.
-/// Produced by compilation, consumed by the runtime to apply selected parameters.
-/// </summary>
-public sealed record CompiledArtifact
-{
-    public required string Program { get; init; }
-    public required string CompiledVersion { get; init; }
-    public required string VariantId { get; init; }
-    public required string BaseProgramHash { get; init; }
-    public required IReadOnlyDictionary<string, object> SelectedParameters { get; init; }
-    public required IReadOnlyDictionary<string, double> ValidationMetrics { get; init; }
-    public required bool Approved { get; init; }
-}
-```
-
-**Why This Exists:** The artifact is the deployable output. It captures _which_ parameters were selected, _why_ (metrics), and _whether_ it passed constraints (approved). The runtime loads the artifact and applies `SelectedParameters` to override base program defaults — enabling hot-swap deployment.
-
----
-
-### 3.5 Runtime Types
-
-#### `IDocumentRetriever`
-
-```csharp
-namespace LMP;
-
-/// <summary>
-/// Minimal retrieval abstraction for Retrieve steps.
-/// Implement this to connect your vector store, search index, or any document source.
-/// </summary>
-public interface IDocumentRetriever
-{
     /// <summary>
-    /// Retrieves the top-K most relevant documents for the given query.
+    /// Returns all Predictor instances in this module. Source generator emits
+    /// this method — zero-reflection predictor discovery for optimization.
     /// </summary>
-    Task<IReadOnlyList<string>> RetrieveAsync(
-        string query,
-        int topK,
-        CancellationToken ct = default);
+    public virtual IReadOnlyList<object> GetPredictors();
+
+    /// <summary>
+    /// Serializes all learnable parameters (demos, instructions, config) to JSON.
+    /// Uses source-generated JsonSerializerContext — AOT-compatible.
+    /// </summary>
+    public Task SaveAsync(string path, CancellationToken ct = default);
+
+    /// <summary>
+    /// Loads learnable parameters from a previously saved JSON file.
+    /// Same module type, parameters filled in.
+    /// </summary>
+    public Task LoadAsync(string path, CancellationToken ct = default);
 }
 ```
 
-**Why This Exists:** The framework must not couple to any specific vector database. This single-method interface is the minimal contract for `Step.Retrieve`. Implementations can wrap Azure AI Search, Qdrant, Pinecone, or a simple in-memory list.
-
----
-
-## 4. DI Registration Pattern
-
-The framework uses standard `Microsoft.Extensions.DependencyInjection` patterns.
+**Usage:**
 
 ```csharp
-using LMP;
-using LMP.Compilation;
-using Microsoft.Extensions.AI;
-using Microsoft.Extensions.DependencyInjection;
-using OpenAI;
-
-var services = new ServiceCollection();
-
-// --- Infrastructure ---
-services.AddLogging();
-services.AddOpenTelemetry();
-
-// --- LM Clients (Keyed DI for per-step model routing) ---
-services.AddKeyedSingleton<IChatClient>("triage", (sp, _) =>
-    new ChatClientBuilder(
-            new OpenAIChatClient("gpt-4.1-mini",
-                sp.GetRequiredService<OpenAIClient>()))
-        .UseFunctionInvocation()
-        .UseOpenTelemetry()
-        .Build());
-
-services.AddKeyedSingleton<IChatClient>("repair", (sp, _) =>
-    new ChatClientBuilder(
-            new OpenAIChatClient("gpt-4.1",
-                sp.GetRequiredService<OpenAIClient>()))
-        .UseOpenTelemetry()
-        .Build());
-
-// --- Document Retrieval ---
-services.AddSingleton<IDocumentRetriever, AzureSearchRetriever>();
-
-// --- LMP Programs ---
-services.AddLmpPrograms()
-    .AddProgram<SupportTriageProgram>();
-
-// --- Compiler (only needed during optimization, not in production) ---
-services.AddSingleton<IProgramCompiler, LmpCompiler>();
-services.AddSingleton<ICompiledArtifactLoader, JsonArtifactLoader>();
-
-var provider = services.BuildServiceProvider();
-```
-
-> **Implementation Note:** `AddLmpPrograms()` is an extension method on `IServiceCollection` that registers the runtime graph executor and trace infrastructure. `AddProgram<T>()` registers the program type as a singleton with its generated metadata wired in.
-
----
-
-## 5. Canonical Usage Walkthrough
-
-### Step 1: Define the Signature
-
-```csharp
-[LmpSignature(
-    Instructions = """
-    You are a senior enterprise support triage assistant.
-    Classify the issue severity, determine the owning team, and draft a
-    grounded customer reply using only the provided evidence and policy context.
-    If the evidence is insufficient, say so explicitly.
-    """)]
-public partial class TriageTicket
+public class TicketTriageModule : LmpModule
 {
-    [Input(Description = "Raw customer issue or support ticket text")]
-    public required string TicketText { get; init; }
+    private readonly Predictor<TicketInput, ClassifyTicket> _classify;
+    private readonly Predictor<ClassifyTicket, DraftReply> _draft;
 
-    [Input(Description = "Customer plan tier such as Free, Pro, Enterprise")]
-    public required string AccountTier { get; init; }
-
-    [Input(Description = "Relevant knowledge base snippets")]
-    public required IReadOnlyList<string> KnowledgeSnippets { get; init; }
-
-    [Input(Description = "Relevant support or compliance policy snippets")]
-    public required IReadOnlyList<string> PolicySnippets { get; init; }
-
-    [Output(Description = "Severity: Low, Medium, High, Critical")]
-    public required string Severity { get; init; }
-
-    [Output(Description = "Owning team name")]
-    public required string RouteToTeam { get; init; }
-
-    [Output(Description = "Grounded customer reply draft")]
-    public required string DraftReply { get; init; }
-
-    [Output(Description = "Reasoning for severity and routing")]
-    public required string Rationale { get; init; }
-
-    [Output(Description = "True if escalation to a human is required")]
-    public required bool Escalate { get; init; }
-}
-```
-
-**What Happens Here:** The `partial` keyword is required. At build time, the source generator emits a companion partial class containing a `static partial SignatureDescriptor Descriptor { get; }` property with all field metadata. The partial property pattern (C# 14) replaces the previous `CreateDescriptor()` static method — it is more idiomatic, discoverable via IntelliSense, and cannot be accidentally shadowed. Analyzers verify every field has a `Description` and output types are supported.
-
-### Step 2: Define the Program
-
-```csharp
-[LmpProgram("support-triage")]
-public partial class SupportTriageProgram : LmpProgram<TicketInput, TriageResult>
-{
-    public override ProgramGraph Build()
+    public TicketTriageModule(IChatClient client)
     {
-        var retrieveKb = Step.Retrieve(
-            name: "retrieve-kb", from: input => input.TicketText, topK: 5);
+        _classify = new Predictor<TicketInput, ClassifyTicket>(client);
+        _draft = new Predictor<ClassifyTicket, DraftReply>(client);
+    }
 
-        var retrievePolicy = Step.Retrieve(
-            name: "retrieve-policy", from: input => input.TicketText, topK: 3);
-
-        var triage = Step.Predict<TriageTicket>(
-            name: "triage",
-            bind: (input, ctx) => new TriageTicket
-            {
-                TicketText = input.TicketText,
-                AccountTier = input.AccountTier,
-                KnowledgeSnippets = ctx.OutputOf(retrieveKb).Documents,
-                PolicySnippets = ctx.OutputOf(retrievePolicy).Documents
-            });
-
-        var groundedness = Step.Evaluate(
-            name: "groundedness-check", after: triage,
-            evaluator: new GroundednessEvaluator());
-
-        var policy = Step.Evaluate(
-            name: "policy-check", after: triage,
-            evaluator: new CustomPolicyEvaluator("support-policy"));
-
-        var repair = Step.If(
-            name: "repair-if-needed",
-            condition: ctx =>
-                ctx.ScoreOf(groundedness) < 0.90 || !ctx.Passed(policy),
-            then: Step.Repair<TriageTicket>(
-                name: "repair-triage",
-                usingFeedbackFrom: [groundedness, policy]));
-
-        return Graph
-            .StartWith(retrieveKb)
-            .Then(retrievePolicy)
-            .Then(triage)
-            .Then(groundedness)
-            .Then(policy)
-            .Then(repair)
-            .Return(ctx => new TriageResult
-            {
-                Severity = ctx.Latest<TriageTicket>().Severity,
-                RouteToTeam = ctx.Latest<TriageTicket>().RouteToTeam,
-                DraftReply = ctx.Latest<TriageTicket>().DraftReply,
-                Escalate = ctx.Latest<TriageTicket>().Escalate,
-                GroundednessScore = ctx.ScoreOf(groundedness),
-                PolicyPassed = ctx.Passed(policy)
-            });
+    public async Task<DraftReply> ForwardAsync(TicketInput input)
+    {
+        var classification = await _classify.PredictAsync(input);
+        return await _draft.PredictAsync(classification);
     }
 }
 ```
 
-**What Happens Here:** `Build()` constructs a declarative graph — no LM calls happen here. The framework calls `Build()` once at initialization, inspects the graph for cycles (analyzer LMP006), and caches the topology. `ctx.OutputOf()`, `ctx.ScoreOf()`, and `ctx.Passed()` are evaluated lazily during `RunAsync`.
+**Source generator emits:**
 
-### Step 3: Register DI and Run
+- `GetPredictors()` override that returns `[_classify, _draft]` — no runtime reflection walking `__dict__` like DSPy's `named_predictors()`.
+- `JsonSerializerContext` for `SaveAsync` / `LoadAsync` — AOT-compatible serialization of all predictor state.
 
-```csharp
-var services = new ServiceCollection();
-services.AddKeyedSingleton<IChatClient>("triage", (sp, _) =>
-    new ChatClientBuilder(new OpenAIChatClient("gpt-4.1-mini",
-        sp.GetRequiredService<OpenAIClient>()))
-        .UseFunctionInvocation()
-        .UseOpenTelemetry()
-        .Build());
+**Design notes:**
 
-services.AddSingleton<IDocumentRetriever, AzureSearchRetriever>();
-services.AddLmpPrograms().AddProgram<SupportTriageProgram>();
+- DSPy's `Module.forward()` is the direct inspiration. Python's introspection discovers sub-modules by walking `__dict__`; LMP uses source gen instead.
+- `ForwardAsync()` is where control flow lives — standard C# `if`, loops, `try/catch`. No declarative graph needed.
 
-var provider = services.BuildServiceProvider();
-var program = provider.GetRequiredService<SupportTriageProgram>();
+---
 
-var result = await program.RunAsync(new TicketInput(
-    TicketText: "SSO login intermittently fails for 300+ users in our EU tenant.",
-    AccountTier: "Enterprise"));
-```
+### 4.4 `Example<TInput, TLabel>`
 
-**What Happens Here:** The runtime topologically sorts the graph, executes each step in order, binds data between steps via `IProgramContext`, calls `IChatClient` for predict steps, calls `IDocumentRetriever` for retrieve steps, and assembles the final `TriageResult` from the return projection.
-
-### Step 4: Compile
+Training data record used by optimizers.
 
 ```csharp
-var compiler = provider.GetRequiredService<IProgramCompiler>();
+namespace LMP;
 
-var report = await compiler.CompileAsync(CompileSpec
-    .For<SupportTriageProgram>()
-    .WithTrainingSet("data/train.jsonl")
-    .WithValidationSet("data/val.jsonl")
-    .Optimize(s =>
-    {
-        s.Instructions(step: "triage");
-        s.FewShotExamples(step: "triage", min: 0, max: 6);
-        s.Model(step: "triage", allowed: ["gpt-4.1-mini", "gpt-4.1"]);
-    })
-    .ScoreWith(Metrics.Weighted(("routing_accuracy", 0.35), ("groundedness", 0.30),
-        ("severity_accuracy", 0.20), ("policy_pass_rate", 0.15)))
-    .Constrain(rules => rules.Require(m => m.PolicyPassRate == 1.0, "Policy pass rate must be 100%"))
-    .UseOptimizer(Optimizers.RandomSearch()));
-```
-
-**What Happens Here:** The compiler extracts the search space, asks the optimizer backend for candidates, runs each as a trial against training data, scores with the evaluation pipeline, enforces constraints, ranks valid candidates, and emits a `CompileReport`.
-
-### Step 5: Deploy
-
-```csharp
-if (report.Approved)
+/// <summary>
+/// A single training/validation example pairing an input with its expected label.
+/// </summary>
+/// <typeparam name="TInput">The module's input type.</typeparam>
+/// <typeparam name="TLabel">The expected output type (ground truth).</typeparam>
+public record Example<TInput, TLabel>(TInput Input, TLabel Label)
 {
-    var loader = provider.GetRequiredService<ICompiledArtifactLoader>();
-    await loader.SaveAsync(report.BestArtifact!, "artifacts/support-triage.json");
+    /// <summary>
+    /// Extracts just the input portion — used when running the module
+    /// during optimization (inputs go to the module, labels go to the metric).
+    /// </summary>
+    public TInput WithInputs() => Input;
 }
 ```
 
-At startup in production, load the artifact and the runtime applies the optimized parameters automatically:
+**Usage:**
 
 ```csharp
-var loader = provider.GetRequiredService<ICompiledArtifactLoader>();
-var artifact = await loader.LoadAsync("artifacts/support-triage.json");
-// Runtime applies artifact.SelectedParameters to the program at initialization.
+var trainSet = new List<Example<TicketInput, ClassifyTicket>>
+{
+    new(new TicketInput("I was charged twice", "Pro"),
+        new ClassifyTicket { Category = "billing", Urgency = 4 }),
+    new(new TicketInput("Can't reset password", "Free"),
+        new ClassifyTicket { Category = "account", Urgency = 2 }),
+};
 ```
 
 ---
 
-## 6. Error Handling Patterns
+### 4.5 `Trace`
+
+Execution record captured during `PredictAsync` calls. Used by optimizers to collect successful demonstrations.
+
+```csharp
+namespace LMP;
+
+/// <summary>
+/// Records a single (predictor, inputs, outputs) execution during ForwardAsync.
+/// Optimizers collect traces where the metric passes and use them as few-shot demos.
+/// </summary>
+public record Trace(
+    object Predictor,
+    object Input,
+    object Output);
+```
+
+**How it's used:** During optimization, the framework wraps `PredictAsync` calls to collect traces. When the metric passes for a training example, the successful traces become few-shot `Demos` on the relevant predictors.
+
+---
+
+### 4.6 `LmpAssert` / `LmpSuggest`
+
+Runtime assertions that integrate with the LM retry loop.
+
+```csharp
+namespace LMP;
+
+/// <summary>
+/// Hard assertion with retry/backtrack. If the predicate fails, the framework
+/// retries the preceding PredictAsync call with the failure message in context.
+/// </summary>
+public static class LmpAssert
+{
+    /// <summary>
+    /// Asserts that the result satisfies the predicate. Retries on failure.
+    /// </summary>
+    public static void That<T>(T result, Func<T, bool> predicate, string? message = null);
+}
+
+/// <summary>
+/// Soft assertion — logs a warning but does not retry.
+/// Useful for quality guardrails that shouldn't block execution.
+/// </summary>
+public static class LmpSuggest
+{
+    /// <summary>
+    /// Suggests that the result should satisfy the predicate. Logs warning on failure.
+    /// </summary>
+    public static void That<T>(T result, Func<T, bool> predicate, string? message = null);
+}
+```
+
+**Usage:**
+
+```csharp
+var classification = await _classify.PredictAsync(input);
+LmpAssert.That(classification, c => c.Urgency >= 1 && c.Urgency <= 5,
+    "Urgency must be between 1 and 5");
+LmpSuggest.That(classification, c => c.Category != "unknown",
+    "Category should not be unknown");
+```
+
+**Design notes:**
+
+- `LmpAssert` triggers retry/backtrack — the failed assertion message is injected into the next LM call so the model can self-correct. Mirrors DSPy's `dspy.Assert`.
+- `LmpSuggest` is fire-and-forget — useful for telemetry and quality monitoring without blocking the pipeline. Mirrors DSPy's `dspy.Suggest`.
+
+---
+
+### 4.7 `IRetriever`
+
+Minimal RAG interface. Users bring their own implementation via DI.
+
+```csharp
+namespace LMP;
+
+/// <summary>
+/// Retrieval abstraction for RAG pipelines. Implement this to connect
+/// your vector store, search index, or any document source.
+/// </summary>
+public interface IRetriever
+{
+    /// <summary>
+    /// Retrieves the top-K most relevant passages for the given query.
+    /// </summary>
+    Task<string[]> RetrieveAsync(
+        string query,
+        int k,
+        CancellationToken cancellationToken = default);
+}
+```
+
+**Usage (in a module):**
+
+```csharp
+public record QaInput(
+    [Description("The user's question")] string Question,
+    [Description("Retrieved context passages")] string Context);
+
+[LmpSignature("Answer the question using only the provided context")]
+public partial record QaOutput
+{
+    [Description("The answer to the question")]
+    public required string Answer { get; init; }
+}
+
+public class RagQaModule : LmpModule
+{
+    private readonly IRetriever _retriever;
+    private readonly Predictor<QaInput, QaOutput> _answer;
+
+    public RagQaModule(IRetriever retriever, IChatClient client)
+    {
+        _retriever = retriever;
+        _answer = new Predictor<QaInput, QaOutput>(client);
+    }
+
+    public async Task<QaOutput> ForwardAsync(QaInput input)
+    {
+        var passages = await _retriever.RetrieveAsync(input.Question, k: 5);
+        return await _answer.PredictAsync(input with
+        {
+            Context = string.Join("\n\n", passages)
+        });
+    }
+}
+```
+
+**Design notes:**
+
+- Single-method interface — the minimal contract for retrieval. Implementations can wrap Azure AI Search, Qdrant, Pinecone, or a simple in-memory list.
+- Returns `string[]` not `IReadOnlyList<string>` — simpler, sufficient for the common case.
+
+---
+
+### 4.8 `IOptimizer`
+
+All optimizers implement this interface. All return the same module type with parameters filled in — no new types created.
+
+```csharp
+namespace LMP;
+
+/// <summary>
+/// Compiles (optimizes) a module by running it against training data,
+/// scoring with a metric, and filling in learnable parameters.
+/// </summary>
+public interface IOptimizer
+{
+    /// <summary>
+    /// Optimizes the module's learnable parameters (demos, instructions)
+    /// using the provided training set and metric function.
+    /// Returns the same module with parameters filled in.
+    /// </summary>
+    Task<TModule> CompileAsync<TModule, TInput, TLabel>(
+        TModule module,
+        IReadOnlyList<Example<TInput, TLabel>> trainSet,
+        Func<TLabel, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
+}
+```
+
+**Design notes:**
+
+- Named `CompileAsync` (not `OptimizeAsync`) to align with DSPy's terminology where optimization is called "compiling" — `teleprompter.compile(module, trainset)`.
+- Returns `TModule` — the same module type is returned with its predictor `Demos` and `Instructions` filled in. No wrapper types.
+
+---
+
+## 5. Complete Type Reference — LMP.Modules
+
+Thin wrappers around `Predictor<TIn, TOut>`. Each is under 100 lines of code. These are reasoning strategies — they change _how_ the LM is called, not _what_ it's called with.
+
+### 5.1 `ChainOfThought<TIn, TOut>`
+
+Extends `TOut` with a `Reasoning` field. The source generator creates an extended output record at build time so the LM produces step-by-step reasoning before the final answer.
+
+```csharp
+namespace LMP.Modules;
+
+/// <summary>
+/// Chain-of-thought prompting: extends the output type with a Reasoning field
+/// so the LM "thinks out loud" before answering.
+/// </summary>
+public class ChainOfThought<TIn, TOut> : Predictor<TIn, TOut>
+    where TOut : class
+{
+    public ChainOfThought(IChatClient client);
+
+    // PredictAsync inherited — returns TOut with Reasoning field populated
+}
+```
+
+**Usage:**
+
+```csharp
+var cot = new ChainOfThought<TicketInput, ClassifyTicket>(chatClient);
+var result = await cot.PredictAsync(input);
+// result has .Category + .Urgency
+// The LM generated step-by-step reasoning internally before producing the answer
+```
+
+**How it works:** The source generator detects that the predictor is `ChainOfThought` and emits an extended output type that prepends a `Reasoning` string field. The prompt builder instructs the LM to produce reasoning first, then the actual output fields.
+
+*Inspired by:* [`dspy/predict/chain_of_thought.py`](https://github.com/stanfordnlp/dspy/blob/main/dspy/predict/chain_of_thought.py) (49 LOC in DSPy).
+
+---
+
+### 5.2 `BestOfN<TIn, TOut>`
+
+Runs N parallel predictions via `Task.WhenAll`, returns the best by a reward function.
+
+```csharp
+namespace LMP.Modules;
+
+/// <summary>
+/// Parallel N-way prediction with reward-based selection.
+/// True parallelism — no GIL. Each candidate runs on its own thread.
+/// </summary>
+public class BestOfN<TIn, TOut> : Predictor<TIn, TOut>
+    where TOut : class
+{
+    /// <param name="client">The chat client to use for predictions.</param>
+    /// <param name="n">Number of parallel candidates to generate.</param>
+    /// <param name="reward">Scoring function — higher is better.</param>
+    public BestOfN(IChatClient client, int n, Func<TIn, TOut, float> reward);
+}
+```
+
+**Usage:**
+
+```csharp
+var best = new BestOfN<TicketInput, ClassifyTicket>(chatClient, n: 5,
+    reward: (input, output) => output.Urgency >= 1 && output.Urgency <= 5 ? 1f : 0f);
+var result = await best.PredictAsync(input);
+```
+
+**How it works:** `PredictAsync` fires N concurrent `IChatClient` calls via `Task.WhenAll`, evaluates each result with the reward function, and returns the highest-scoring output. True parallelism — no Python GIL.
+
+---
+
+### 5.3 `Refine<TIn, TOut>`
+
+Iterative improvement: predict → LM-generated critique → predict again with critique context.
+
+```csharp
+namespace LMP.Modules;
+
+/// <summary>
+/// Sequential refinement: predict, critique, re-predict with critique feedback.
+/// Runs for a configurable number of iterations.
+/// </summary>
+public class Refine<TIn, TOut> : Predictor<TIn, TOut>
+    where TOut : class
+{
+    /// <param name="client">The chat client to use.</param>
+    /// <param name="maxIterations">Maximum predict-critique cycles (default: 2).</param>
+    public Refine(IChatClient client, int maxIterations = 2);
+}
+```
+
+**Usage:**
+
+```csharp
+var refiner = new Refine<TicketInput, DraftReply>(chatClient, maxIterations: 3);
+var result = await refiner.PredictAsync(input);
+// Result has been iteratively improved via LM self-critique
+```
+
+---
+
+### 5.4 `ReActAgent<TIn, TOut>`
+
+Think → Act → Observe loop using M.E.AI's `AIFunction` for tools. No custom tool abstraction needed.
+
+```csharp
+namespace LMP.Modules;
+
+/// <summary>
+/// ReAct agent: interleaves reasoning (Think) with tool calls (Act)
+/// and observation of results (Observe) until the final answer.
+/// Uses M.E.AI's AIFunction and FunctionInvokingChatClient — zero new abstractions.
+/// </summary>
+public class ReActAgent<TIn, TOut> : Predictor<TIn, TOut>
+    where TOut : class
+{
+    /// <param name="client">The chat client (should include FunctionInvokingChatClient middleware).</param>
+    /// <param name="tools">Available tools as AIFunction instances.</param>
+    /// <param name="maxSteps">Maximum Think→Act→Observe iterations (default: 5).</param>
+    public ReActAgent(IChatClient client, IEnumerable<AIFunction> tools, int maxSteps = 5);
+}
+```
+
+**Usage:**
+
+```csharp
+var tools = new[]
+{
+    AIFunctionFactory.Create(SearchKnowledgeBase),
+    AIFunctionFactory.Create(GetAccountInfo)
+};
+var agent = new ReActAgent<TicketInput, TriageResult>(chatClient, tools);
+var result = await agent.PredictAsync(input);
+```
+
+**Design notes:**
+
+- Tools are M.E.AI's `AIFunction` / `AIFunctionFactory` — already exists in the platform, zero new abstractions.
+- `FunctionInvokingChatClient` handles tool dispatch. The agent just manages the Think → Act → Observe loop.
+
+*Inspired by:* [`dspy/predict/react.py`](https://github.com/stanfordnlp/dspy/blob/main/dspy/predict/react.py) (345 LOC in DSPy).
+
+---
+
+### 5.5 `ProgramOfThought<TIn, TOut>` *(post-MVP)*
+
+LM generates C# code → Roslyn scripting executes it → returns structured result.
+
+```csharp
+namespace LMP.Modules;
+
+/// <summary>
+/// Post-MVP: LM generates C# code, Roslyn scripting executes it,
+/// structured result is returned. No Deno, no Python — C# all the way down.
+/// </summary>
+public class ProgramOfThought<TIn, TOut> : Predictor<TIn, TOut>
+    where TOut : class
+{
+    public ProgramOfThought(IChatClient client);
+}
+```
+
+---
+
+## 6. Complete Type Reference — LMP.Optimizers
+
+This is DSPy's core insight brought to .NET: LM programs should be optimized programmatically, not manually tuned.
+
+### 6.1 `Evaluator`
+
+Runs a module on a dev set, scores with a metric function, aggregates results.
+
+```csharp
+namespace LMP.Optimizers;
+
+/// <summary>
+/// Evaluates a module against a dataset using a metric function.
+/// Uses Parallel.ForEachAsync for concurrent evaluation.
+/// </summary>
+public static class Evaluator
+{
+    /// <summary>
+    /// Runs the module on every example in the dev set, scores each with the metric,
+    /// and returns the average score.
+    /// </summary>
+    public static Task<float> EvaluateAsync<TInput, TLabel>(
+        LmpModule module,
+        IReadOnlyList<Example<TInput, TLabel>> devSet,
+        Func<TLabel, object, float> metric,
+        CancellationToken cancellationToken = default);
+}
+```
+
+**Usage:**
+
+```csharp
+var score = await Evaluator.EvaluateAsync(
+    module,
+    devSet,
+    metric: (label, output) => label.Category == output.Category ? 1f : 0f);
+Console.WriteLine($"Accuracy: {score:P1}"); // "Accuracy: 87.0%"
+```
+
+**Design notes:**
+
+- Uses `Parallel.ForEachAsync` for concurrent evaluation across the dataset — real parallelism, no GIL.
+- The metric function receives the ground truth label and the module's output, returns a float score (0–1).
+
+---
+
+### 6.2 `BootstrapFewShot`
+
+The core "compile" step. Runs a teacher module on the training set, collects successful traces (where the metric passes), and fills `predictor.Demos` with those traces as few-shot examples.
+
+```csharp
+namespace LMP.Optimizers;
+
+/// <summary>
+/// Bootstraps few-shot examples by running a teacher module on training data.
+/// Successful traces (metric ≥ threshold) become demos on each predictor.
+/// </summary>
+public class BootstrapFewShot : IOptimizer
+{
+    /// <param name="maxDemos">Maximum demos per predictor (default: 4).</param>
+    public BootstrapFewShot(int maxDemos = 4);
+
+    public Task<TModule> CompileAsync<TModule, TInput, TLabel>(
+        TModule module,
+        IReadOnlyList<Example<TInput, TLabel>> trainSet,
+        Func<TLabel, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
+}
+```
+
+**Usage:**
+
+```csharp
+var optimizer = new BootstrapFewShot(maxDemos: 4);
+var optimized = await optimizer.CompileAsync(module, trainSet,
+    metric: (label, output) => label.Category == output.Category ? 1f : 0f);
+// optimized module now has few-shot demos filled in each predictor
+```
+
+*Inspired by:* [`dspy/teleprompt/bootstrap.py`](https://github.com/stanfordnlp/dspy/blob/main/dspy/teleprompt/bootstrap.py) (~250 LOC in DSPy).
+
+---
+
+### 6.3 `BootstrapRandomSearch`
+
+`BootstrapFewShot` × N candidates with `Task.WhenAll`. Returns the best by dev set score.
+
+```csharp
+namespace LMP.Optimizers;
+
+/// <summary>
+/// Runs BootstrapFewShot N times in parallel, evaluates each on a dev set,
+/// returns the best. True parallelism via Task.WhenAll.
+/// </summary>
+public class BootstrapRandomSearch : IOptimizer
+{
+    /// <param name="numTrials">Number of bootstrap trials to run in parallel.</param>
+    public BootstrapRandomSearch(int numTrials = 8);
+
+    public Task<TModule> CompileAsync<TModule, TInput, TLabel>(
+        TModule module,
+        IReadOnlyList<Example<TInput, TLabel>> trainSet,
+        Func<TLabel, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
+}
+```
+
+**Usage:**
+
+```csharp
+var optimizer = new BootstrapRandomSearch(numTrials: 8);
+var best = await optimizer.CompileAsync(module, trainSet,
+    metric: (label, output) => label.Category == output.Category ? 1f : 0f);
+```
+
+---
+
+### 6.4 `MIPROv2` *(post-MVP)*
+
+Bayesian optimization over both instructions and demos. DSPy's MIPROv2 uses Optuna's TPE sampler (~35K LOC). LMP could use [ML.NET AutoML tuners](https://learn.microsoft.com/dotnet/machine-learning/how-to-guides/how-to-use-the-automl-api) as a backend.
+
+```csharp
+namespace LMP.Optimizers;
+
+/// <summary>
+/// Post-MVP: Bayesian optimization over instructions and demos.
+/// Uses ML.NET AutoML tuners or similar backend for search.
+/// </summary>
+public class MIPROv2 : IOptimizer
+{
+    public Task<TModule> CompileAsync<TModule, TInput, TLabel>(
+        TModule module,
+        IReadOnlyList<Example<TInput, TLabel>> trainSet,
+        Func<TLabel, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
+}
+```
+
+---
+
+## 7. Error Handling
 
 ### Exceptions
 
 | Exception | When | Thrown By |
 |---|---|---|
-| `ArgumentException` | Invalid step name, missing required field, null input | `Step.*` factory methods, `RunAsync` |
-| `InvalidOperationException` | Graph cycle detected, duplicate step names, calling `ctx.OutputOf` for a step that hasn't executed | `ProgramGraph` construction, `IProgramContext` |
-| `LmpCompilationException` | Compile spec references a step that doesn't exist, dataset file not found | `IProgramCompiler.CompileAsync` |
-| `JsonException` | Structured output parsing fails (LM returns malformed JSON) | Runtime predict step executor |
+| `ArgumentException` | Null input, invalid configuration | `Predictor.PredictAsync`, constructors |
+| `InvalidOperationException` | Module state error (e.g., no client configured) | `LmpModule`, `Predictor` |
+| `JsonException` | Structured output parsing fails (LM returns malformed JSON) | `Predictor.PredictAsync` |
+| `LmpAssertionException` | `LmpAssert.That` fails after max retries | `LmpAssert.That` |
 | `OperationCanceledException` | `CancellationToken` is cancelled | All async methods |
 
 ### CancellationToken Support
 
 Every async method in the public API accepts an optional `CancellationToken`:
 
-- `LmpProgram<TIn, TOut>.RunAsync(input, ct)`
-- `IProgramCompiler.CompileAsync(spec, ct)`
-- `ICompiledArtifactLoader.LoadAsync(path, ct)` / `SaveAsync(artifact, path, ct)`
-- `IDocumentRetriever.RetrieveAsync(query, topK, ct)`
-- `IOptimizerBackend.ProposeNextAsync(..., ct)`
+- `Predictor<TIn, TOut>.PredictAsync(input, ct)`
+- `LmpModule.ForwardAsync(input, ct)`
+- `LmpModule.SaveAsync(path, ct)` / `LoadAsync(path, ct)`
+- `IRetriever.RetrieveAsync(query, k, ct)`
+- `IOptimizer.CompileAsync(module, trainSet, metric, ct)`
+- `Evaluator.EvaluateAsync(module, devSet, metric, ct)`
 
-Cancellation propagates through the step graph: if a token is cancelled mid-execution, the current step throws `OperationCanceledException` and no subsequent steps execute.
+Cancellation propagates through modules: if a token is cancelled mid-execution, the current predictor throws `OperationCanceledException` and no subsequent steps execute.
 
-### Constraint Violations in CompileReport
+---
 
-Constraint violations do **not** throw exceptions. They are data, not errors:
+## 8. End-to-End Example: Ticket Triage
 
 ```csharp
-var report = await compiler.CompileAsync(spec);
+using System.ComponentModel;
+using LMP;
+using LMP.Modules;
+using LMP.Optimizers;
+using Microsoft.Extensions.AI;
 
-if (!report.Approved)
+// ========================================
+// Step 1: Define input and output types
+// ========================================
+
+// Input — plain C# record, no LMP attributes
+public record TicketInput(
+    [Description("The raw ticket text")] string TicketText,
+    [Description("Customer plan tier")] string AccountTier);
+
+// Output — partial record with [LmpSignature]
+[LmpSignature("Classify a support ticket by category and urgency")]
+public partial record ClassifyTicket
 {
-    // No valid candidate found — all violated at least one hard constraint.
-    foreach (var violation in report.ConstraintResults.Where(c => !c.Passed))
+    [Description("Category: billing, technical, account")]
+    public required string Category { get; init; }
+
+    [Description("Urgency from 1 (low) to 5 (critical)")]
+    public required int Urgency { get; init; }
+}
+
+[LmpSignature("Draft a helpful reply to the customer")]
+public partial record DraftReply
+{
+    [Description("The reply text to send to the customer")]
+    public required string ReplyText { get; init; }
+}
+
+// ========================================
+// Step 2: Define the module
+// ========================================
+
+public class TicketTriageModule : LmpModule
+{
+    private readonly Predictor<TicketInput, ClassifyTicket> _classify;
+    private readonly Predictor<ClassifyTicket, DraftReply> _draft;
+
+    public TicketTriageModule(IChatClient client)
     {
-        Console.WriteLine(
-            $"VIOLATION: {violation.ConstraintExpression} — " +
-            $"actual {violation.MetricName}={violation.ActualValue}, " +
-            $"threshold={violation.Threshold}");
+        _classify = new ChainOfThought<TicketInput, ClassifyTicket>(client);
+        _draft = new Predictor<ClassifyTicket, DraftReply>(client);
+    }
+
+    public async Task<DraftReply> ForwardAsync(TicketInput input)
+    {
+        var classification = await _classify.PredictAsync(input);
+        LmpAssert.That(classification, c => c.Urgency >= 1 && c.Urgency <= 5);
+        LmpSuggest.That(classification, c => c.Category != "unknown");
+        return await _draft.PredictAsync(classification);
     }
 }
+
+// ========================================
+// Step 3: Create client and module
+// ========================================
+
+var client = new ChatClientBuilder(new OpenAIChatClient("gpt-4o-mini"))
+    .UseFunctionInvocation()
+    .UseOpenTelemetry()
+    .Build();
+
+var module = new TicketTriageModule(client);
+
+// ========================================
+// Step 4: Load training data
+// ========================================
+
+var trainSet = LoadExamples<TicketInput, DraftReply>("train.jsonl");
+var devSet   = LoadExamples<TicketInput, DraftReply>("dev.jsonl");
+
+// ========================================
+// Step 5: Optimize — bootstrap few-shot demos
+// ========================================
+
+var optimizer = new BootstrapRandomSearch(numTrials: 8);
+var optimized = await optimizer.CompileAsync(module, trainSet,
+    metric: (label, output) => label.Category == output.Category ? 1f : 0f);
+
+// ========================================
+// Step 6: Evaluate
+// ========================================
+
+var score = await Evaluator.EvaluateAsync(optimized, devSet,
+    metric: (label, output) => label.Category == output.Category ? 1f : 0f);
+Console.WriteLine($"Accuracy: {score:P1}");
+
+// ========================================
+// Step 7: Save and deploy
+// ========================================
+
+await optimized.SaveAsync("triage-v1.json");
+
+// In production: load optimized parameters
+var production = new TicketTriageModule(client);
+await production.LoadAsync("triage-v1.json");
+var reply = await production.ForwardAsync(new TicketInput("I was charged twice", "Pro"));
 ```
 
-> **Implementation Note:** When no valid candidate exists, `CompileReport.BestArtifact` is `null` and `Approved` is `false`. The report still contains all `Trials` and `ConstraintResults` so the developer can diagnose _why_ no candidate passed. The compiler must never silently emit an artifact that violates a hard constraint.
+---
+
+## 9. DSPy → LMP Quick Reference
+
+| DSPy | LMP | Notes |
+|---|---|---|
+| `dspy.Signature` (mixed I/O) | Separate `TInput` record + `[LmpSignature]` output record | Split design matches `IChatClient.GetResponseAsync<T>()` |
+| `dspy.Predict` | `Predictor<TIn, TOut>` | Core primitive with `Demos`, `Instructions`, `Config` |
+| `dspy.Module` + `forward()` | `LmpModule` + `ForwardAsync()` | Source gen emits `GetPredictors()` |
+| `dspy.Example` | `Example<TInput, TLabel>` | Typed record with `WithInputs()` |
+| `dspy.ChainOfThought` | `ChainOfThought<TIn, TOut>` | Source gen extends output with `Reasoning` |
+| `dspy.majority` / Best-of-N | `BestOfN<TIn, TOut>` | `Task.WhenAll` — true parallelism, no GIL |
+| `dspy.Refine` | `Refine<TIn, TOut>` | Predict → critique → re-predict loop |
+| `dspy.ReAct` | `ReActAgent<TIn, TOut>` | M.E.AI's `AIFunction` + `FunctionInvokingChatClient` |
+| `dspy.ProgramOfThought` | `ProgramOfThought<TIn, TOut>` | Post-MVP. Roslyn scripting for C# execution |
+| `dspy.Assert` / `dspy.Suggest` | `LmpAssert.That` / `LmpSuggest.That` | Typed lambda predicate |
+| `dspy.Retrieve` | `IRetriever` | Users bring implementation via DI |
+| `dspy.Evaluate` | `Evaluator.EvaluateAsync()` | `Parallel.ForEachAsync` for concurrency |
+| `BootstrapFewShot` | `BootstrapFewShot.CompileAsync()` | Run teacher, collect traces, fill `Demos` |
+| `BootstrapFewShotWithRandomSearch` | `BootstrapRandomSearch.CompileAsync()` | × N candidates with `Task.WhenAll` |
+| `MIPROv2` (Optuna TPE, ~35K LOC) | `MIPROv2` (post-MVP) | ML.NET AutoML tuners as possible backend |
+| `module.save()` / `module.load()` | `module.SaveAsync()` / `module.LoadAsync()` | Source-gen `JsonSerializerContext` — AOT-compatible |
+
+---
+
+## 10. What Gets Generated at Build Time
+
+For a `Predictor<TicketInput, ClassifyTicket>`, the source generator emits:
+
+| Artifact | Purpose | DSPy Equivalent (runtime) |
+|---|---|---|
+| `PromptBuilder<TicketInput, ClassifyTicket>` | Assembles `ChatMessage[]` from instructions + demos + input | `ChatAdapter` string formatting |
+| `JsonTypeInfo<ClassifyTicket>` | Zero-reflection JSON serialization (AOT-safe) | Pydantic runtime validation |
+| `GetPredictors()` on module | Returns all predictor instances | `named_predictors()` walks `__dict__` |
+| `JsonSerializerContext` for state | AOT-compatible `SaveAsync` / `LoadAsync` | `pickle` / runtime JSON introspection |
+| Diagnostic LMP001 | Missing `[Description]` on output property | Runtime crash |
+| Diagnostic LMP002 | Non-serializable output type | Runtime crash |
+
+---
+
+## 11. What's Intentionally Excluded
+
+| Dropped Concept | Why |
+|---|---|
+| Directed program graphs (`ProgramGraph`, `Step.*`) | DSPy has no graph IR. Modules are plain Python classes with `forward()`. LMP mirrors this with `LmpModule.ForwardAsync()`. |
+| `[Input]` / `[Output]` attributes | Replaced by separate TInput/TOutput types. Input types use standard `[Description]`. Output types use `[LmpSignature]`. |
+| `[BindFrom]` attribute | Over-engineered binding system. `Predictor<TIn, TOut>` with source-gen `PromptBuilder` covers all data flow. |
+| `LmpProgram<TIn, TOut>` with `Build()` | Replaced by `LmpModule` with `ForwardAsync()`. Control flow lives in C#, not declarative graphs. |
+| `CompileSpec` / `IProgramCompiler` / `CompileReport` | Replaced by `IOptimizer.CompileAsync()`. Optimization is a library feature, not an enterprise pipeline. |
+| `CompiledArtifact` / `ICompiledArtifactLoader` | Replaced by `SaveAsync` / `LoadAsync` on `LmpModule`. JSON state files are sufficient. |
+| `IOptimizerBackend` | Internal concern — the public API is `IOptimizer`. Backend strategy is an implementation detail. |
+| Three-tier binding model | No binding needed. Types compose naturally via C# method calls in `ForwardAsync()`. |
+| Hot-swap `AssemblyLoadContext` | Premature. JSON save/load is the right starting point. |

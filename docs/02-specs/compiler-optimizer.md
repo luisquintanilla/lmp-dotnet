@@ -1,840 +1,713 @@
-# Compiler / Optimizer Specification
+# Optimizer Specification
 
-> **Spec source:** `spec.org` §10A — Optimization and Constraint Architecture
-> **Status:** MVP Implementation Reference
-> **Audience:** Implementers — this document is designed to be self-contained enough for a junior developer to build the compiler from scratch.
+> **Status:** MVP Implementation Reference — aligned with `system-architecture.md` Layer 3
+> **Target:** .NET 10 / C# 14
+> **Audience:** Implementers — self-contained enough to build `LMP.Optimizers` from scratch.
+> **DSPy lineage:** [`dspy/evaluate`](https://github.com/stanfordnlp/dspy/tree/main/dspy/evaluate), [`dspy/teleprompt`](https://github.com/stanfordnlp/dspy/tree/main/dspy/teleprompt)
 
 ---
 
 ## 1. What "Compiling" an LM Program Means
 
-An LM program starts life with defaults — a hand-written instruction, no few-shot examples, a single model, and a guessed temperature. **Compiling** that program means automatically discovering the configuration that produces the best results under your rules.
+An LM program starts life with defaults — a hand-written instruction, no few-shot examples. **Compiling** that program means running it on training data, collecting successful traces, and filling in its learnable parameters (demos and instructions) so it performs well.
 
-**Analogy:** Just as the C# compiler finds the best IL representation for your source code, the LMP compiler finds the best *prompt configuration* for your LM program. The source code stays the same; only the runtime parameters change.
-
-### The Compile Loop
+This is exactly what DSPy calls "compilation": **the optimizer fills `predictor.Demos` and optionally `predictor.Instructions`, then returns the same module.**
 
 ```
-try many variants → score each → enforce constraints → pick the best
+run on training data → collect successful traces → fill demos → evaluate → return best
 ```
-
-That's the entire idea. The compiler:
-
-1. Defines a **search space** of tunable parameters.
-2. Asks an optimizer backend to **propose candidate variants**.
-3. **Executes** each variant against training/validation data.
-4. **Scores** the results using weighted metrics.
-5. **Rejects** any variant that violates hard constraints.
-6. **Selects** the highest-scoring valid variant.
-7. **Emits** a compiled artifact — a deployable, versioned configuration.
 
 ### What Gets Optimized
 
-| Tunable | Example Values | IR Kind |
+| Parameter | Where It Lives | Optimizer That Fills It |
 |---|---|---|
-| Instructions | variant phrasings for a predict step | `Instruction` |
-| Few-shot examples | 0–6 demos, different selections | `FewShotCount`, `FewShotSelection` |
-| Model choice | `gpt-4.1-mini`, `gpt-4.1` | `Model` |
-| Temperature | 0.0 – 0.7 | `Temperature` |
-| Retrieval topK | 3 – 10 documents | `RetrievalTopK` |
+| Few-shot demos | `predictor.Demos` | BootstrapFewShot, BootstrapRandomSearch, MIPROv2 |
+| Instructions | `predictor.Instructions` | MIPROv2 (post-MVP) |
 
-> **Why This Is Different From DSPy:** DSPy optimizes instructions and few-shot examples. Model choice, temperature, and retrieval topK as first-class programmatic tunables are .NET-native extensions. The constraint model is entirely original — DSPy has no constraint system.
+That's it. No model selection, no temperature tuning, no retrieval topK — those are configuration concerns handled by `IChatClient` middleware or `IOptions<T>`. The optimizer layer focuses on what DSPy focuses on: **demos and instructions**.
 
 ---
 
-## 2. Compiler Architecture
+## 2. IOptimizer — The Core Interface
 
-### Ownership Boundary
-
-The compiler and the optimizer backend have a strict ownership separation:
-
-| Compiler Owns | Backend Owns |
-|---|---|
-| Search-space construction | Candidate proposal |
-| Objective definition | *(nothing else)* |
-| Constraint enforcement | |
-| Trial execution orchestration | |
-| Selection of best valid variant | |
-| Compile report generation | |
-| Artifact emission | |
-
-This separation is **mandatory**. The backend is a pluggable proposal engine. The compiler is the orchestrator.
-
-### Core Types
+All optimizers implement this interface. All return the **same module type** with parameters filled in — no new types created.
 
 ```csharp
-public interface IProgramCompiler
+public interface IOptimizer
 {
-    Task<CompileReport> CompileAsync(
-        CompileSpec spec,
-        CancellationToken cancellationToken = default);
-}
-
-public interface IOptimizerBackend
-{
-    ValueTask<CandidateProposal> ProposeNextAsync(
-        SearchSpaceDescriptor searchSpace,
-        ObjectiveDescriptor objective,
-        IReadOnlyList<ConstraintDescriptor> constraints,
-        IReadOnlyList<TrialResultDescriptor> priorTrials,
-        CancellationToken cancellationToken = default);
+    Task<TModule> CompileAsync<TModule>(
+        TModule module,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
 }
 ```
 
-### Compile Loop State Machine
+### Design Decisions
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  ProgramCompiler                    │
-│                                                     │
-│  ┌───────────┐                                      │
-│  │  Extract   │  Build SearchSpaceDescriptor from    │
-│  │  Search    │  CompileSpec.Optimize(...) block     │
-│  │  Space     │                                      │
-│  └─────┬─────┘                                      │
-│        │                                             │
-│        ▼                                             │
-│  ┌───────────┐    ┌──────────────────┐              │
-│  │  Propose   │◄──│ IOptimizerBackend │              │
-│  │  Candidate │    └──────────────────┘              │
-│  └─────┬─────┘                                      │
-│        │                                             │
-│        ▼                                             │
-│  ┌───────────┐                                      │
-│  │  Apply     │  program with { Temp = 0.3,          │
-│  │  Variant   │    Model = "gpt-4.1-mini", ... }     │
-│  └─────┬─────┘                                      │
-│        │                                             │
-│        ▼                                             │
-│  ┌───────────┐                                      │
-│  │  Execute   │  Run on training/validation data     │
-│  │  Trial     │  Collect traces & metrics            │
-│  └─────┬─────┘                                      │
-│        │                                             │
-│        ▼                                             │
-│  ┌───────────┐                                      │
-│  │  Score     │  Weighted metric aggregation          │
-│  │  Results   │                                      │
-│  └─────┬─────┘                                      │
-│        │                                             │
-│        ▼                                             │
-│  ┌───────────┐                                      │
-│  │  Check     │  Hard: reject if violated            │
-│  │ Constraints│  Soft: record preference             │
-│  └─────┬─────┘                                      │
-│        │                                             │
-│        ▼                                             │
-│  ┌───────────┐        ┌──────────┐                  │
-│  │  Update    │──yes──▶│ Best     │                  │
-│  │  Best?     │        │ Variant  │                  │
-│  └─────┬─────┘        └──────────┘                  │
-│        │ no / continue                               │
-│        ▼                                             │
-│  ┌───────────┐                                      │
-│  │  Budget    │──exhausted──▶ Emit Report + Artifact │
-│  │  Check     │                                      │
-│  └─────┬─────┘                                      │
-│        │ remaining                                   │
-│        └──────────▶ (back to Propose)                │
-└─────────────────────────────────────────────────────┘
-```
-
-The loop runs until the **trial budget** is exhausted (maximum number of trials, or optionally maximum elapsed time).
-
-### Selection Semantics (Mandatory Order)
-
-1. Reject candidates that violate hard constraints.
-2. Rank remaining candidates by objective score. Weighted metric aggregation uses `System.Numerics.Tensors.TensorPrimitives` for SIMD-accelerated `Sum`, `Average`, and `CosineSimilarity` operations — critical when scoring thousands of trials over high-dimensional metric vectors.
-3. Break ties deterministically: lower cost → lower latency → lexicographically smaller variant ID.
-4. Select the best valid candidate.
-5. If no valid candidate exists, emit a **failure report** and no approved artifact.
-
----
-
-## 3. CompileSpec — The Compile Configuration
-
-`CompileSpec` is the user-facing configuration object that drives a compile run. It uses a fluent builder API.
-
-### Complete Fluent API
-
-```csharp
-var compileSpec = CompileSpec
-    .For<SupportTriageProgram>()
-
-    // --- Data ---
-    .WithTrainingSet("data/support-triage-train.jsonl")
-    .WithValidationSet("data/support-triage-val.jsonl")
-
-    // --- Tunables ---
-    .Optimize(search =>
-    {
-        search.Instructions(step: "triage");
-        search.FewShotExamples(step: "triage", min: 0, max: 6);
-        search.RetrievalTopK(step: "retrieve-kb", min: 3, max: 10);
-        search.RetrievalTopK(step: "retrieve-policy", min: 2, max: 6);
-        search.Model(step: "triage", allowed: ["gpt-4.1-mini", "gpt-4.1"]);
-        search.Temperature(step: "triage", min: 0.0, max: 0.7);
-    })
-
-    // --- Objective ---
-    .ScoreWith(Metrics.Weighted(
-        ("routing_accuracy", 0.35),
-        ("severity_accuracy", 0.25),
-        ("groundedness", 0.20),
-        ("policy_pass_rate", 0.20)))
-
-    // --- Constraints ---
-    .Constrain(rules =>
-    {
-        rules.Require("policy_pass_rate == 1.0");       // hard
-        rules.Require("p95_latency_ms <= 2500");         // hard
-        rules.Require("avg_cost_usd <= 0.03");           // hard
-        rules.Prefer("avg_latency_ms <= 1500");          // soft
-    })
-
-    // --- Optimizer Backend ---
-    .UseOptimizer(Optimizers.RandomSearch());
-```
-
-### Method Reference
-
-| Method | Purpose |
+| Decision | Rationale |
 |---|---|
-| `For<TProgram>()` | Binds spec to a program type |
-| `WithTrainingSet(path)` | JSONL file for trial execution |
-| `WithValidationSet(path)` | JSONL file for final validation of best variant |
-| `Optimize(Action<SearchBuilder>)` | Defines the search space via tunable declarations |
-| `ScoreWith(ObjectiveDescriptor)` | Weighted metric aggregation for ranking |
-| `Constrain(Action<ConstraintBuilder>)` | Hard and soft constraints |
-| `UseOptimizer(IOptimizerBackend)` | Pluggable backend for candidate proposal |
+| Returns `TModule`, not a new type | DSPy's `compile()` returns the same module with demos filled. Same pattern. |
+| `Func<Example, object, float>` metric | Simple — label + output → score in `[0, 1]`. No metric framework. |
+| Single `trainSet` parameter | BootstrapFewShot needs only training data. BootstrapRandomSearch splits internally for validation. |
+| `CancellationToken` on everything | Optimization runs are long. Ctrl+C must work. |
 
-### Tunable Types
+### Predictor Discovery — Source-Generated `GetPredictors()`
 
-| Search Builder Method | IR `ParameterKind` | Value Domain |
-|---|---|---|
-| `Instructions(step)` | `Instruction` | Variant strings (auto-generated or user-supplied) |
-| `FewShotExamples(step, min, max)` | `FewShotCount` / `FewShotSelection` | Integer range, subset selection |
-| `Model(step, allowed)` | `Model` | Categorical set of model IDs |
-| `Temperature(step, min, max)` | `Temperature` | Continuous range `[min, max]` |
-| `RetrievalTopK(step, min, max)` | `RetrievalTopK` | Integer range `[min, max]` |
+Optimizers need to find all `Predictor` instances inside a module to fill their `Demos`. In Python, DSPy's `named_predictors()` walks `__dict__` at runtime. In LMP, the source generator emits `GetPredictors()` at build time — zero reflection.
 
-### Constraint Types
+```csharp
+// Source-generated on TicketTriageModule:
+public override IReadOnlyList<PredictorMetadata> GetPredictors()
+    => [
+        new("_classify", _classify),
+        new("_draft", _draft),
+    ];
+```
 
-| Builder Method | Severity | Behavior |
-|---|---|---|
-| `rules.Require(expr)` | **Hard** | Variant is **rejected** if violated |
-| `rules.Prefer(expr)` | **Soft** | Recorded as preference; may influence tie-breaking |
+This is how BootstrapFewShot knows which predictors exist and can fill each one's `Demos` collection.
 
 ---
 
-## 4. Variant Generation
+## 3. Evaluator
 
-### Records + `with` Expressions
+The Evaluator runs a module on a dataset and scores results. It is the foundation — every optimizer uses it internally.
 
-The framework uses C# records and `with` expressions to create safe, immutable program variants. The compiler **never mutates** the original program — it creates copies with modified parameters.
+### API
 
 ```csharp
-// The base variant (authored defaults)
-var baseVariant = new VariantDescriptor(
-    VariantId: "triage-v0",
-    ProgramId: "support-triage",
-    SelectedParameters: FrozenDictionary<string, object>.Empty);
-
-// A candidate variant with different settings
-var candidate = baseVariant with
+public static class Evaluator
 {
-    VariantId: "triage-v42",
-    SelectedParameters: new Dictionary<string, object>
-    {
-        ["triage.Temperature"] = 0.3,
-        ["triage.Model"] = "gpt-4.1-mini",
-        ["triage.FewShotCount"] = 4,
-        ["retrieve-kb.TopK"] = 7,
-        ["retrieve-policy.TopK"] = 3
-    }.ToFrozenDictionary()
+    public static Task<EvaluationResult> EvaluateAsync<TModule>(
+        TModule module,
+        IReadOnlyList<Example> devSet,
+        Func<Example, object, float> metric,
+        int maxConcurrency = 4,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
+}
+```
+
+### Algorithm
+
+```
+for each example in devSet (via Parallel.ForEachAsync):
+    output = await module.ForwardAsync(example.WithInputs())
+    score  = metric(example, output)
+    collect (example, output, score)
+
+return EvaluationResult { PerExample, AverageScore, ... }
+```
+
+### Implementation
+
+```csharp
+public static async Task<EvaluationResult> EvaluateAsync<TModule>(
+    TModule module,
+    IReadOnlyList<Example> devSet,
+    Func<Example, object, float> metric,
+    int maxConcurrency = 4,
+    CancellationToken cancellationToken = default)
+    where TModule : LmpModule
+{
+    var results = new ConcurrentBag<ExampleResult>();
+
+    await Parallel.ForEachAsync(
+        devSet,
+        new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxConcurrency,
+            CancellationToken = cancellationToken
+        },
+        async (example, ct) =>
+        {
+            var output = await module.ForwardAsync(example.WithInputs(), ct);
+            var score = metric(example, output);
+            results.Add(new ExampleResult(example, output, score));
+        });
+
+    var scores = results.Select(r => r.Score).ToArray();
+    return new EvaluationResult(
+        PerExample: [.. results],
+        AverageScore: scores.Average(),
+        MinScore: scores.Min(),
+        MaxScore: scores.Max(),
+        Count: scores.Length);
+}
+```
+
+### Result Types
+
+```csharp
+public sealed record EvaluationResult(
+    IReadOnlyList<ExampleResult> PerExample,
+    float AverageScore,
+    float MinScore,
+    float MaxScore,
+    int Count);
+
+public sealed record ExampleResult(
+    Example Example,
+    object Output,
+    float Score);
+```
+
+### Metric Functions
+
+Metrics are simple functions. Two flavors:
+
+**1. Inline lambda — for simple cases:**
+
+```csharp
+Func<Example, object, float> accuracy =
+    (example, output) => example["category"] == ((ClassifyTicket)output).Category ? 1f : 0f;
+```
+
+**2. `M.E.AI.Evaluation` evaluators — for LM-judged quality:**
+
+Don't rebuild evaluators. `Microsoft.Extensions.AI.Evaluation` provides production-quality evaluators: `RelevancyEvaluator`, `TruthfulnessEvaluator`, `CoherenceEvaluator`, `GroundednessEvaluator`, `CompletenessEvaluator`.
+
+```csharp
+// Wrap an M.E.AI evaluator as a metric function
+var relevance = new RelevancyEvaluator(judgeChatClient);
+
+Func<Example, object, float> metric = async (example, output) =>
+{
+    var result = await relevance.EvaluateAsync(
+        new ChatMessage(ChatRole.User, example["question"]),
+        new ChatMessage(ChatRole.Assistant, output.ToString()));
+    return result.Score ?? 0f;
 };
 ```
 
-**Why records?** The C# compiler guarantees all fields are copied. There is no risk of forgetting a field — unlike Python's `dataclasses.replace()`.
-
-### Search Space Storage
-
-The search space is stored as a `FrozenDictionary<string, TunableParameterDescriptor>` — immutable, cache-line-optimized, ~3× faster than `Dictionary` for the read-heavy lookup pattern during candidate generation.
-
-### Generating Variants from a Search Space
-
-```csharp
-// Conceptual: the optimizer backend samples from the search space
-public CandidateProposal SampleRandom(SearchSpaceDescriptor space, Random rng)
-{
-    var parameters = new Dictionary<string, object>();
-
-    foreach (var tunable in space.Parameters)
-    {
-        object value = tunable.ParameterKind switch
-        {
-            ParameterKind.Temperature =>
-                rng.NextDouble() * (tunable.MaxValue - tunable.MinValue) + tunable.MinValue,
-
-            ParameterKind.RetrievalTopK or ParameterKind.FewShotCount =>
-                rng.Next((int)tunable.MinValue, (int)tunable.MaxValue + 1),
-
-            ParameterKind.Model =>
-                tunable.AllowedValues[rng.Next(tunable.AllowedValues.Count)],
-
-            ParameterKind.Instruction =>
-                tunable.AllowedValues[rng.Next(tunable.AllowedValues.Count)],
-
-            _ => throw new NotSupportedException($"Unknown tunable: {tunable.ParameterKind}")
-        };
-
-        parameters[$"{tunable.StepId}.{tunable.Name}"] = value;
-    }
-
-    return new CandidateProposal(parameters.ToFrozenDictionary());
-}
-```
-
-With 2 models × 7 few-shot counts × 8 topK values × 5 topK values × temperature sampling, the combinatorial space easily exceeds thousands of candidates. The optimizer backend samples from this space according to its strategy.
-
-### How Each Tunable Maps to a Record Property
-
-When a candidate is applied to a program, each tunable key maps to a specific modification of the program's runtime configuration:
-
-| Key Pattern | Modification |
-|---|---|
-| `{stepId}.Temperature` | Sets the temperature for that step's `IChatClient` call |
-| `{stepId}.Model` | Selects which keyed `IChatClient` registration to use |
-| `{stepId}.FewShotCount` | Controls how many demonstration examples are injected into the prompt |
-| `{stepId}.TopK` | Sets the retrieval step's document count |
-| `{stepId}.Instruction` | Replaces the step's instruction text in the prompt |
-
-The variant's `SelectedParameters` dictionary is a `FrozenDictionary<string, object>` — once created, it cannot be modified. This guarantees that trial execution cannot accidentally corrupt a candidate's configuration, and that two threads executing the same variant see identical parameters.
+> **Key principle:** LMP wraps M.E.AI evaluators as metric functions. It does not reimplement scoring, rubrics, or LM-as-judge patterns.
 
 ---
 
-## 5. Constraint System
+## 4. BootstrapFewShot — The Core Compile Step
 
-> **Why This Is Different From DSPy:** DSPy has **no constraint system**. You optimize a metric and hope for the best. The LMP constraint system lets you say "the answer must always pass policy review" as a hard rule that rejects any variant that violates it, no matter how high its accuracy score. This is a **critical enterprise requirement**.
+This is the heart of DSPy-style optimization. It runs a teacher on training data, collects successful traces, and fills predictors with those traces as few-shot demos.
 
-### Hard Constraints
-
-Hard constraints **must** be satisfied. If a candidate violates any hard constraint, it is invalid and cannot be selected — even if it has the highest score.
+### API
 
 ```csharp
-rules.Require("policy_pass_rate == 1.0");
-rules.Require("p95_latency_ms <= 2500");
-rules.Require("avg_cost_usd <= 0.03");
-```
-
-### Soft Constraints
-
-Soft constraints express preferences. They are recorded but do not reject a candidate. In MVP they may influence tie-breaking; the architecture preserves room for weighted soft-constraint scoring.
-
-```csharp
-rules.Prefer("avg_latency_ms <= 1500");
-```
-
-### Typed Constraint Model
-
-Constraint strings lower into a typed internal model:
-
-```csharp
-public sealed record ConstraintDescriptor(
-    string Id,
-    string MetricName,
-    ConstraintOperator Operator,
-    double Threshold,
-    ConstraintSeverity Severity,
-    ConstraintScope Scope,
-    string? Message = null);
-
-public enum ConstraintOperator
+public sealed class BootstrapFewShot : IOptimizer
 {
-    Equal,
-    LessThan,
-    LessThanOrEqual,
-    GreaterThan,
-    GreaterThanOrEqual
-}
+    public BootstrapFewShot(
+        int maxDemos = 4,
+        int maxRounds = 1,
+        float metricThreshold = 1.0f);
 
-public enum ConstraintSeverity { Hard, Soft }
-
-public enum ConstraintScope { Compile, Trial, Program }
-```
-
-### CallerArgumentExpression Diagnostics
-
-The `Require` and `Prefer` methods use `[CallerArgumentExpression]` to auto-capture the constraint expression as a string at zero runtime cost:
-
-```csharp
-public void Require(
-    string expression,
-    [CallerArgumentExpression(nameof(expression))] string? sourceText = null)
-{
-    // sourceText automatically contains the literal text,
-    // e.g., "policy_pass_rate == 1.0"
-    // Used in compile reports and diagnostics
-    _constraints.Add(ParseConstraint(expression, ConstraintSeverity.Hard, sourceText));
-}
-```
-
-### Constraint Timing
-
-Constraints can be evaluated at two phases:
-
-**Static / Pre-Execution Constraints** — checked before a trial runs:
-- Parameter range violations (e.g., temperature outside `[0, 1]`).
-- Incompatible parameter combinations (e.g., model X doesn't support temperature > 0).
-- Invalid candidate shapes.
-
-MVP support: yes, but narrow in scope. Most validation happens post-execution.
-
-**Runtime / Post-Execution Constraints** — checked after metrics are collected:
-- Latency, cost, policy pass rate, groundedness threshold.
-- These are the primary constraint category in MVP. Required.
-
-### ConstraintEvaluator Implementation
-
-```csharp
-public sealed class ConstraintEvaluator
-{
-    public ConstraintResult Evaluate(
-        ConstraintDescriptor constraint,
-        IReadOnlyDictionary<string, double> metrics)
-    {
-        if (!metrics.TryGetValue(constraint.MetricName, out var actual))
-        {
-            return new ConstraintResult(
-                constraint.Id, Passed: false,
-                Message: $"Metric '{constraint.MetricName}' not found in trial results.");
-        }
-
-        bool passed = constraint.Operator switch
-        {
-            ConstraintOperator.Equal              => Math.Abs(actual - constraint.Threshold) < 1e-9,
-            ConstraintOperator.LessThan           => actual < constraint.Threshold,
-            ConstraintOperator.LessThanOrEqual    => actual <= constraint.Threshold,
-            ConstraintOperator.GreaterThan        => actual > constraint.Threshold,
-            ConstraintOperator.GreaterThanOrEqual => actual >= constraint.Threshold,
-            _ => throw new ArgumentOutOfRangeException()
-        };
-
-        return new ConstraintResult(
-            constraint.Id,
-            Passed: passed,
-            Message: passed
-                ? null
-                : $"Constraint violated: {constraint.MetricName} was {actual}, "
-                  + $"required {constraint.Operator} {constraint.Threshold}");
-    }
-
-    public bool AllHardConstraintsPassed(
-        IReadOnlyList<ConstraintDescriptor> constraints,
-        IReadOnlyDictionary<string, double> metrics)
-    {
-        return constraints
-            .Where(c => c.Severity == ConstraintSeverity.Hard)
-            .All(c => Evaluate(c, metrics).Passed);
-    }
-}
-
-public sealed record ConstraintResult(
-    string ConstraintId,
-    bool Passed,
-    string? Message = null);
-```
-
----
-
-## 6. Optimizer Backends
-
-### 6.1 RandomSearch (MVP)
-
-The MVP backend is **intentionally simple**. Its purpose is to validate the compiler architecture — search space extraction, trial execution, scoring, constraint enforcement, selection, and artifact emission — not to prove state-of-the-art search.
-
-```csharp
-public sealed class RandomSearchBackend : IOptimizerBackend
-{
-    private readonly Random _rng;
-
-    public RandomSearchBackend(int? seed = null)
-    {
-        _rng = seed.HasValue ? new Random(seed.Value) : Random.Shared;
-    }
-
-    public ValueTask<CandidateProposal> ProposeNextAsync(
-        SearchSpaceDescriptor searchSpace,
-        ObjectiveDescriptor objective,
-        IReadOnlyList<ConstraintDescriptor> constraints,
-        IReadOnlyList<TrialResultDescriptor> priorTrials,
+    public Task<TModule> CompileAsync<TModule>(
+        TModule module,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
         CancellationToken cancellationToken = default)
-    {
-        var parameters = new Dictionary<string, object>();
+        where TModule : LmpModule;
+}
+```
 
-        foreach (var tunable in searchSpace.Parameters)
+### Algorithm (from DSPy's `bootstrap.py`, ~250 LOC)
+
+```
+1. teacher = Clone(module)                     // deep copy — student's demos are independent
+2. for each example in trainSet (via Parallel.ForEachAsync):
+   a. Enable tracing on teacher
+   b. output = await teacher.ForwardAsync(example.WithInputs())
+   c. score  = metric(example, output)
+   d. if score >= metricThreshold:
+      e. Extract traces: list of (predictor_name, input, output) from this execution
+      f. Add to successful_traces[predictor_name]
+3. for each predictor in student.GetPredictors():
+   a. demos = successful_traces[predictor.Name].Take(maxDemos)
+   b. predictor.Demos = demos
+4. return student
+```
+
+### Implementation
+
+```csharp
+public async Task<TModule> CompileAsync<TModule>(
+    TModule module,
+    IReadOnlyList<Example> trainSet,
+    Func<Example, object, float> metric,
+    CancellationToken cancellationToken = default)
+    where TModule : LmpModule
+{
+    var teacher = module.Clone<TModule>();
+    var successfulTraces = new ConcurrentDictionary<string, ConcurrentBag<Demo>>();
+
+    // Initialize trace bags for each predictor
+    foreach (var pred in teacher.GetPredictors())
+        successfulTraces[pred.Name] = [];
+
+    // Run teacher on training examples, collect successful traces
+    await Parallel.ForEachAsync(
+        trainSet,
+        new ParallelOptions
         {
-            object value = tunable.ParameterKind switch
+            MaxDegreeOfParallelism = _maxConcurrency,
+            CancellationToken = cancellationToken
+        },
+        async (example, ct) =>
+        {
+            teacher.EnableTracing();
+            try
             {
-                ParameterKind.Temperature =>
-                    Math.Round(
-                        _rng.NextDouble() * (tunable.MaxValue!.Value - tunable.MinValue!.Value)
-                        + tunable.MinValue.Value, 2),
+                var output = await teacher.ForwardAsync(example.WithInputs(), ct);
+                var score = metric(example, output);
 
-                ParameterKind.FewShotCount or ParameterKind.RetrievalTopK =>
-                    _rng.Next((int)tunable.MinValue!.Value, (int)tunable.MaxValue!.Value + 1),
+                if (score >= _metricThreshold)
+                {
+                    // Collect traces from this successful execution
+                    foreach (var trace in teacher.CollectTraces())
+                    {
+                        successfulTraces[trace.PredictorName].Add(
+                            new Demo(trace.Input, trace.Output));
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { /* Skip failed examples — DSPy does the same */ }
+        });
 
-                ParameterKind.Model or ParameterKind.Instruction =>
-                    tunable.AllowedValues![_rng.Next(tunable.AllowedValues.Count)],
+    // Fill student predictors with successful demos
+    foreach (var pred in module.GetPredictors())
+    {
+        if (successfulTraces.TryGetValue(pred.Name, out var traces))
+        {
+            pred.Instance.Demos = [.. traces.Take(_maxDemos)];
+        }
+    }
 
-                _ => throw new NotSupportedException(
-                    $"Unsupported tunable kind: {tunable.ParameterKind}")
-            };
+    return module;
+}
+```
 
-            parameters[$"{tunable.StepId}.{tunable.Name}"] = value;
+### Key Design Points
+
+| Point | Detail |
+|---|---|
+| Teacher/student split | Teacher generates traces; student receives demos. Same pattern as DSPy. |
+| Tracing | `LmpModule.EnableTracing()` records `(predictor, input, output)` tuples per call. `CollectTraces()` retrieves them. |
+| Parallel execution | `Parallel.ForEachAsync` — true parallelism, no GIL. Each training example runs independently. |
+| Failed examples | Swallowed (not thrown). DSPy's bootstrap does the same — a few failures in the training set are expected. |
+| `Clone()` | Source-generated deep copy of module + all predictors. Uses `with` expressions on records. |
+
+### Demo Type
+
+```csharp
+public sealed record Demo(object Input, object Output);
+```
+
+Demos are stored per-predictor. When the source-generated `PromptBuilder` assembles `ChatMessage[]`, it includes demos as user/assistant message pairs before the current input.
+
+---
+
+## 5. BootstrapRandomSearch
+
+Runs BootstrapFewShot N times with random demo subsets, evaluates each candidate on a validation set, returns the best.
+
+### API
+
+```csharp
+public sealed class BootstrapRandomSearch : IOptimizer
+{
+    public BootstrapRandomSearch(
+        int numTrials = 8,
+        int maxDemos = 4,
+        float metricThreshold = 1.0f,
+        int? seed = null);
+
+    public Task<TModule> CompileAsync<TModule>(
+        TModule module,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
+}
+```
+
+### Algorithm
+
+```
+1. Split trainSet into train/validation (e.g., 80/20) OR accept separate valSet
+2. candidates = []
+3. for i in 1..numTrials:
+   a. shuffled = Shuffle(trainSplit)           // different random demo subset each time
+   b. candidate = await BootstrapFewShot.CompileAsync(module.Clone(), shuffled, metric)
+   c. candidates.Add(candidate)
+4. Evaluate all candidates on validation set (via Task.WhenAll):
+   a. scores = await Task.WhenAll(candidates.Select(c => Evaluator.EvaluateAsync(c, valSet, metric)))
+5. Return candidate with highest average score
+```
+
+### Implementation
+
+```csharp
+public async Task<TModule> CompileAsync<TModule>(
+    TModule module,
+    IReadOnlyList<Example> trainSet,
+    Func<Example, object, float> metric,
+    CancellationToken cancellationToken = default)
+    where TModule : LmpModule
+{
+    var rng = _seed.HasValue ? new Random(_seed.Value) : Random.Shared;
+    var (trainSplit, valSplit) = SplitDataset(trainSet, trainFraction: 0.8, rng);
+
+    // Bootstrap N candidates with different random demo subsets
+    var candidates = new List<TModule>(_numTrials);
+    for (int i = 0; i < _numTrials; i++)
+    {
+        var shuffled = trainSplit.OrderBy(_ => rng.Next()).ToList();
+        var bootstrap = new BootstrapFewShot(_maxDemos, metricThreshold: _metricThreshold);
+        var candidate = await bootstrap.CompileAsync(
+            module.Clone<TModule>(), shuffled, metric, cancellationToken);
+        candidates.Add(candidate);
+    }
+
+    // Evaluate all candidates on validation set in parallel
+    var evaluationTasks = candidates.Select(candidate =>
+        Evaluator.EvaluateAsync(candidate, valSplit, metric,
+            cancellationToken: cancellationToken));
+    var results = await Task.WhenAll(evaluationTasks);
+
+    // Return best performing candidate
+    var bestIndex = 0;
+    for (int i = 1; i < results.Length; i++)
+    {
+        if (results[i].AverageScore > results[bestIndex].AverageScore)
+            bestIndex = i;
+    }
+
+    return candidates[bestIndex];
+}
+```
+
+### Key Design Points
+
+| Point | Detail |
+|---|---|
+| Random subsets | Each trial shuffles the training split differently, so each candidate sees different demo examples. |
+| `Task.WhenAll` for evaluation | All N candidates evaluated in parallel — true parallelism. |
+| No constraint model | Selection is purely by metric score. No Pareto frontiers, no constraint enforcement. |
+| Deterministic seeding | Optional `seed` parameter for reproducible results. |
+
+---
+
+## 6. MIPROv2 (Post-MVP)
+
+Bayesian optimization over both instructions and demo set selection. This is DSPy's most sophisticated optimizer.
+
+### How DSPy's MIPROv2 Works
+
+MIPROv2 has three phases:
+
+**Phase 1 — Bootstrap demos:**
+Run BootstrapFewShot to collect a pool of successful demos per predictor.
+
+**Phase 2 — Propose instructions (via LM):**
+Use an LM to generate N candidate instruction variants for each predictor. The LM sees the task description, field names, and example demos, then proposes diverse instruction phrasings.
+
+**Phase 3 — Bayesian search:**
+Search over a categorical space: *instruction index × demo subset index* per predictor. DSPy uses Optuna's `TPESampler` (Tree-structured Parzen Estimator) to propose configurations, evaluate them, and converge on the best.
+
+### .NET Implementation Strategy
+
+```
+Phase 1: BootstrapFewShot (already built)
+Phase 2: LM-generated instructions via IChatClient
+Phase 3: TPE sampler — options:
+  a. ML.NET AutoML tuners (Microsoft.ML.AutoML)
+  b. Direct TPE implementation (~300 LOC for basic version)
+  c. Optuna via Python interop (least desirable)
+```
+
+### Search Space
+
+The search space is **categorical** — a discrete grid per predictor:
+
+| Predictor | Dimension | Values |
+|---|---|---|
+| `_classify` | instruction index | 0..N (proposed instruction variants) |
+| `_classify` | demo set index | 0..M (bootstrapped demo subsets) |
+| `_draft` | instruction index | 0..N |
+| `_draft` | demo set index | 0..M |
+
+The TPE sampler proposes configurations from this grid, evaluates them, and uses the results to propose better configurations.
+
+### Sketch
+
+```csharp
+public sealed class MIPROv2 : IOptimizer
+{
+    public async Task<TModule> CompileAsync<TModule>(
+        TModule module,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule
+    {
+        // Phase 1: Bootstrap a pool of demos
+        var demoPool = await BootstrapDemoPool(module, trainSet, metric, cancellationToken);
+
+        // Phase 2: Generate instruction candidates via LM
+        var instructionCandidates = await ProposeInstructions(module, demoPool, cancellationToken);
+
+        // Phase 3: Bayesian search over (instruction, demo-set) per predictor
+        var (trainSplit, valSplit) = SplitDataset(trainSet, 0.8);
+        TModule bestCandidate = module;
+        float bestScore = float.MinValue;
+
+        for (int trial = 0; trial < _numTrials; trial++)
+        {
+            // TPE sampler proposes a configuration
+            var config = _sampler.Propose(trial);
+
+            // Apply configuration to module clone
+            var candidate = module.Clone<TModule>();
+            foreach (var pred in candidate.GetPredictors())
+            {
+                pred.Instance.Instructions = instructionCandidates[pred.Name][config[pred.Name].InstructionIndex];
+                pred.Instance.Demos = demoPool[pred.Name][config[pred.Name].DemoSetIndex];
+            }
+
+            // Evaluate
+            var result = await Evaluator.EvaluateAsync(candidate, valSplit, metric,
+                cancellationToken: cancellationToken);
+
+            // Report to sampler
+            _sampler.Report(trial, result.AverageScore);
+
+            if (result.AverageScore > bestScore)
+            {
+                bestScore = result.AverageScore;
+                bestCandidate = candidate;
+            }
         }
 
-        var variantId = $"variant-{priorTrials.Count + 1:D4}";
-        var proposal = new CandidateProposal(variantId, parameters.ToFrozenDictionary());
-
-        return ValueTask.FromResult(proposal);
+        return bestCandidate;
     }
 }
 ```
 
-This backend ignores `priorTrials` — it does not learn from past results. That is the explicit point: the MVP backend is boring so the architecture can be validated first.
+### TPE Implementation Notes
 
-The MVP must prove the full pipeline end-to-end:
-- Search space extraction works.
-- Candidates can be applied to programs.
-- Trial execution produces metrics.
-- Constraints can invalidate candidates.
-- Objective scoring can rank valid candidates.
-- One best valid variant can be selected.
-- A compiled artifact can be emitted.
+DSPy uses Optuna's `TPESampler` — ~35K LOC of Python. A minimal TPE for categorical-only spaces is ~300 LOC:
 
-Once the architecture is validated, sophisticated backends slot in behind the same `IOptimizerBackend` interface.
+1. For each hyperparameter, maintain two distributions: `l(x)` from top-performing trials, `g(x)` from the rest.
+2. For categorical parameters, these are simply frequency counts.
+3. Propose the value that maximizes `l(x) / g(x)`.
+4. Gamma = 0.25 (top 25% are "good" trials) — DSPy's default.
 
-### 6.2 Future: AutoML Backend
-
-`Microsoft.ML.AutoML` v0.23.0 provides SMAC-based Bayesian search over numeric, categorical, and ordinal parameters — a genuine fit for hyperparameter optimization.
-
-**Interface contract:** The `IOptimizerBackend` interface remains identical. The AutoML backend would consume `priorTrials` to update its surrogate model and propose informed candidates.
-
-```
-Compiler orchestration
-  + AutoML proposal engine (SMAC / Bayesian)
-  + same constraint enforcement, scoring, selection
-```
-
-### 6.3 MVP: Predicate-Based Constraint Pruning
-
-For MVP, static constraint pruning uses **simple lambda predicates** — no external solver dependency. The compiler evaluates candidate feasibility using C# predicates before executing a trial:
-
-```csharp
-// MVP: predicate-based feasibility check
-Func<CandidateProposal, bool> feasibilityCheck = candidate =>
-    candidate.Temperature >= 0.0 && candidate.Temperature <= 1.0 &&
-    candidate.TopK >= 1 && candidate.TopK <= 20 &&
-    !(candidate.Model == "gpt-4.1-mini" && candidate.Temperature > 0.5);
-
-// Before executing a trial:
-if (!feasibilityCheck(candidate))
-{
-    // Skip trial entirely — no API call
-    continue;
-}
-```
-
-This is fast, zero-dependency, and sufficient for MVP-scale search spaces.
-
-### 6.4 Post-MVP: Z3-Assisted Pruning
-
-Post-MVP, Z3 can replace or augment predicate pruning as a **constraint co-processor** — it prunes infeasible candidates *before* they are executed, saving LM API costs, and can reason about more complex constraint interactions (e.g., model-specific parameter ranges, cross-step constraints).
-
-```
-Candidate proposed by backend
-  → Z3 checks static feasibility (parameter ranges, incompatible combinations)
-  → if infeasible: skip trial entirely (no API call)
-  → if feasible: proceed to trial execution
-```
-
-**Cost savings:** If 30% of random candidates are statically infeasible, Z3 pruning eliminates 30% of LM API calls — which dominate compile cost.
-
-Z3 should **not** replace the compiler, the runtime, or the search backend. Its role is strictly: feasibility checking, candidate pruning, and optional candidate repair.
+ML.NET's AutoML tuners are a possible backend for production-quality Bayesian search without reimplementing TPE.
 
 ---
 
-## 7. CompileReport
+## 7. Tracing Infrastructure
 
-The `CompileReport` is the structured output of a compile run. It provides full transparency into what happened.
+Optimizers need to observe what happens inside a module during execution. The tracing system records `(predictor, input, output)` tuples.
 
-### CompileReport Type Definition
+### Trace Type
 
 ```csharp
-public sealed record CompileReport(
-    string ProgramId,
-    string? BestVariantId,
-    int TrialsExecuted,
-    int ValidTrials,
-    int RejectedTrials,
-    IReadOnlyDictionary<string, double>? BestMetrics,
-    IReadOnlyList<TrialResultDescriptor> AllTrials,
-    IReadOnlyDictionary<string, int> RejectionsByConstraint,
-    BestCandidateSummary? BestValid,
-    BestCandidateSummary? BestInvalid,
-    TimeSpan ElapsedTime);
-
-public sealed record BestCandidateSummary(
-    string VariantId,
-    double ObjectiveScore,
-    IReadOnlyDictionary<string, double> Metrics,
-    IReadOnlyList<string>? ViolatedConstraints = null);
+public sealed record Trace(
+    string PredictorName,
+    object Input,
+    object Output);
 ```
 
-### Canonical Report Format
+### How Tracing Works
 
-```
-══════════════════════════════════════════════
-  LMP Compile Report — support-triage
-══════════════════════════════════════════════
+1. Optimizer calls `module.EnableTracing()` before running on a training example.
+2. Each `Predictor.PredictAsync()` call, when tracing is enabled, records a `Trace`.
+3. After execution, optimizer calls `module.CollectTraces()` to retrieve recorded traces.
+4. Traces from successful examples (metric ≥ threshold) become demos.
 
-Trials executed:   84
-Valid trials:      51
-Rejected trials:   33
+```csharp
+// Inside Predictor<TInput, TOutput>.PredictAsync():
+var output = await _chatClient.GetResponseAsync<TOutput>(messages, options, ct);
 
-Rejected by:
-  policy_pass_rate:  12
-  p95_latency_ms:    14
-  avg_cost_usd:       7
+if (_tracingEnabled)
+{
+    _traces.Add(new Trace(Name, input, output));
+}
 
-Best invalid candidate:
-  variant:   triage-v12
-  score:     0.94
-  violated:  p95_latency_ms <= 2500
-
-Best valid candidate:
-  variant:   triage-v17
-  score:     0.91
-  metrics:
-    routing_accuracy:   0.93
-    severity_accuracy:  0.88
-    groundedness:       0.91
-    policy_pass_rate:   1.00
-  parameters:
-    triage.Model:           gpt-4.1-mini
-    triage.Temperature:     0.25
-    triage.FewShotCount:    4
-    retrieve-kb.TopK:       7
-    retrieve-policy.TopK:   3
-
-Elapsed: 00:12:34
-══════════════════════════════════════════════
+return output;
 ```
 
-If no valid candidate exists, the report states this explicitly and no artifact is emitted.
+Tracing is thread-local (per-execution) to avoid cross-contamination during parallel bootstrap runs.
 
 ---
 
 ## 8. Performance Considerations
 
-### Resilience Pipeline for LM API Calls
+### Parallel Execution — No GIL
 
-The compiler wraps LM API calls in a `ResiliencePipeline` from `Microsoft.Extensions.Resilience` that combines retry (with exponential backoff + jitter), circuit breaker, and timeout. This replaces the previous `TokenBucketRateLimiter` approach with a composable, production-grade resilience strategy.
-
-```csharp
-services.AddResiliencePipeline("compiler-lm-calls", builder =>
-{
-    builder
-        .AddRetry(new RetryStrategyOptions
-        {
-            MaxRetryAttempts = 3,
-            BackoffType = DelayBackoffType.Exponential,
-            UseJitter = true,
-            ShouldHandle = new PredicateBuilder()
-                .Handle<HttpRequestException>()
-        })
-        .AddCircuitBreaker(new CircuitBreakerStrategyOptions
-        {
-            FailureRatio = 0.5,
-            SamplingDuration = TimeSpan.FromSeconds(30),
-            MinimumThroughput = 10,
-            BreakDuration = TimeSpan.FromSeconds(15)
-        })
-        .AddTimeout(TimeSpan.FromSeconds(90));
-});
-
-// Before each LM API call within a trial:
-var pipeline = provider
-    .GetRequiredService<ResiliencePipelineProvider<string>>()
-    .GetPipeline("compiler-lm-calls");
-
-var response = await pipeline.ExecuteAsync(
-    async ct => await chatClient.GetResponseAsync(messages, options, ct),
-    cancellationToken);
-```
-
-> **Why ResiliencePipeline over TokenBucketRateLimiter?** Rate limiting alone doesn't handle transient failures or cascading outages. The `ResiliencePipeline` composes retry, circuit breaking, and timeout in a single declarative builder, matching the same pattern used by the runtime (§8.4 in runtime-execution.md). Provider-side rate limiting (HTTP 429) is handled by the retry strategy's backoff; client-side concurrency is governed by `MaxDegreeOfParallelism` on the Dataflow blocks.
-
-### Response Deduplication with HybridCache
-
-`HybridCache` (.NET 10) provides combined L1 (in-memory) + L2 (distributed) caching. If two trials send the identical prompt to the same model, the second trial gets a cached response — no duplicate API call.
-
-**Tag-based eviction:** Cache entries are tagged by trial ID and step name using `HybridCacheEntryOptions.Tags`. This enables targeted eviction — e.g., evict all cached responses for a specific trial without flushing the entire cache. When a trial is rejected by constraints, its cached responses can be evicted by tag to free memory.
+.NET's `Parallel.ForEachAsync` and `Task.WhenAll` provide true parallelism. Both training set bootstrapping and candidate evaluation run across real OS threads. This is a structural advantage over Python's `asyncio` + GIL.
 
 ```csharp
-var tags = new[] { $"trial:{trialId}", $"step:{stepName}" };
-var response = await cache.GetOrCreateAsync(
-    key: $"{model}:{promptHash}",
-    factory: async ct => await chatClient.CompleteAsync(prompt, ct),
-    options: new HybridCacheEntryOptions { Tags = tags },
-    cancellationToken: ct);
+// BootstrapFewShot: parallel training example execution
+await Parallel.ForEachAsync(trainSet,
+    new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency },
+    async (example, ct) => { /* run teacher, collect traces */ });
 
-// Evict all cache entries for a specific trial
-await cache.RemoveByTagAsync($"trial:{trialId}", cancellationToken);
+// BootstrapRandomSearch: parallel candidate evaluation
+var results = await Task.WhenAll(
+    candidates.Select(c => Evaluator.EvaluateAsync(c, valSet, metric)));
 ```
 
-### Parallel Trial Execution
+### Resilience
 
-Trials with no dependencies can run concurrently using `Parallel.ForEachAsync` (.NET 6+). .NET has no GIL — both LM API calls and CPU-bound scoring run on separate threads with true parallelism. This is a significant advantage over Python-based frameworks where `asyncio` is constrained by the GIL for CPU-bound work between API calls.
-
-The degree of parallelism is controlled by `MaxDegreeOfParallelism`, working in concert with the resilience pipeline's concurrency limiter for API safety:
+LM API calls during optimization should be wrapped in a `ResiliencePipeline` (retry + circuit breaker + timeout) via `Microsoft.Extensions.Resilience`. This is middleware on `IChatClient` — the optimizer itself doesn't manage resilience.
 
 ```csharp
-// Execute batch of trials with controlled concurrency
-var results = new ConcurrentBag<TrialResult>();
-await Parallel.ForEachAsync(
-    candidates,
-    new ParallelOptions
-    {
-        MaxDegreeOfParallelism = Math.Min(candidates.Count, Environment.ProcessorCount * 2),
-        CancellationToken = cancellationToken
-    },
-    async (candidate, ct) =>
-    {
-        var result = await ExecuteTrialAsync(candidate, data, ct);
-        results.Add(result);
-    });
+// Applied at the ChatClient level, not the optimizer level:
+var client = new ChatClientBuilder(innerClient)
+    .UseRetry(maxRetries: 3)
+    .UseRateLimiting(maxConcurrent: 10)
+    .Build();
 ```
+
+### Caching
+
+Identical prompts across trials should hit cache. Use `IChatClient` middleware caching (e.g., `UseDistributedCache()`). The optimizer doesn't manage caching directly.
 
 ### Cancellation
 
-Every async method in the compile pipeline accepts `CancellationToken`. Long-running compiles can be cancelled gracefully via Ctrl+C or programmatic cancellation.
+Every async method accepts `CancellationToken`. Long-running optimization can be cancelled gracefully.
 
-### BackgroundService for Long-Running Compiles
+---
 
-Production compile jobs run as a `BackgroundService` with proper lifecycle management:
+## 9. End-to-End Example
 
 ```csharp
-public sealed class CompileHostedService : BackgroundService
-{
-    private readonly IProgramCompiler _compiler;
-    private readonly CompileSpec _spec;
+// === Types ===
+public record TicketInput(
+    [Description("The raw ticket text")] string TicketText);
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+[LmpSignature("Classify a support ticket by category and urgency")]
+public partial record ClassifyTicket
+{
+    [Description("Category: billing, technical, account")]
+    public required string Category { get; init; }
+
+    [Description("Urgency from 1-5")]
+    public required int Urgency { get; init; }
+}
+
+[LmpSignature("Draft a helpful reply to the customer")]
+public partial record DraftReply
+{
+    [Description("The reply text")]
+    public required string ReplyText { get; init; }
+}
+
+// === Module ===
+public class TicketTriageModule : LmpModule
+{
+    private readonly Predictor<TicketInput, ClassifyTicket> _classify;
+    private readonly Predictor<ClassifyTicket, DraftReply> _draft;
+
+    public TicketTriageModule(IChatClient client)
     {
-        var report = await _compiler.CompileAsync(_spec, stoppingToken);
-        // emit artifact, log report
+        _classify = new Predictor<TicketInput, ClassifyTicket>(client);
+        _draft = new Predictor<ClassifyTicket, DraftReply>(client);
+    }
+
+    public override async Task<object> ForwardAsync(object input, CancellationToken ct = default)
+    {
+        var ticket = (TicketInput)input;
+        var classification = await _classify.PredictAsync(ticket, ct);
+        return await _draft.PredictAsync(classification, ct);
     }
 }
+
+// === Optimize ===
+var client = new ChatClientBuilder(new OpenAIChatClient("gpt-4o-mini"))
+    .UseFunctionInvocation()
+    .UseOpenTelemetry()
+    .Build();
+
+var module = new TicketTriageModule(client);
+var trainSet = Example.LoadFromJsonl("train.jsonl");
+var devSet   = Example.LoadFromJsonl("dev.jsonl");
+
+// Step 1: Bootstrap few-shot demos
+var bootstrap = new BootstrapFewShot(maxDemos: 4);
+var optimized = await bootstrap.CompileAsync(module, trainSet,
+    metric: (example, output) =>
+        example["category"] == ((ClassifyTicket)output).Category ? 1f : 0f);
+
+// Step 2: Evaluate
+var result = await Evaluator.EvaluateAsync(optimized, devSet,
+    metric: (example, output) =>
+        example["category"] == ((ClassifyTicket)output).Category ? 1f : 0f);
+Console.WriteLine($"Accuracy: {result.AverageScore:P1}");  // e.g., "Accuracy: 87.0%"
+
+// Step 3: Save optimized state (demos are included)
+await optimized.SaveAsync("triage-v1.json");
+
+// Step 4: Load in production
+var production = new TicketTriageModule(client);
+await production.LoadAsync("triage-v1.json");
+```
+
+### Or use BootstrapRandomSearch for better results:
+
+```csharp
+var optimizer = new BootstrapRandomSearch(numTrials: 8, maxDemos: 4, seed: 42);
+var best = await optimizer.CompileAsync(module, trainSet,
+    metric: (example, output) =>
+        example["category"] == ((ClassifyTicket)output).Category ? 1f : 0f);
+
+var result = await Evaluator.EvaluateAsync(best, devSet,
+    metric: (example, output) =>
+        example["category"] == ((ClassifyTicket)output).Category ? 1f : 0f);
+Console.WriteLine($"Best accuracy: {result.AverageScore:P1}");
 ```
 
 ---
 
-## 9. End-to-End Compile Example
+## 10. DSPy → LMP Optimizer Mapping
 
-```csharp
-using LMP.Compilation;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+| DSPy | LMP | Status | Notes |
+|---|---|---|---|
+| `dspy.Evaluate` | `Evaluator.EvaluateAsync()` | MVP | `Parallel.ForEachAsync` for throughput |
+| `BootstrapFewShot` (~250 LOC) | `BootstrapFewShot` | MVP | Teacher traces → student demos |
+| `BootstrapFewShotWithRandomSearch` | `BootstrapRandomSearch` | MVP | × N candidates, `Task.WhenAll` eval |
+| `MIPROv2` (~35K LOC, Optuna TPE) | `MIPROv2` | Post-MVP | ML.NET AutoML or direct TPE |
+| `dspy.Example` | `Example` | MVP | Dictionary-like with `WithInputs()` |
+| Metric function | `Func<Example, object, float>` | MVP | Or wrap M.E.AI evaluators |
 
-// 1. Define the compile spec
-var spec = CompileSpec
-    .For<SupportTriageProgram>()
-    .WithTrainingSet("data/support-triage-train.jsonl")
-    .WithValidationSet("data/support-triage-val.jsonl")
-    .Optimize(search =>
-    {
-        search.Instructions(step: "triage");
-        search.FewShotExamples(step: "triage", min: 0, max: 6);
-        search.RetrievalTopK(step: "retrieve-kb", min: 3, max: 10);
-        search.RetrievalTopK(step: "retrieve-policy", min: 2, max: 6);
-        search.Model(step: "triage", allowed: ["gpt-4.1-mini", "gpt-4.1"]);
-        search.Temperature(step: "triage", min: 0.0, max: 0.7);
-    })
-    .ScoreWith(Metrics.Weighted(
-        ("routing_accuracy", 0.35),
-        ("severity_accuracy", 0.25),
-        ("groundedness", 0.20),
-        ("policy_pass_rate", 0.20)))
-    .Constrain(rules =>
-    {
-        rules.Require("policy_pass_rate == 1.0");
-        rules.Require("p95_latency_ms <= 2500");
-        rules.Require("avg_cost_usd <= 0.03");
-    })
-    .UseOptimizer(Optimizers.RandomSearch(seed: 42));
+---
 
-// 2. Run the compiler
-var compiler = serviceProvider.GetRequiredService<IProgramCompiler>();
-var report = await compiler.CompileAsync(spec, cancellationToken);
+## 11. Post-MVP Extension Points
 
-// 3. Inspect the report
-Console.WriteLine($"Trials: {report.TrialsExecuted}");
-Console.WriteLine($"Valid:  {report.ValidTrials}");
-Console.WriteLine($"Best:   {report.BestVariantId ?? "NONE"}");
+| Extension | Notes |
+|---|---|
+| **MIPROv2** | Bayesian search over instructions + demos. ML.NET AutoML tuners or direct TPE (~300 LOC). |
+| **ML.NET AutoML** | Backend for categorical Bayesian optimization in MIPROv2. Package: `Microsoft.ML.AutoML`. |
+| **Z3 constraint pruning** | Feasibility checking before trial execution — skip infeasible configurations. Post-MVP only. |
+| **`dotnet lmp optimize` CLI** | CLI wrapper around `IOptimizer.CompileAsync()` for CI/CD pipelines. Layer 4 tooling. |
+| **Aspire dashboard** | Visualization of optimization runs, per-trial metrics, demo selection. |
 
-if (report.BestValid is { } best)
-{
-    Console.WriteLine($"Score:  {best.ObjectiveScore:F4}");
-    foreach (var (metric, value) in best.Metrics)
-        Console.WriteLine($"  {metric}: {value:F4}");
-}
-else
-{
-    Console.WriteLine("ERROR: No valid candidate found. Review constraints.");
-}
+---
 
-// 4. Save the compiled artifact
-if (report.BestVariantId is not null)
-{
-    var artifactPath = $"artifacts/{report.ProgramId}-{report.BestVariantId}.json";
-    await ArtifactSerializer.SaveAsync(report, artifactPath);
-    Console.WriteLine($"Artifact saved: {artifactPath}");
-}
-```
+## 12. What's Intentionally Excluded
 
-### Expected Output
+These concepts appeared in earlier drafts. They are dropped from the optimizer spec:
 
-```
-[compile] Starting compilation for support-triage
-[compile] Search space: 6 tunables, ~2800 combinations
-[compile] Backend: RandomSearch (seed=42)
-[compile] Budget: 84 trials
-
-[trial  1/84] variant-0001  score=0.72  REJECTED (policy_pass_rate=0.85)
-[trial  2/84] variant-0002  score=0.68  REJECTED (avg_cost_usd=0.041)
-[trial  3/84] variant-0003  score=0.81  VALID    ★ new best
-[trial  4/84] variant-0004  score=0.79  VALID
-...
-[trial 42/84] variant-0042  score=0.91  VALID    ★ new best
-...
-[trial 71/84] variant-0071  score=0.94  REJECTED (p95_latency_ms=2710)
-...
-[trial 84/84] variant-0084  score=0.85  VALID
-
-══════════════════════════════════════════════
-  LMP Compile Report — support-triage
-══════════════════════════════════════════════
-Trials executed:   84
-Valid trials:      51
-Rejected trials:   33
-
-Best valid candidate:
-  variant:   variant-0042
-  score:     0.91
-
-Artifact saved: artifacts/support-triage-variant-0042.json
-```
-
-> **Why This Is Different From DSPy:** DSPy's `compile()` returns a modified `Module` object in memory. LMP emits a versioned, serializable, AOT-safe artifact with provenance metadata, constraint validation results, and hot-swap support via `AssemblyLoadContext`. The compile report provides enterprise-grade explainability — every rejected candidate is accounted for, with the specific constraint that caused rejection.
+| Dropped | Why |
+|---|---|
+| Constraint model (hard/soft constraints) | DSPy has no constraint system. Metric score is sufficient for optimizer selection. |
+| Pareto frontiers | Over-engineered for demo/instruction optimization. Single scalar metric works. |
+| Z3 integration (MVP) | Post-MVP extension point only. Not needed for BootstrapFewShot or RandomSearch. |
+| `IOptimizerBackend` interface | The old "proposal engine" abstraction is replaced by concrete optimizer classes that each implement `IOptimizer`. |
+| `CompileSpec` fluent builder | Optimizers take `(module, trainSet, metric)` directly. No spec object needed. |
+| `CompileReport` | Evaluator returns `EvaluationResult`. Optimizer returns a module. No compile report artifact. |
+| `VariantDescriptor` / search space IR | No intermediate representation. Optimizers operate on modules directly. |
+| Custom trial runners | `Parallel.ForEachAsync` is the trial runner. No abstraction needed. |
+| Weighted multi-metric aggregation | Single `Func<Example, object, float>` metric. Compose multiple metrics in user code if needed. |
+| Model / temperature / topK tuning | Configuration concerns — handled by `IChatClient` middleware, not the optimizer. |

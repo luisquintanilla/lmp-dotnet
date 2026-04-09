@@ -1,1037 +1,867 @@
 # Runtime Execution Specification
 
-> **Source of Truth:** `spec.org` §10 (Runtime Responsibilities)
-> **Status:** Draft · MVP Scope
-> **Audience:** Implementer — a junior developer should be able to build the runtime engine from this document alone.
+> **Status:** v2 — rewritten to match system-architecture.md  
+> **Target:** .NET 10 / C# 14  
+> **Dependency:** `Microsoft.Extensions.AI` (`IChatClient`)  
+> **Audience:** Implementer — a junior developer should be able to build the runtime from this document alone.
 
 ---
 
 ## 1. What the Runtime Does (Plain Language)
 
-The runtime is the part of the framework that **actually runs your AI program**. Everything before this — signatures, source generators, program descriptors — produces a *description* of what the program should do. The runtime takes that description and *does* it.
+The runtime is the part of the framework that **actually runs your LM program**. There are no graphs, no IR, no step dispatchers. The runtime is just C# classes calling `IChatClient`.
 
 Concretely, the runtime:
 
-1. **Receives a program graph** (the `ProgramDescriptor` from the IR layer) that declares steps and edges.
-2. **Compiles the IR graph to a TPL Dataflow pipeline** (`TransformBlock`, `ActionBlock`, `JoinBlock`) and executes it.
-3. **Calls language models** through `IChatClient` (from `Microsoft.Extensions.AI`) for Predict steps.
-4. **Calls retrieval providers** through `IDocumentRetriever` for Retrieve steps.
-5. **Runs evaluators** through `IEvaluator` for Evaluate steps.
-6. **Evaluates branching conditions** for If steps, and **re-executes predictions with feedback** for Repair steps.
-7. **Emits OpenTelemetry traces** (`Activity` + `Meter`) for every step so you can debug, monitor, and feed data back into the compiler.
-8. **Propagates cancellation** so that `Ctrl+C` or a timeout stops execution cleanly.
+1. **Calls language models** through `IChatClient.GetResponseAsync<TOutput>()` — the core prediction loop.
+2. **Manages learnable state** (instructions, few-shot demos, config) inside `Predictor<TInput, TOutput>`.
+3. **Records traces** — captures `(predictor name, input, output)` tuples during execution for optimizer consumption.
+4. **Retries on assertion failure** — `LmpAssert` triggers retry with error feedback; `LmpSuggest` logs and continues.
+5. **Composes predictors** — `LmpModule.ForwardAsync()` is plain C# that chains predictors together.
+6. **Persists and restores state** — `SaveAsync` / `LoadAsync` serialize demos + instructions to JSON via source-gen `JsonSerializerContext`.
 
-> **Why This Matters:** Without a well-defined runtime, your programs are just metadata. The runtime is where cost is incurred, latency is measured, and business value is produced. Every design decision here directly impacts production reliability and observability.
+> **What's gone:** There is no `ProgramDescriptor`, no `StepDescriptor`, no `EdgeDescriptor`, no TPL Dataflow, no topological sort, no `ProgramExecutor`, no `StepExecutor`, no `ExecutionContext`. Modules are plain C# classes. Composition is method calls. Parallelism is `Task.WhenAll`.
 
 ---
 
-## 2. Execution Engine Architecture
+## 2. Predictor\<TInput, TOutput\> Internals
 
-### 2.1 Core Components
+`Predictor<TInput, TOutput>` is the atomic unit of LM invocation. It holds learnable state, builds prompts, calls the model, records traces, and handles assertion-driven retries.
 
-| Component | Responsibility |
-|---|---|
-| `ProgramExecutor` | Main orchestrator. Takes a `ProgramDescriptor` + input, returns output + trace. |
-| `StepExecutor` | Dispatches to per-kind execution logic (`PredictStepExecutor`, etc.). |
-| `ExecutionContext` | Mutable bag that carries step outputs, evaluator scores, and trace data between steps. |
-| `StepContext` | Per-step view of the `ExecutionContext` — provides `OutputOf`, `ScoreOf`, `Latest<T>`. |
+### 2.1 State Held by a Predictor
 
-### 2.2 How the Engine Executes the DAG — TPL Dataflow Compilation
-
-The program graph is a directed acyclic graph (DAG). Edges are typed: `Sequence`, `ConditionalTrue`, `ConditionalFalse`. Rather than walking the graph step-by-step, the `ProgramExecutor` **compiles** the IR into a TPL Dataflow pipeline at the start of each execution:
-
-1. Computes a **topological sort** of all `StepDescriptor` nodes using the `EdgeDescriptor` list.
-2. Creates a TPL Dataflow block for each step:
-   - **`TransformBlock<StepContext, StepResult>`** — for steps that produce output consumed by downstream steps (Predict, Retrieve).
-   - **`ActionBlock<StepContext>`** — for terminal steps with no downstream consumers (Evaluate at the end of a pipeline).
-   - **`JoinBlock<T1, T2>`** — for fan-in points where a step receives outputs from multiple upstream steps (e.g., a Predict step consuming both `retrieve-kb` and `retrieve-policy` outputs).
-3. Links blocks according to the `EdgeDescriptor` edges, with `DataflowLinkOptions { PropagateCompletion = true }`.
-4. For `ConditionalTrue` / `ConditionalFalse` edges, uses a `Predicate<StepResult>` link filter so that `If` steps gate downstream blocks.
-5. Posts the program input into the entry block(s) and awaits completion of the terminal block(s).
-6. After completion, assembles the final program output from the terminal block results and returns a `RuntimeTraceDescriptor`.
-
-> **Why TPL Dataflow, not a custom graph executor?** TPL Dataflow is a mature, battle-tested .NET library (`System.Threading.Tasks.Dataflow`) that handles buffering, back-pressure, bounded parallelism, and completion propagation out of the box. It maps naturally to the DAG structure of the IR — each step becomes a block, each edge becomes a link. This eliminates the need to write custom scheduling, work-stealing, or cancellation-propagation logic.
-
-#### Binding Resolution at Runtime
-
-Step input bindings are resolved using a four-tier model. The first three tiers are compiled away by the source generator and incur zero runtime overhead:
-
-| Tier | Runtime Behavior |
-|------|-----------------|
-| **Tier 1** — Convention-based | Generated code: direct property assignment emitted by the Binding Generator. No runtime lookup. |
-| **Tier 2** — `[BindFrom]` attribute | Generated code: direct property assignment emitted by the Binding Generator from the attribute's source expression. No runtime lookup. |
-| **Tier 3** — C# 14 interceptor | Generated code: the interceptor replaces the `bind:` lambda at the call site with a generated method. No `.Compile()` call at runtime. |
-| **Tier 4** — Expression tree fallback | Runtime `.Compile()`: the expression tree is compiled to a delegate on first execution and cached. This is the only tier with runtime overhead. |
-
-The runtime's `StepContext.ResolveBindings()` method checks the `StepDescriptor.BindingKind` discriminator to determine which path to take. For Tiers 1–3, it invokes the generated binding method directly. For Tier 4, it compiles the expression tree once and caches the resulting delegate.
-
-### 2.3 Sequence Diagram — 5-Step Triage Execution
-
-```
- User           ProgramExecutor     StepExecutor     IChatClient    IDocRetriever   IEvaluator
-  │                   │                  │                │               │              │
-  │  RunAsync(input)  │                  │                │               │              │
-  │──────────────────>│                  │                │               │              │
-  │                   │  topological     │                │               │              │
-  │                   │  sort steps      │                │               │              │
-  │                   │                  │                │               │              │
-  │                   │ ─── Step 1: retrieve-kb ─────────────────────────>│              │
-  │                   │                  │                │  Query(text)  │              │
-  │                   │                  │                │<──────────────│              │
-  │                   │                  │                │  5 docs       │              │
-  │                   │  ctx.Store(docs) │                │               │              │
-  │                   │                  │                │               │              │
-  │                   │ ─── Step 2: triage (Predict) ───>│               │              │
-  │                   │                  │ assemble prompt│               │              │
-  │                   │                  │───────────────>│               │              │
-  │                   │                  │  GetResponse() │               │              │
-  │                   │                  │<───────────────│               │              │
-  │                   │                  │ parse output   │               │              │
-  │                   │  ctx.Store(out)  │                │               │              │
-  │                   │                  │                │               │              │
-  │                   │ ─── Step 3: groundedness-check ──────────────────────────────────>│
-  │                   │                  │                │               │   Evaluate() │
-  │                   │                  │                │               │   score=0.96 │
-  │                   │  ctx.StoreScore()│                │               │              │
-  │                   │                  │                │               │              │
-  │                   │ ─── Step 4: if(score<0.8) ──>│   │               │              │
-  │                   │                  │ eval condition │               │              │
-  │                   │                  │ result=false   │               │              │
-  │                   │  skip repair     │                │               │              │
-  │                   │                  │                │               │              │
-  │                   │ ─── Step 5: (repair skipped) │   │               │              │
-  │                   │                  │                │               │              │
-  │  <── Result ──────│                  │                │               │              │
-  │  + RuntimeTrace   │                  │                │               │              │
-```
-
-### 2.4 ProgramExecutor Implementation
+| Field | Type | Purpose |
+|---|---|---|
+| `Instructions` | `string` | System-level instructions (from `[LmpSignature]`, overridable by optimizers) |
+| `Demos` | `List<Example<TInput, TOutput>>` | Few-shot examples — filled by optimizers, serialized by `SaveAsync` |
+| `Config` | `ChatOptions` | M.E.AI chat options: temperature, max tokens, stop sequences, etc. |
+| `Client` | `IChatClient` | The LM provider — injected via constructor, never learnable |
 
 ```csharp
-public sealed class ProgramExecutor
+public class Predictor<TInput, TOutput>
 {
-    private readonly IServiceProvider _services;
-    private readonly StepExecutorFactory _stepExecutorFactory;
-    private readonly ActivitySource _activitySource;
-    private readonly Meter _meter;
+    private readonly IChatClient _client;
 
-    public ProgramExecutor(
-        IServiceProvider services,
-        StepExecutorFactory stepExecutorFactory)
+    public string Instructions { get; set; }
+    public List<Example<TInput, TOutput>> Demos { get; set; } = [];
+    public ChatOptions Config { get; set; } = new();
+
+    public Predictor(IChatClient client)
     {
-        _services = services;
-        _stepExecutorFactory = stepExecutorFactory;
-        _activitySource = new ActivitySource("LMP.Runtime");
-        _meter = new Meter("LMP.Runtime");
+        _client = client;
+        // Source generator emits a static method that returns the default
+        // instructions from [LmpSignature] on TOutput.
+        Instructions = PromptBuilder<TInput, TOutput>.DefaultInstructions;
+    }
+}
+```
+
+### 2.2 PredictAsync Flow
+
+`PredictAsync` is the single execution path. No graph dispatch, no step executors — just prompt → call → parse.
+
+```
+ TInput
+   │
+   ▼
+ ┌──────────────────────────────────────────────┐
+ │ Source-gen PromptBuilder<TInput, TOutput>     │
+ │  • System msg: Instructions + field schemas  │
+ │  • Demo pairs: Demos → (User, Assistant)×N   │
+ │  • Current: TInput fields → User msg         │
+ │  Result: ChatMessage[]                       │
+ └──────────────────┬───────────────────────────┘
+                    ▼
+ ┌──────────────────────────────────────────────┐
+ │ IChatClient.GetResponseAsync<TOutput>()      │
+ │  M.E.AI handles JSON schema, structured      │
+ │  output negotiation with the provider        │
+ └──────────────────┬───────────────────────────┘
+                    ▼
+                 TOutput
+```
+
+```csharp
+public async Task<TOutput> PredictAsync(
+    TInput input,
+    Trace? trace = null,
+    CancellationToken cancellationToken = default)
+{
+    // 1. Build prompt — source-generated, no reflection
+    var messages = PromptBuilder<TInput, TOutput>.Build(
+        Instructions, Demos, input);
+
+    // 2. Call the model — M.E.AI handles structured output
+    var result = await _client.GetResponseAsync<TOutput>(
+        messages, Config, cancellationToken);
+
+    // 3. Record trace entry (if tracing is active)
+    trace?.Record(Name, input, result);
+
+    return result;
+}
+```
+
+**Key decisions:**
+
+- **`GetResponseAsync<TOutput>()`** — not `GetResponseAsync()` + manual JSON parse. M.E.AI negotiates JSON schema with the provider (tool-use for Anthropic, `response_format` for OpenAI). No `OutputParser`, no `ExtractJson`, no regex fence stripping.
+- **`PromptBuilder<TInput, TOutput>`** — emitted by the source generator. Field names, types, and descriptions are baked in as string constants. No runtime reflection.
+- **`ChatOptions`** — M.E.AI's native options type. No custom `PredictorConfig` wrapper.
+
+### 2.3 Prompt Format
+
+The source-generated `PromptBuilder<TInput, TOutput>` creates `ChatMessage[]` with this structure:
+
+```
+System message:
+  {Instructions}
+  Field descriptions (from [Description] / XML doc comments on TInput + TOutput)
+
+Demo pairs (from predictor.Demos):
+  User message:   serialized TInput fields
+  Assistant message: serialized TOutput as JSON
+
+Current input:
+  User message:   serialized TInput fields
+  [If retry: "Previous attempt failed: {assertion message}. Try again."]
+```
+
+**No explicit JSON schema in the prompt.** `GetResponseAsync<TOutput>()` passes the schema to the provider via its native structured-output mechanism.
+
+### 2.4 Trace Recording
+
+During execution, a `Trace` object captures every predictor invocation. Optimizers use these traces to select few-shot demos.
+
+```csharp
+public sealed class Trace
+{
+    private readonly List<TraceEntry> _entries = [];
+
+    public IReadOnlyList<TraceEntry> Entries => _entries;
+
+    public void Record<TInput, TOutput>(
+        string predictorName, TInput input, TOutput output)
+    {
+        _entries.Add(new TraceEntry(
+            PredictorName: predictorName,
+            Input: input!,
+            Output: output!));
+    }
+}
+
+public sealed record TraceEntry(
+    string PredictorName,
+    object Input,
+    object Output);
+```
+
+- A `Trace` is created per top-level `ForwardAsync` call.
+- Each `PredictAsync` call appends one `TraceEntry`.
+- The optimizer collects traces from successful training examples and fills `predictor.Demos`.
+
+### 2.5 Retry on LmpAssert Failure
+
+When `LmpAssert.That()` fails, the predictor re-invokes the LM with the assertion error message appended to the prompt. This is **backtracking** — the predictor retries itself, not an external repair step.
+
+```csharp
+public async Task<TOutput> PredictAsync(
+    TInput input,
+    Trace? trace = null,
+    int maxRetries = 3,
+    CancellationToken cancellationToken = default)
+{
+    string? lastError = null;
+
+    for (int attempt = 0; attempt <= maxRetries; attempt++)
+    {
+        var messages = PromptBuilder<TInput, TOutput>.Build(
+            Instructions, Demos, input, lastError);
+
+        var result = await _client.GetResponseAsync<TOutput>(
+            messages, Config, cancellationToken);
+
+        trace?.Record(Name, input, result);
+
+        try
+        {
+            // LmpAssert.That() calls are in the caller's code (ForwardAsync),
+            // but PredictAsync itself handles the retry loop when called via
+            // the assertion-aware overload. See §6 for assertion mechanics.
+            return result;
+        }
+        catch (LmpAssertionException ex)
+        {
+            lastError = ex.Message;
+            // Loop continues — next attempt includes error feedback
+        }
     }
 
-    public async Task<ProgramResult<TOutput>> RunAsync<TInput, TOutput>(
-        ProgramDescriptor program,
-        TInput input,
-        CompiledArtifact? artifact = null,
+    throw new LmpMaxRetriesExceededException(Name, maxRetries);
+}
+```
+
+> **How `lastError` reaches the prompt:** `PromptBuilder.Build()` accepts an optional `lastError` parameter. When non-null, it appends a feedback section to the final user message: `"Previous attempt failed: {lastError}. Try again."` This gives the LM context to self-correct.
+
+### 2.6 Predictor Name
+
+Each predictor has a `Name` property used in traces and diagnostics. The source generator sets it to the field name in the containing `LmpModule`:
+
+```csharp
+// Source-generated in GetPredictors():
+_classify.Name = "classify";
+_draft.Name = "draft";
+```
+
+For standalone predictors (not inside a module), the name defaults to `$"{typeof(TInput).Name}→{typeof(TOutput).Name}"`.
+
+---
+
+## 3. LmpModule Execution
+
+`LmpModule` is the base class for composable LM programs. It provides three capabilities: forward execution, predictor discovery, and state persistence.
+
+### 3.1 ForwardAsync() — Developer Implements
+
+The developer overrides `ForwardAsync()` with plain C# that chains predictors. There is no graph, no step registration, no edge declaration — just method calls.
+
+```csharp
+public class TicketTriageModule : LmpModule
+{
+    private readonly Predictor<TicketInput, ClassifyTicket> _classify;
+    private readonly Predictor<ClassifyTicket, DraftReply> _draft;
+
+    public TicketTriageModule(IChatClient client)
+    {
+        _classify = new Predictor<TicketInput, ClassifyTicket>(client);
+        _draft = new Predictor<ClassifyTicket, DraftReply>(client);
+    }
+
+    public async Task<DraftReply> ForwardAsync(
+        TicketInput input,
         CancellationToken cancellationToken = default)
     {
-        using var programActivity = _activitySource.StartActivity(
-            $"program.{program.Name}",
-            ActivityKind.Internal);
+        var classification = await _classify.PredictAsync(
+            input, Trace, cancellationToken: cancellationToken);
 
-        programActivity?.SetTag("program.id", program.Id);
-        programActivity?.SetTag("program.name", program.Name);
+        LmpAssert.That(classification,
+            c => c.Urgency >= 1 && c.Urgency <= 5,
+            "Urgency must be between 1 and 5");
 
-        var ctx = new ExecutionContext(program, input!, artifact);
-        var sortedSteps = TopologicalSort(program.Steps, program.Edges);
-        var traceSteps = new List<RuntimeTraceStepDescriptor>();
+        return await _draft.PredictAsync(
+            classification, Trace, cancellationToken: cancellationToken);
+    }
+}
+```
 
-        foreach (var step in sortedSteps)
+**Execution model:** `ForwardAsync()` is plain `async/await`. Parallelism is `Task.WhenAll`. Branching is `if/else`. Loops are `for/while`. The C# compiler handles control flow — LMP does not reimplement it.
+
+### 3.2 GetPredictors() — Source-Generator Emitted
+
+The source generator emits `GetPredictors()` to enumerate all `Predictor` fields. Optimizers call this to discover learnable parameters without reflection.
+
+```csharp
+// Source-generated — emitted as a partial method on TicketTriageModule
+public override IReadOnlyList<IPredictor> GetPredictors()
+{
+    _classify.Name = "classify";
+    _draft.Name = "draft";
+    return [_classify, _draft];
+}
+```
+
+**What `IPredictor` exposes to optimizers:**
+
+```csharp
+public interface IPredictor
+{
+    string Name { get; set; }
+    string Instructions { get; set; }
+    IList Demos { get; }
+    ChatOptions Config { get; set; }
+}
+```
+
+The non-generic `IPredictor` interface lets optimizers iterate over predictors without knowing `TInput`/`TOutput` at compile time. `Demos` is typed as `IList` — the concrete `List<Example<TInput, TOutput>>` satisfies this.
+
+### 3.3 SaveAsync / LoadAsync — JSON State Persistence
+
+State persistence serializes each predictor's learnable parameters (instructions + demos) to JSON. The source generator emits a `JsonSerializerContext` so serialization is AOT-safe and reflection-free.
+
+```csharp
+// Source-generated JsonSerializerContext for the module
+[JsonSerializable(typeof(ModuleState<TicketTriageModule>))]
+[JsonSerializable(typeof(PredictorState<TicketInput, ClassifyTicket>))]
+[JsonSerializable(typeof(PredictorState<ClassifyTicket, DraftReply>))]
+internal partial class TicketTriageModuleJsonContext : JsonSerializerContext;
+```
+
+**SaveAsync:**
+
+```csharp
+public async Task SaveAsync(string path, CancellationToken cancellationToken = default)
+{
+    var state = new ModuleState
+    {
+        Predictors = GetPredictors().ToDictionary(
+            p => p.Name,
+            p => new PredictorState
+            {
+                Instructions = p.Instructions,
+                Demos = p.Demos
+            })
+    };
+
+    await using var stream = File.Create(path);
+    await JsonSerializer.SerializeAsync(stream, state,
+        GeneratedJsonContext.Default.ModuleState, cancellationToken);
+}
+```
+
+**LoadAsync:**
+
+```csharp
+public async Task LoadAsync(string path, CancellationToken cancellationToken = default)
+{
+    await using var stream = File.OpenRead(path);
+    var state = await JsonSerializer.DeserializeAsync(stream,
+        GeneratedJsonContext.Default.ModuleState, cancellationToken)
+        ?? throw new InvalidOperationException("Deserialized null state.");
+
+    foreach (var predictor in GetPredictors())
+    {
+        if (state.Predictors.TryGetValue(predictor.Name, out var ps))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (!ctx.IsStepReachable(step.Id))
-            {
-                continue;
-            }
-
-            var stepContext = new StepContext(ctx, step);
-            var executor = _stepExecutorFactory.Create(step.Kind);
-
-            using var stepActivity = _activitySource.StartActivity(
-                $"step.{step.Name}",
-                ActivityKind.Internal);
-
-            var startedAt = DateTimeOffset.UtcNow;
-
-            try
-            {
-                await executor.ExecuteAsync(stepContext, cancellationToken);
-                var traceStep = stepContext.BuildTraceRecord(startedAt);
-                traceSteps.Add(traceStep);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                stepActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                throw new StepExecutionException(step.Id, step.Name, ex);
-            }
+            predictor.Instructions = ps.Instructions;
+            // Demos are set via reflection-free source-gen helper
+            predictor.LoadDemos(ps.Demos);
         }
+    }
+}
+```
 
-        var output = ctx.GetProgramOutput<TOutput>();
-        var trace = new RuntimeTraceDescriptor(
-            ProgramId: program.Id,
-            VariantId: artifact?.VariantId ?? "uncompiled",
-            Steps: traceSteps,
-            TotalLatencyMs: traceSteps.Sum(s =>
-                (s.EndedAtUtc - s.StartedAtUtc).TotalMilliseconds));
+**JSON format (human-readable, diff-friendly):**
 
-        return new ProgramResult<TOutput>(output, trace);
+```json
+{
+  "predictors": {
+    "classify": {
+      "instructions": "Classify a support ticket by category and urgency",
+      "demos": [
+        {
+          "input": { "ticketText": "I was charged twice" },
+          "output": { "category": "billing", "urgency": 4 }
+        }
+      ]
+    },
+    "draft": {
+      "instructions": "Draft a helpful reply to the customer",
+      "demos": []
+    }
+  }
+}
+```
+
+### 3.4 Trace Property
+
+`LmpModule` exposes a `Trace` property that `ForwardAsync` passes to each `PredictAsync` call. The optimizer creates a fresh `Trace` before each training run and reads it after.
+
+```csharp
+public abstract class LmpModule
+{
+    public Trace? Trace { get; set; }
+
+    public abstract IReadOnlyList<IPredictor> GetPredictors();
+}
+```
+
+---
+
+## 4. Reasoning Strategies
+
+Reasoning strategies are thin wrappers around `Predictor<TInput, TOutput>`. Each lives in `LMP.Modules` and is under 100 lines of code. They do not introduce new execution primitives — they compose the existing ones.
+
+### 4.1 ChainOfThought\<TInput, TOutput\>
+
+Asks the LM to produce step-by-step reasoning before the final answer.
+
+**Mechanism:** The source generator creates an **extended output type** at build time that prepends a `Reasoning` field to `TOutput`:
+
+```csharp
+// Source-generated at build time
+internal record ChainOfThoughtOutput<TOutput>(
+    [property: Description("Step-by-step reasoning")]
+    string Reasoning,
+    TOutput Result);
+```
+
+At runtime, `ChainOfThought` wraps an inner predictor that targets the extended type:
+
+```csharp
+public class ChainOfThought<TInput, TOutput>
+{
+    private readonly Predictor<TInput, ChainOfThoughtOutput<TOutput>> _inner;
+
+    public ChainOfThought(IChatClient client)
+    {
+        _inner = new Predictor<TInput, ChainOfThoughtOutput<TOutput>>(client);
     }
 
-    private static IReadOnlyList<StepDescriptor> TopologicalSort(
-        IReadOnlyList<StepDescriptor> steps,
-        IReadOnlyList<EdgeDescriptor> edges)
+    public async Task<TOutput> PredictAsync(
+        TInput input,
+        Trace? trace = null,
+        CancellationToken cancellationToken = default)
     {
-        var adjacency = edges
-            .GroupBy(e => e.FromStepId)
-            .ToDictionary(g => g.Key, g => g.Select(e => e.ToStepId).ToList());
+        var extended = await _inner.PredictAsync(
+            input, trace, cancellationToken: cancellationToken);
 
-        var inDegree = steps.ToDictionary(s => s.Id, _ => 0);
-        foreach (var edge in edges)
-            inDegree[edge.ToStepId]++;
+        // Reasoning is captured in the trace via the inner predictor.
+        // Only the final TOutput is returned to the caller.
+        return extended.Result;
+    }
 
-        var queue = new Queue<string>(
-            inDegree.Where(kv => kv.Value == 0).Select(kv => kv.Key));
-        var stepMap = steps.ToDictionary(s => s.Id);
-        var result = new List<StepDescriptor>();
+    // Delegate learnable state to inner predictor
+    public string Instructions
+    {
+        get => _inner.Instructions;
+        set => _inner.Instructions = value;
+    }
 
-        while (queue.Count > 0)
+    public List<Example<TInput, ChainOfThoughtOutput<TOutput>>> Demos
+    {
+        get => _inner.Demos;
+        set => _inner.Demos = value;
+    }
+}
+```
+
+**Key detail:** The caller gets `TOutput`. The reasoning is captured in the trace (via the inner predictor's `Record` call) and available to optimizers, but it does not leak into the caller's type system.
+
+### 4.2 BestOfN\<TInput, TOutput\>
+
+Runs N parallel predictions and returns the one that scores highest on a reward function.
+
+```csharp
+public class BestOfN<TInput, TOutput>
+{
+    private readonly Predictor<TInput, TOutput> _predictor;
+    private readonly int _n;
+    private readonly Func<TInput, TOutput, float> _reward;
+
+    public BestOfN(
+        IChatClient client,
+        int n,
+        Func<TInput, TOutput, float> reward)
+    {
+        _predictor = new Predictor<TInput, TOutput>(client);
+        _n = n;
+        _reward = reward;
+    }
+
+    public async Task<TOutput> PredictAsync(
+        TInput input,
+        Trace? trace = null,
+        CancellationToken cancellationToken = default)
+    {
+        // True parallelism — no GIL. Each prediction runs concurrently.
+        var tasks = Enumerable.Range(0, _n)
+            .Select(_ => _predictor.PredictAsync(
+                input, trace, cancellationToken: cancellationToken));
+
+        var candidates = await Task.WhenAll(tasks);
+
+        // Score each candidate and return the best
+        return candidates
+            .OrderByDescending(c => _reward(input, c))
+            .First();
+    }
+}
+```
+
+**Why `Task.WhenAll`:** .NET has true OS-level parallelism. All N predictions run concurrently against the LM API. This is a structural advantage over Python's GIL-constrained `asyncio.gather`.
+
+### 4.3 Refine\<TInput, TOutput\>
+
+Iterative improvement loop: predict → LM-generated critique → predict again with critique context.
+
+```csharp
+public class Refine<TInput, TOutput>
+{
+    private readonly Predictor<TInput, TOutput> _predictor;
+    private readonly Predictor<RefineCritiqueInput<TOutput>, TOutput> _refiner;
+    private readonly int _maxIterations;
+
+    public Refine(IChatClient client, int maxIterations = 2)
+    {
+        _predictor = new Predictor<TInput, TOutput>(client);
+        _refiner = new Predictor<RefineCritiqueInput<TOutput>, TOutput>(client)
         {
-            var current = queue.Dequeue();
-            result.Add(stepMap[current]);
+            Instructions = "Given the original input, a previous attempt, " +
+                           "and a critique, produce an improved output."
+        };
+        _maxIterations = maxIterations;
+    }
 
-            if (adjacency.TryGetValue(current, out var neighbors))
-            {
-                foreach (var neighbor in neighbors)
-                {
-                    if (--inDegree[neighbor] == 0)
-                        queue.Enqueue(neighbor);
-                }
-            }
+    public async Task<TOutput> PredictAsync(
+        TInput input,
+        Trace? trace = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Initial prediction
+        var current = await _predictor.PredictAsync(
+            input, trace, cancellationToken: cancellationToken);
+
+        for (int i = 0; i < _maxIterations; i++)
+        {
+            var critiqueInput = new RefineCritiqueInput<TOutput>(
+                OriginalInput: input!,
+                PreviousOutput: current);
+
+            current = await _refiner.PredictAsync(
+                critiqueInput, trace, cancellationToken: cancellationToken);
         }
 
-        if (result.Count != steps.Count)
-            throw new InvalidOperationException("Program graph contains a cycle.");
+        return current;
+    }
+}
+
+public record RefineCritiqueInput<TOutput>(
+    [Description("The original input")] object OriginalInput,
+    [Description("The previous attempt to improve upon")] TOutput PreviousOutput);
+```
+
+**Design:** Each refinement iteration is a separate `PredictAsync` call recorded in the trace. The optimizer can see the full refinement chain and learn which critique patterns improve output quality.
+
+---
+
+## 5. ReAct Agent Loop
+
+`ReActAgent<TInput, TOutput>` implements the Think → Select Tool → Call Tool → Observe → Repeat loop. It uses M.E.AI's `AIFunction` and `FunctionInvokingChatClient` for tool execution — no custom tool abstraction.
+
+### 5.1 Architecture
+
+```
+ TInput
+   │
+   ▼
+ ┌──────────────────────────────────────────────┐
+ │  Think:  LM decides what to do next          │
+ │  Act:    LM selects a tool + arguments       │ ◄── FunctionInvokingChatClient
+ │  Observe: Tool result appended to history    │     handles tool dispatch
+ │  Repeat until LM produces final answer       │
+ └──────────────────┬───────────────────────────┘
+                    ▼
+                 TOutput
+```
+
+### 5.2 Implementation
+
+```csharp
+public class ReActAgent<TInput, TOutput>
+{
+    private readonly IChatClient _client;
+    private readonly IList<AIFunction> _tools;
+    private readonly int _maxSteps;
+    private readonly ChatOptions _config;
+    private readonly string _instructions;
+
+    public ReActAgent(
+        IChatClient client,
+        IList<AIFunction> tools,
+        int maxSteps = 10)
+    {
+        // Wrap with FunctionInvokingChatClient for automatic tool dispatch
+        _client = new ChatClientBuilder(client)
+            .UseFunctionInvocation()
+            .Build();
+        _tools = tools;
+        _maxSteps = maxSteps;
+        _instructions = PromptBuilder<TInput, TOutput>.DefaultInstructions;
+        _config = new ChatOptions();
+    }
+
+    public string Instructions
+    {
+        get => _instructions;
+        init => _instructions = value;
+    }
+
+    public async Task<TOutput> PredictAsync(
+        TInput input,
+        Trace? trace = null,
+        CancellationToken cancellationToken = default)
+    {
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, _instructions),
+            new(ChatRole.User,
+                PromptBuilder<TInput, TOutput>.FormatInput(input))
+        };
+
+        var options = new ChatOptions
+        {
+            Tools = [.. _tools],
+            Temperature = _config.Temperature,
+            MaxOutputTokens = _config.MaxOutputTokens
+        };
+
+        // The agent loop — FunctionInvokingChatClient handles
+        // Think → Act → Observe internally. Each call to
+        // GetResponseAsync may trigger multiple tool invocations
+        // before the LM produces a final text response.
+        var response = await _client.GetResponseAsync<TOutput>(
+            messages, options, cancellationToken);
+
+        trace?.Record("react-agent", input, response);
+
+        return response;
+    }
+}
+```
+
+### 5.3 Tool Registration
+
+Tools are M.E.AI `AIFunction` instances — created from static or instance methods via `AIFunctionFactory`:
+
+```csharp
+var tools = new AIFunction[]
+{
+    AIFunctionFactory.Create(SearchKnowledgeBase),
+    AIFunctionFactory.Create(GetAccountInfo),
+    AIFunctionFactory.Create(CreateJiraTicket)
+};
+
+var agent = new ReActAgent<TicketInput, TriageResult>(client, tools);
+```
+
+```csharp
+[Description("Search the knowledge base for relevant articles")]
+static async Task<string[]> SearchKnowledgeBase(
+    [Description("Search query")] string query,
+    [Description("Max results")] int topK = 5)
+{
+    // Implementation — hits your vector store, Elasticsearch, etc.
+    return await knowledgeBase.SearchAsync(query, topK);
+}
+```
+
+**No custom tool abstraction.** `AIFunction` already provides: name, description, parameter schema, invocation. `FunctionInvokingChatClient` already handles: tool selection parsing, dispatch, result formatting, multi-turn loops. LMP adds zero code here.
+
+### 5.4 Trajectory Tracking
+
+The full agent trajectory (think/act/observe steps) is captured as the `ChatMessage[]` history within the `FunctionInvokingChatClient`. For optimizer consumption, the trace records the final `(input, output)` pair. If fine-grained trajectory inspection is needed, the `IChatClient` middleware pipeline (e.g., `UseLogging()`) captures individual turns.
+
+---
+
+## 6. Assertions
+
+Assertions are runtime checks on LM outputs. They come in two flavors: hard (`LmpAssert`) and soft (`LmpSuggest`).
+
+### 6.1 LmpAssert — Fail → Retry with Feedback
+
+```csharp
+public static class LmpAssert
+{
+    public static void That<T>(
+        T result,
+        Func<T, bool> predicate,
+        string message)
+    {
+        if (!predicate(result))
+        {
+            throw new LmpAssertionException(message, result);
+        }
+    }
+}
+
+public class LmpAssertionException : Exception
+{
+    public object? FailedResult { get; }
+
+    public LmpAssertionException(string message, object? failedResult)
+        : base(message)
+    {
+        FailedResult = failedResult;
+    }
+}
+```
+
+**Retry mechanism:** The caller wraps the predict + assert in a retry loop:
+
+```csharp
+public async Task<DraftReply> ForwardAsync(TicketInput input,
+    CancellationToken cancellationToken = default)
+{
+    var classification = await _classify.PredictAsync(
+        input, Trace, cancellationToken: cancellationToken);
+
+    // If this fails, the exception propagates. The developer can
+    // wrap in a retry loop, or use the assertion-aware PredictAsync overload.
+    LmpAssert.That(classification,
+        c => c.Urgency >= 1 && c.Urgency <= 5,
+        "Urgency must be between 1 and 5");
+
+    return await _draft.PredictAsync(
+        classification, Trace, cancellationToken: cancellationToken);
+}
+```
+
+For automatic retry, the developer uses the retry-aware pattern:
+
+```csharp
+public async Task<DraftReply> ForwardAsync(TicketInput input,
+    CancellationToken cancellationToken = default)
+{
+    ClassifyTicket classification = default!;
+    string? lastError = null;
+
+    for (int attempt = 0; attempt < 3; attempt++)
+    {
+        classification = await _classify.PredictAsync(
+            input, Trace, lastError: lastError,
+            cancellationToken: cancellationToken);
+
+        try
+        {
+            LmpAssert.That(classification,
+                c => c.Urgency >= 1 && c.Urgency <= 5,
+                "Urgency must be between 1 and 5");
+            break; // Assertion passed
+        }
+        catch (LmpAssertionException ex)
+        {
+            lastError = ex.Message;
+        }
+    }
+
+    return await _draft.PredictAsync(
+        classification, Trace, cancellationToken: cancellationToken);
+}
+```
+
+**Why explicit loops, not magic?** The retry loop is visible C# code. The developer controls retry count, which predictors are retried, and whether to backtrack to an earlier predictor. No hidden `with_assertions()` decorator — the control flow is in `ForwardAsync` where the developer can see and debug it.
+
+### 6.2 LmpSuggest — Fail → Log Warning, Continue
+
+```csharp
+public static class LmpSuggest
+{
+    private static readonly ILogger Logger =
+        LoggerFactory.Create(b => b.AddConsole())
+            .CreateLogger(nameof(LmpSuggest));
+
+    public static void That<T>(
+        T result,
+        Func<T, bool> predicate,
+        string message)
+    {
+        if (!predicate(result))
+        {
+            Logger.LogWarning(
+                "LmpSuggest failed: {Message}. Result: {Result}",
+                message, result);
+        }
+    }
+}
+```
+
+**Usage:**
+
+```csharp
+var classification = await _classify.PredictAsync(input, Trace);
+
+// Soft check — logs warning if category is "unknown", but continues
+LmpSuggest.That(classification,
+    c => c.Category != "unknown",
+    "Category should not be 'unknown'");
+
+return await _draft.PredictAsync(classification, Trace);
+```
+
+**Design:** `LmpSuggest` never throws. It logs a structured warning via `ILogger`. During optimization, the optimizer can read these warnings from the logging pipeline and use them as soft signals for candidate ranking.
+
+### 6.3 Assertion Summary
+
+| Type | On Failure | Use Case |
+|---|---|---|
+| `LmpAssert.That()` | Throws `LmpAssertionException` → retry with feedback | Hard constraints: valid ranges, required formats |
+| `LmpSuggest.That()` | Logs warning via `ILogger`, continues | Soft preferences: style guidelines, optional fields |
+
+---
+
+## 7. RAG Composition
+
+RAG (Retrieval-Augmented Generation) is not a special primitive. It is plain composition in `ForwardAsync`: retrieve passages, then predict with those passages as context.
+
+### 7.1 IRetriever Interface
+
+```csharp
+public interface IRetriever
+{
+    Task<string[]> RetrieveAsync(
+        string query,
+        int k = 5,
+        CancellationToken cancellationToken = default);
+}
+```
+
+Users bring their own implementation via DI — vector store, Elasticsearch, Azure AI Search, in-memory BM25, etc.
+
+### 7.2 RAG Module Example
+
+```csharp
+public record QuestionInput(
+    [Description("The user's question")] string Question);
+
+[LmpSignature("Answer the question using the provided context passages")]
+public partial record AnswerWithContext
+{
+    [Description("The answer to the user's question")]
+    public required string Answer { get; init; }
+
+    [Description("Confidence from 0.0 to 1.0")]
+    public required float Confidence { get; init; }
+}
+
+public record AnswerInput(
+    [Description("The user's question")] string Question,
+    [Description("Retrieved context passages")] string[] Passages);
+
+public class RagQaModule : LmpModule
+{
+    private readonly IRetriever _retriever;
+    private readonly Predictor<AnswerInput, AnswerWithContext> _answer;
+
+    public RagQaModule(IChatClient client, IRetriever retriever)
+    {
+        _retriever = retriever;
+        _answer = new Predictor<AnswerInput, AnswerWithContext>(client);
+    }
+
+    public async Task<AnswerWithContext> ForwardAsync(
+        QuestionInput input,
+        CancellationToken cancellationToken = default)
+    {
+        // 1. Retrieve
+        var passages = await _retriever.RetrieveAsync(
+            input.Question, k: 5, cancellationToken);
+
+        // 2. Predict with context
+        var answerInput = new AnswerInput(input.Question, passages);
+        var result = await _answer.PredictAsync(
+            answerInput, Trace, cancellationToken: cancellationToken);
+
+        LmpAssert.That(result,
+            r => r.Confidence >= 0f && r.Confidence <= 1f,
+            "Confidence must be between 0.0 and 1.0");
 
         return result;
     }
 }
 ```
 
----
+**Design:** `IRetriever.RetrieveAsync` returns `string[]` — the simplest useful abstraction. If you need metadata (scores, document IDs), define a richer return type in your own implementation. LMP does not dictate retriever internals.
 
-## 3. Step Kind Implementations
-
-### 3.1 PredictStep
-
-The Predict step is the core LM invocation step. It assembles a prompt, calls a language model, and parses the response into a typed C# object.
-
-**Execution flow:**
-
-1. Resolve `IChatClient` from DI using the step's model binding as a keyed service key.
-2. Assemble the prompt from the signature's instructions, input field values, and any few-shot examples from the compiled artifact.
-3. Call `IChatClient.GetResponseAsync()` with the assembled `ChatMessage` list.
-4. Parse the response text into the output type using `System.Text.Json` or `TypeConverter`.
-5. Validate the parsed output using `DataAnnotations`.
-6. Store the output in the `ExecutionContext`.
-7. Emit an `Activity` with rich telemetry tags.
-
-```csharp
-public sealed class PredictStepExecutor : IStepExecutor
-{
-    private readonly IServiceProvider _services;
-    private readonly PromptAssembler _promptAssembler;
-    private readonly OutputParser _outputParser;
-    private readonly ActivitySource _activitySource;
-    private readonly Histogram<double> _latencyHistogram;
-    private readonly Counter<long> _tokenCounter;
-
-    public PredictStepExecutor(
-        IServiceProvider services,
-        PromptAssembler promptAssembler,
-        OutputParser outputParser,
-        Meter meter)
-    {
-        _services = services;
-        _promptAssembler = promptAssembler;
-        _outputParser = outputParser;
-        _activitySource = new ActivitySource("LMP.Runtime.Predict");
-        _latencyHistogram = meter.CreateHistogram<double>(
-            "lm.predict.latency_ms", "ms", "LM call latency");
-        _tokenCounter = meter.CreateCounter<long>(
-            "lm.predict.tokens", "tokens", "Tokens consumed");
-    }
-
-    public async Task ExecuteAsync(
-        StepContext ctx,
-        CancellationToken cancellationToken)
-    {
-        var step = ctx.Step;
-        var signatureId = step.SignatureId
-            ?? throw new InvalidOperationException(
-                $"Predict step '{step.Name}' has no signature binding.");
-
-        // 1. Resolve IChatClient via Keyed DI
-        var modelKey = ctx.GetModelBinding();
-        var chatClient = _services.GetRequiredKeyedService<IChatClient>(modelKey);
-
-        // 2. Assemble prompt
-        var messages = _promptAssembler.Assemble(ctx);
-
-        // 3. Call the model
-        using var activity = _activitySource.StartActivity(
-            $"predict.{step.Name}");
-        activity?.SetTag("lm.model", modelKey);
-
-        var sw = Stopwatch.StartNew();
-        ChatResponse response;
-
-        try
-        {
-            response = await chatClient.GetResponseAsync(
-                messages, cancellationToken: cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            throw new PredictException(step.Name, modelKey, ex);
-        }
-
-        sw.Stop();
-
-        // 4. Parse response into typed output
-        var outputType = ctx.GetOutputClrType();
-        var parsed = _outputParser.Parse(
-            response.Text ?? "", outputType, step.Name);
-
-        // 5. Store output
-        ctx.SetOutput(parsed);
-
-        // 6. Emit telemetry
-        var inputTokens = response.Usage?.InputTokenCount ?? 0;
-        var outputTokens = response.Usage?.OutputTokenCount ?? 0;
-        var costUsd = EstimateCost(modelKey, inputTokens, outputTokens);
-
-        activity?.SetTag("lm.tokens.input", inputTokens);
-        activity?.SetTag("lm.tokens.output", outputTokens);
-        activity?.SetTag("lm.cost.usd", costUsd);
-        activity?.SetTag("lm.latency.ms", sw.ElapsedMilliseconds);
-
-        _latencyHistogram.Record(sw.ElapsedMilliseconds,
-            new KeyValuePair<string, object?>("step", step.Name));
-        _tokenCounter.Add(inputTokens + outputTokens,
-            new KeyValuePair<string, object?>("direction", "total"));
-    }
-
-    private static double EstimateCost(
-        string model, int inputTokens, int outputTokens)
-    {
-        // Placeholder — replace with a model-specific pricing table
-        var inputCostPer1K = 0.005;
-        var outputCostPer1K = 0.015;
-        return (inputTokens / 1000.0 * inputCostPer1K) +
-               (outputTokens / 1000.0 * outputCostPer1K);
-    }
-}
-```
-
-**Error handling:** If `GetResponseAsync` throws a transient error (e.g., HTTP 429), the `IChatClient` middleware pipeline handles it. M.E.AI provides **built-in middleware** — `UseOpenTelemetry()`, `UseDistributedCache()`, `UseLogging()` — that the host registers on the `ChatClientBuilder`. LMP adds only two custom middleware: **`UseLmpStepContext()`** (attaches the current `StepContext` to the `ChatOptions` so downstream middleware can read step metadata) and **`UseLmpCostTracking()`** (accumulates per-step token/cost metrics for the compile report). Retries and circuit breakers are handled by a `ResiliencePipeline` (see §8.4). If parsing fails, a `PredictParsingException` is thrown with the raw LM text attached for debugging.
-
-### 3.2 RetrieveStep
-
-```csharp
-public sealed class RetrieveStepExecutor : IStepExecutor
-{
-    private readonly IServiceProvider _services;
-    private readonly ActivitySource _activitySource;
-
-    public RetrieveStepExecutor(IServiceProvider services)
-    {
-        _services = services;
-        _activitySource = new ActivitySource("LMP.Runtime.Retrieve");
-    }
-
-    public async Task ExecuteAsync(
-        StepContext ctx, CancellationToken cancellationToken)
-    {
-        var query = ctx.ResolveInputBinding<string>("query");
-        var topK = ctx.GetTunableInt("topK", defaultValue: 5);
-
-        var retriever = _services.GetRequiredService<IDocumentRetriever>();
-
-        using var activity = _activitySource.StartActivity(
-            $"retrieve.{ctx.Step.Name}");
-        var sw = Stopwatch.StartNew();
-
-        var documents = await retriever.RetrieveAsync(
-            query, topK, cancellationToken);
-
-        sw.Stop();
-
-        ctx.SetOutput(documents);
-
-        activity?.SetTag("documents.count", documents.Count);
-        activity?.SetTag("latency.ms", sw.ElapsedMilliseconds);
-    }
-}
-```
-
-### 3.3 EvaluateStep
-
-```csharp
-public sealed class EvaluateStepExecutor : IStepExecutor
-{
-    private readonly IServiceProvider _services;
-    private readonly ActivitySource _activitySource;
-
-    public EvaluateStepExecutor(IServiceProvider services)
-    {
-        _services = services;
-        _activitySource = new ActivitySource("LMP.Runtime.Evaluate");
-    }
-
-    public async Task ExecuteAsync(
-        StepContext ctx, CancellationToken cancellationToken)
-    {
-        var evaluatorId = ctx.Step.EvaluatorId
-            ?? throw new InvalidOperationException(
-                $"Evaluate step '{ctx.Step.Name}' has no evaluator binding.");
-
-        var evaluator = _services.GetRequiredKeyedService<IEvaluator>(evaluatorId);
-        var targetOutput = ctx.ResolveInputBinding<object>("target");
-
-        using var activity = _activitySource.StartActivity(
-            $"evaluate.{ctx.Step.Name}");
-
-        var result = await evaluator.EvaluateAsync(
-            targetOutput, ctx, cancellationToken);
-
-        ctx.SetScore(ctx.Step.Id, result.Score);
-        ctx.SetPassFail(ctx.Step.Id, result.Passed);
-
-        activity?.SetTag("evaluator.name", evaluatorId);
-        activity?.SetTag("score", result.Score);
-    }
-}
-```
-
-### 3.4 IfStep
-
-The If step evaluates a condition against the current execution context and controls graph reachability.
-
-```csharp
-public sealed class IfStepExecutor : IStepExecutor
-{
-    private readonly ActivitySource _activitySource;
-
-    public IfStepExecutor()
-    {
-        _activitySource = new ActivitySource("LMP.Runtime.If");
-    }
-
-    public Task ExecuteAsync(
-        StepContext ctx, CancellationToken cancellationToken)
-    {
-        var conditionDescriptor = ctx.Step.ConditionExpressionDescriptor
-            ?? throw new InvalidOperationException(
-                $"If step '{ctx.Step.Name}' has no condition expression.");
-
-        // The condition is compiled from the authored binding at
-        // build time into a Func<StepContext, bool> stored in the descriptor.
-        // Convention (Tier 1), attribute (Tier 2), and interceptor (Tier 3) bindings
-        // are generated code with zero overhead. Expression-tree bindings (Tier 4)
-        // use .Compile() as a runtime-only fallback.
-        var conditionResult = conditionDescriptor.Evaluate(ctx);
-
-        using var activity = _activitySource.StartActivity(
-            $"if.{ctx.Step.Name}");
-        activity?.SetTag("condition.result", conditionResult);
-
-        // Mark downstream edges as reachable or unreachable
-        ctx.SetBranchResult(ctx.Step.Id, conditionResult);
-
-        return Task.CompletedTask;
-    }
-}
-```
-
-> **Why This Matters:** The If step does not execute child steps directly. It sets a flag in the `ExecutionContext` that the `ProgramExecutor` checks via `IsStepReachable()` before executing subsequent steps. This keeps graph traversal in one place.
-
-### 3.5 RepairStep
-
-The Repair step re-invokes a prediction with failure feedback injected into the prompt. It is used when an evaluation score falls below a threshold.
-
-```csharp
-public sealed class RepairStepExecutor : IStepExecutor
-{
-    private readonly PredictStepExecutor _predictExecutor;
-    private readonly PromptAssembler _promptAssembler;
-    private readonly ActivitySource _activitySource;
-
-    private const int MaxRepairAttempts = 3;
-
-    public RepairStepExecutor(
-        PredictStepExecutor predictExecutor,
-        PromptAssembler promptAssembler)
-    {
-        _predictExecutor = predictExecutor;
-        _promptAssembler = promptAssembler;
-        _activitySource = new ActivitySource("LMP.Runtime.Repair");
-    }
-
-    public async Task ExecuteAsync(
-        StepContext ctx, CancellationToken cancellationToken)
-    {
-        using var activity = _activitySource.StartActivity(
-            $"repair.{ctx.Step.Name}");
-
-        // Gather feedback from the failed evaluations
-        var feedback = ctx.BuildRepairFeedback();
-
-        // Inject feedback into the context so PromptAssembler includes it
-        ctx.SetRepairFeedback(feedback);
-
-        // Re-execute as a predict step (reuses same signature)
-        await _predictExecutor.ExecuteAsync(ctx, cancellationToken);
-
-        activity?.SetTag("repair.feedback_length", feedback.Length);
-        activity?.SetTag("repair.attempt", ctx.GetRepairAttempt());
-    }
-}
-```
-
-The repair step's output **replaces** the original predict output in the context only if the repair succeeds. If repair fails (evaluator still fails after `MaxRepairAttempts`), the original output is preserved and the failure is recorded in the trace — it is never silently swallowed.
-
----
-
-## 4. StepContext / ExecutionContext
-
-### 4.1 Interface
-
-```csharp
-public interface IExecutionContext
-{
-    /// Get the output of a specific step by its ID.
-    T OutputOf<T>(string stepId);
-
-    /// Get the evaluator score for a specific step.
-    double ScoreOf(string evaluatorStepId);
-
-    /// Get the pass/fail result for a specific evaluator step.
-    bool PassedOf(string evaluatorStepId);
-
-    /// Get the most recently stored output of type T.
-    T Latest<T>();
-
-    /// Check if a step is reachable given If-step branching results.
-    bool IsStepReachable(string stepId);
-
-    /// The original program input.
-    object ProgramInput { get; }
-
-    /// The compiled artifact (null if running uncompiled).
-    CompiledArtifact? Artifact { get; }
-}
-```
-
-### 4.2 Implementation
-
-```csharp
-public sealed class ExecutionContext : IExecutionContext
-{
-    private readonly ConcurrentDictionary<string, object> _outputs = new();
-    private readonly ConcurrentDictionary<string, double> _scores = new();
-    private readonly ConcurrentDictionary<string, bool> _passFail = new();
-    private readonly ConcurrentDictionary<string, bool> _branchResults = new();
-    private readonly ConcurrentBag<(Type Type, object Value)> _outputHistory = new();
-    private readonly ProgramDescriptor _program;
-
-    public object ProgramInput { get; }
-    public CompiledArtifact? Artifact { get; }
-
-    public ExecutionContext(
-        ProgramDescriptor program,
-        object programInput,
-        CompiledArtifact? artifact)
-    {
-        _program = program;
-        ProgramInput = programInput;
-        Artifact = artifact;
-    }
-
-    public T OutputOf<T>(string stepId)
-    {
-        if (!_outputs.TryGetValue(stepId, out var value))
-            throw new KeyNotFoundException(
-                $"No output recorded for step '{stepId}'.");
-        return (T)value;
-    }
-
-    public double ScoreOf(string evaluatorStepId)
-    {
-        if (!_scores.TryGetValue(evaluatorStepId, out var score))
-            throw new KeyNotFoundException(
-                $"No score recorded for evaluator step '{evaluatorStepId}'.");
-        return score;
-    }
-
-    public bool PassedOf(string evaluatorStepId)
-    {
-        return _passFail.TryGetValue(evaluatorStepId, out var passed) && passed;
-    }
-
-    public T Latest<T>()
-    {
-        // ConcurrentBag enumeration is safe; iterate reverse for latest
-        foreach (var (type, value) in _outputHistory.Reverse())
-        {
-            if (type == typeof(T))
-                return (T)value;
-        }
-        throw new InvalidOperationException(
-            $"No output of type '{typeof(T).Name}' found in context.");
-    }
-
-    public void StoreOutput(string stepId, object output)
-    {
-        _outputs[stepId] = output;
-        _outputHistory.Add((output.GetType(), output));
-    }
-
-    public void StoreScore(string stepId, double score)
-    {
-        _scores[stepId] = score;
-    }
-
-    public void StorePassFail(string stepId, bool passed)
-    {
-        _passFail[stepId] = passed;
-    }
-
-    public void SetBranchResult(string ifStepId, bool conditionResult)
-    {
-        _branchResults[ifStepId] = conditionResult;
-    }
-
-    public bool IsStepReachable(string stepId)
-    {
-        lock (_lock)
-        {
-            // Walk edges: if any incoming edge is ConditionalTrue/ConditionalFalse,
-            // check whether the source If step's result matches.
-            foreach (var edge in _program.Edges.Where(e => e.ToStepId == stepId))
-            {
-                if (edge.EdgeKind == EdgeKind.ConditionalTrue &&
-                    _branchResults.TryGetValue(edge.FromStepId, out var result) &&
-                    !result)
-                    return false;
-
-                if (edge.EdgeKind == EdgeKind.ConditionalFalse &&
-                    _branchResults.TryGetValue(edge.FromStepId, out var result2) &&
-                    result2)
-                    return false;
-            }
-            return true;
-        }
-    }
-
-    public T GetProgramOutput<T>()
-    {
-        // The last step's output is the program output
-        return Latest<T>();
-    }
-}
-```
-
-> **Why This Matters:** Thread safety via `System.Threading.Lock` (.NET 9+) is required because the compiler may run multiple program evaluations concurrently, sharing the same DI container. `System.Threading.Lock` provides better performance than `lock (object)` — it uses a thinner representation and avoids the monitor's inflated object header overhead. Each `ExecutionContext` is per-invocation, but the lock protects against any future parallel step execution within a single invocation.
-
----
-
-## 5. Observability Integration
-
-### 5.1 ActivitySource (Distributed Tracing)
-
-Every program execution creates one parent `Activity` for the program and one child `Activity` per step. This produces a trace tree that tools like Jaeger, Zipkin, or Azure Monitor can visualize.
-
-```csharp
-// Created once per ProgramExecutor instance
-private static readonly ActivitySource ProgramActivitySource =
-    new("LMP.Runtime.Program", "1.0.0");
-
-// Per-step sources for filtering
-private static readonly ActivitySource PredictActivitySource =
-    new("LMP.Runtime.Predict", "1.0.0");
-private static readonly ActivitySource RetrieveActivitySource =
-    new("LMP.Runtime.Retrieve", "1.0.0");
-private static readonly ActivitySource EvaluateActivitySource =
-    new("LMP.Runtime.Evaluate", "1.0.0");
-```
-
-### 5.2 Meter (Metrics)
-
-```csharp
-private static readonly Meter RuntimeMeter = new("LMP.Runtime", "1.0.0");
-
-// Histograms
-private static readonly Histogram<double> PredictLatency =
-    RuntimeMeter.CreateHistogram<double>(
-        "lm.predict.latency_ms", "ms", "Predict step latency");
-private static readonly Histogram<double> ProgramLatency =
-    RuntimeMeter.CreateHistogram<double>(
-        "lm.program.latency_ms", "ms", "Total program latency");
-
-// Counters
-private static readonly Counter<long> TokensConsumed =
-    RuntimeMeter.CreateCounter<long>(
-        "lm.tokens.total", "tokens", "Total tokens consumed");
-private static readonly Counter<long> ProgramExecutions =
-    RuntimeMeter.CreateCounter<long>(
-        "lm.program.executions", "{executions}", "Program execution count");
-```
-
-### 5.3 InMemoryExporter for Compiler Feedback
-
-The compiler needs to read runtime traces programmatically (not just export them to Jaeger). The `InMemoryExporter` from the OpenTelemetry SDK stores completed `Activity` objects in a `ConcurrentBag<Activity>` that the compiler reads after each trial.
-
-```csharp
-// In compiler setup:
-var exportedActivities = new List<Activity>();
-
-services.AddOpenTelemetry()
-    .WithTracing(builder => builder
-        .AddSource("LMP.Runtime.*")
-        .AddInMemoryExporter(exportedActivities));
-
-// After a trial run:
-var predictActivities = exportedActivities
-    .Where(a => a.Source.Name == "LMP.Runtime.Predict");
-
-foreach (var activity in predictActivities)
-{
-    var tokens = activity.GetTagItem("lm.tokens.input");
-    var cost = activity.GetTagItem("lm.cost.usd");
-    var latency = activity.GetTagItem("lm.latency.ms");
-    // Feed into constraint evaluation...
-}
-```
-
-> **Why This Matters:** This is the closed feedback loop that makes compilation possible. The compiler runs the program, reads the traces via InMemoryExporter, evaluates constraints (cost ≤ $0.03, latency ≤ 2500ms), and decides whether a candidate variant is valid.
-
----
-
-## 6. Prompt Assembly
-
-### 6.1 How Prompts Are Built
-
-The `PromptAssembler` turns a signature descriptor + step context into a `List<ChatMessage>` that `IChatClient` consumes.
-
-```
-┌─────────────────────────────────────────────────┐
-│ System Message                                  │
-│                                                 │
-│  {signature.Instructions}                       │
-│                                                 │
-│  Respond with valid JSON matching this schema:  │
-│  {output JSON schema}                           │
-└─────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────┐
-│ Few-Shot Example 1 (User)                       │
-│  ticket_text: "..."                             │
-│  account_tier: "Enterprise"                     │
-├─────────────────────────────────────────────────┤
-│ Few-Shot Example 1 (Assistant)                  │
-│  { "severity": "high", "route_to": "billing" } │
-├─────────────────────────────────────────────────┤
-│ ...repeat for N few-shot examples...            │
-└─────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────┐
-│ Current Input (User)                            │
-│  ticket_text: "{actual input}"                  │
-│  account_tier: "{actual tier}"                  │
-│                                                 │
-│  [If repair: Previous attempt failed.           │
-│   Feedback: {evaluator feedback}]               │
-└─────────────────────────────────────────────────┘
-```
-
-### 6.2 Implementation
-
-```csharp
-public sealed class PromptAssembler
-{
-    public IList<ChatMessage> Assemble(StepContext ctx)
-    {
-        var signature = ctx.GetSignatureDescriptor();
-        var messages = new List<ChatMessage>();
-
-        // 1. System message: instructions + output schema
-        var outputSchema = BuildJsonSchema(signature.Outputs);
-        var systemText = $"""
-            {signature.Instructions}
-
-            You MUST respond with valid JSON matching this schema:
-            {outputSchema}
-
-            Do not include any text outside the JSON object.
-            """;
-        messages.Add(new ChatMessage(ChatRole.System, systemText));
-
-        // 2. Few-shot examples (from compiled artifact or defaults)
-        var examples = ctx.GetFewShotExamples();
-        foreach (var example in examples)
-        {
-            var userFields = FormatFields(signature.Inputs, example.Inputs);
-            messages.Add(new ChatMessage(ChatRole.User, userFields));
-
-            var assistantJson = JsonSerializer.Serialize(
-                example.ExpectedOutput, SerializerOptions);
-            messages.Add(new ChatMessage(ChatRole.Assistant, assistantJson));
-        }
-
-        // 3. Current input
-        var inputFields = FormatFields(
-            signature.Inputs, ctx.GetCurrentInputValues());
-
-        // 4. Append repair feedback if present
-        var repairFeedback = ctx.GetRepairFeedback();
-        if (repairFeedback is not null)
-        {
-            inputFields += $"""
-
-                [Previous attempt failed evaluation.]
-                Feedback: {repairFeedback}
-                Please correct your response.
-                """;
-        }
-
-        messages.Add(new ChatMessage(ChatRole.User, inputFields));
-
-        return messages;
-    }
-
-    private static string FormatFields(
-        IReadOnlyList<FieldDescriptor> fields,
-        IReadOnlyDictionary<string, object?> values)
-    {
-        var sb = new StringBuilder();
-        foreach (var field in fields)
-        {
-            if (values.TryGetValue(field.Name, out var value))
-                sb.AppendLine($"{field.Name}: {value}");
-        }
-        return sb.ToString();
-    }
-
-    private static string BuildJsonSchema(
-        IReadOnlyList<FieldDescriptor> outputs)
-    {
-        // Build a simplified JSON schema from field descriptors
-        var properties = new Dictionary<string, object>();
-        foreach (var field in outputs)
-        {
-            properties[field.Name] = new
-            {
-                type = MapClrTypeToJsonType(field.ClrTypeName),
-                description = field.Description
-            };
-        }
-        return JsonSerializer.Serialize(
-            new { type = "object", properties },
-            new JsonSerializerOptions { WriteIndented = true });
-    }
-
-    private static string MapClrTypeToJsonType(string clrType) => clrType switch
-    {
-        "System.String" => "string",
-        "System.Int32" or "System.Int64" => "integer",
-        "System.Double" or "System.Single" => "number",
-        "System.Boolean" => "boolean",
-        _ => "string"
-    };
-}
-```
-
----
-
-## 7. Output Parsing
-
-### 7.1 Parse Pipeline
-
-LM responses are free-form text. The runtime must parse them into typed C# objects reliably.
-
-```
- Raw LM Text
-     │
-     ▼
- ┌────────────────────┐
- │ Extract JSON block  │  Strip markdown fences, leading text, etc.
- └────────┬───────────┘
-          ▼
- ┌────────────────────┐
- │ JsonSerializer      │  Deserialize into target CLR type
- │ .Deserialize<T>()   │
- └────────┬───────────┘
-          ▼
- ┌────────────────────┐
- │ TypeConverter        │  Handle non-standard formats
- │ fallback             │  ("True"/"FALSE" → bool, etc.)
- └────────┬───────────┘
-          ▼
- ┌────────────────────┐
- │ DataAnnotations     │  Validate [Required], [Range], etc.
- │ .TryValidate()      │
- └────────┬───────────┘
-          ▼
-      Typed T output
-```
-
-### 7.2 Implementation
-
-```csharp
-public sealed class OutputParser
-{
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
-    };
-
-    public object Parse(string rawText, Type outputType, string stepName)
-    {
-        // 1. Extract JSON from response (handles markdown fences)
-        var json = ExtractJson(rawText);
-
-        // 2. Attempt JSON deserialization
-        object? result;
-        try
-        {
-            result = JsonSerializer.Deserialize(json, outputType, SerializerOptions);
-        }
-        catch (JsonException ex)
-        {
-            // 3. Fallback: try IParsable<T>.TryParse() (.NET 7+) for simple types
-            if (TryParsableConvert(rawText.Trim(), outputType, out var parsed))
-            {
-                result = parsed;
-            }
-            // 4. Fallback: try TypeConverter for legacy types
-            else if (TryTypeConverterParse(rawText, outputType, out var converted))
-            {
-                result = converted;
-            }
-            else
-            {
-                throw new OutputParsingException(stepName, rawText, outputType, ex);
-            }
-        }
-
-        if (result is null)
-            throw new OutputParsingException(
-                stepName, rawText, outputType,
-                new InvalidOperationException("Deserialization returned null."));
-
-        // 5. Validate — prefer IValidatableObject if implemented, then DataAnnotations
-        if (result is IValidatableObject validatable)
-        {
-            var selfErrors = validatable.Validate(new ValidationContext(result)).ToList();
-            if (selfErrors.Count > 0)
-                throw new OutputValidationException(stepName,
-                    string.Join("; ", selfErrors.Select(v => v.ErrorMessage)), result);
-        }
-        else
-        {
-            var validationResults = new List<ValidationResult>();
-            var validationContext = new ValidationContext(result);
-            if (!Validator.TryValidateObject(
-                result, validationContext, validationResults, validateAllProperties: true))
-            {
-                var errors = string.Join("; ",
-                    validationResults.Select(v => v.ErrorMessage));
-                throw new OutputValidationException(stepName, errors, result);
-            }
-        }
-
-        return result;
-    }
-
-    // .NET 7+ AOT-safe code fence extraction
-    [GeneratedRegex(@"^```(?:\w+)?\s*\n?(.*?)\n?```$", RegexOptions.Singleline)]
-    private static partial Regex JsonFenceRegex();
-
-    private static string ExtractJson(string raw)
-    {
-        var trimmed = raw.Trim();
-
-        // Strip markdown code fences using [GeneratedRegex] (AOT-safe, pre-compiled)
-        var match = JsonFenceRegex().Match(trimmed);
-        if (match.Success)
-            trimmed = match.Groups[1].Value.Trim();
-
-        // Find JSON object boundaries
-        var start = trimmed.IndexOf('{');
-        var end = trimmed.LastIndexOf('}');
-        if (start >= 0 && end > start)
-            return trimmed[start..(end + 1)];
-
-        return trimmed;
-    }
-
-    /// <summary>
-    /// Attempts to parse using IParsable&lt;T&gt; (.NET 7+) — the modern pattern
-    /// for string-to-type conversion using static abstract interface members.
-    /// Prioritized over TypeConverter for .NET 7+ types.
-    /// </summary>
-    private static bool TryParsableConvert(
-        string text, Type targetType, out object? result)
-    {
-        result = null;
-        // Check if the type implements IParsable<T> via reflection
-        var parsableInterface = targetType.GetInterfaces()
-            .FirstOrDefault(i => i.IsGenericType &&
-                i.GetGenericTypeDefinition() == typeof(IParsable<>));
-        if (parsableInterface is null) return false;
-
-        var tryParseMethod = parsableInterface.GetMethod("TryParse",
-            [typeof(string), typeof(IFormatProvider), targetType.MakeByRefType()]);
-        if (tryParseMethod is null) return false;
-
-        var args = new object?[] { text, CultureInfo.InvariantCulture, null };
-        var success = (bool)tryParseMethod.Invoke(null, args)!;
-        if (success) result = args[2];
-        return success;
-    }
-
-    private static bool TryTypeConverterParse(
-        string text, Type targetType, out object? result)
-    {
-        result = null;
-        var converter = TypeDescriptor.GetConverter(targetType);
-        if (converter.CanConvertFrom(typeof(string)))
-        {
-            try
-            {
-                result = converter.ConvertFromInvariantString(text.Trim());
-                return true;
-            }
-            catch { return false; }
-        }
-        return false;
-    }
-}
-```
-
-> **Why This Matters:** LMs are unreliable formatters. The `ExtractJson` method uses `[GeneratedRegex]` (.NET 7+) for AOT-safe, pre-compiled pattern matching of markdown fences. The parse chain prioritizes: JSON → `IParsable<T>.TryParse()` (.NET 7+ static abstract members) → `TypeConverter` fallback. Validation prefers `IValidatableObject` self-validation when implemented, falling back to `DataAnnotations` for types that don't implement it.
+**Optimization works naturally:** The optimizer calls `ForwardAsync` on training data, collects traces, and fills `_answer.Demos` with successful examples. The retriever is called during optimization too — the few-shot demos capture the full retrieve-then-predict pattern.
 
 ---
 
@@ -1039,151 +869,122 @@ public sealed class OutputParser
 
 ### 8.1 CancellationToken Threading
 
-Every async method in the runtime accepts a `CancellationToken`. This token flows from the top-level `RunAsync` call through every step executor and into every `IChatClient` call.
+Every async method accepts a `CancellationToken`. The token flows from the top-level caller through `ForwardAsync`, into each `PredictAsync`, and down to `IChatClient.GetResponseAsync<T>()`.
 
 ```csharp
-// Entry point — user or host provides cancellation
 var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
-    e.Cancel = true;  // Prevent immediate process termination
-    cts.Cancel();     // Signal cancellation to the runtime
+    e.Cancel = true;
+    cts.Cancel();
 };
 
-var result = await program.RunAsync(input, cancellationToken: cts.Token);
+var result = await module.ForwardAsync(input, cts.Token);
 ```
 
-### 8.2 Timeout Handling
+### 8.2 Per-Predictor Timeout
 
-Individual LM calls can be protected with a per-step timeout by linking a timeout `CancellationTokenSource` to the parent token:
+Individual predictor calls can be bounded with a linked `CancellationTokenSource`:
 
 ```csharp
-public async Task ExecuteWithTimeout(
-    StepContext ctx,
-    TimeSpan timeout,
-    CancellationToken cancellationToken)
-{
-    using var timeoutCts = CancellationTokenSource
-        .CreateLinkedTokenSource(cancellationToken);
-    timeoutCts.CancelAfter(timeout);
+using var timeoutCts = CancellationTokenSource
+    .CreateLinkedTokenSource(cancellationToken);
+timeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
 
-    try
-    {
-        await ExecuteAsync(ctx, timeoutCts.Token);
-    }
-    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-    {
-        // The timeout fired, not user cancellation
-        throw new StepTimeoutException(
-            ctx.Step.Name, timeout);
-    }
-}
+var result = await _classify.PredictAsync(
+    input, Trace, cancellationToken: timeoutCts.Token);
 ```
 
-### 8.3 Cancellation Contract
+### 8.3 Resilience Pipeline
 
-| Scenario | Behavior |
-|---|---|
-| User presses `Ctrl+C` | `OperationCanceledException` propagates up. Trace contains all completed steps. |
-| Per-step timeout fires | `StepTimeoutException` thrown with step name and timeout duration. |
-| LM provider error | Transient errors handled by the `ResiliencePipeline` (retry + circuit breaker). Non-transient errors wrap in `PredictException`. |
-| Parent `CancellationToken` cancelled | All in-flight steps abort at next `ThrowIfCancellationRequested()` or async yield. |
-
-> **Why This Matters:** In production, an unresponsive LM call must not hang your entire pipeline. The linked `CancellationTokenSource` pattern ensures that both user cancellation and per-step timeouts are handled through the same unified mechanism.
-
-### 8.4 Resilience Pipeline for LM Calls
-
-LM API calls are wrapped in a `ResiliencePipeline` from `Microsoft.Extensions.Resilience` that combines retry, circuit breaker, and timeout in a single composable pipeline. This replaces ad-hoc retry logic and provides structured resilience semantics.
+LM API calls can be wrapped in a `ResiliencePipeline` from `Microsoft.Extensions.Resilience` via `IChatClient` middleware:
 
 ```csharp
-// Registered in DI via AddResiliencePipeline
-services.AddResiliencePipeline("lm-calls", builder =>
-{
-    builder
-        .AddRetry(new RetryStrategyOptions
-        {
-            MaxRetryAttempts = 3,
-            BackoffType = DelayBackoffType.Exponential,
-            UseJitter = true,
-            ShouldHandle = new PredicateBuilder()
-                .Handle<HttpRequestException>()
-                .HandleResult<ChatResponse>(r => r is null)
-        })
-        .AddCircuitBreaker(new CircuitBreakerStrategyOptions
-        {
-            FailureRatio = 0.5,
-            SamplingDuration = TimeSpan.FromSeconds(30),
-            MinimumThroughput = 10,
-            BreakDuration = TimeSpan.FromSeconds(15)
-        })
-        .AddTimeout(TimeSpan.FromSeconds(60));
-});
-
-// In PredictStepExecutor — resolve and use
-var pipeline = _services
-    .GetRequiredService<ResiliencePipelineProvider<string>>()
-    .GetPipeline("lm-calls");
-
-var response = await pipeline.ExecuteAsync(
-    async ct => await chatClient.GetResponseAsync(messages, options, ct),
-    cancellationToken);
+var client = new ChatClientBuilder(innerClient)
+    .UseOpenTelemetry()
+    .UseDistributedCache()
+    .Build();
 ```
 
-> **Why a pipeline, not raw rate limiting?** A `ResiliencePipeline` composes retry (with exponential backoff + jitter), circuit breaker (fail-fast when a provider is down), and timeout (bound individual calls) into a single unit. The runtime delegates resilience to this pipeline; it does not implement its own retry loops.
+Retry, circuit breaker, and rate limiting are middleware concerns — not runtime concerns. The `Predictor` calls `IChatClient` and the middleware pipeline handles transience.
 
 ---
 
 ## Appendix: Key Types Summary
 
 ```csharp
-public sealed record ProgramResult<TOutput>(
-    TOutput Output,
-    RuntimeTraceDescriptor Trace);
+// === Core types ===
 
-public sealed record RuntimeTraceDescriptor(
-    string ProgramId,
-    string VariantId,
-    IReadOnlyList<RuntimeTraceStepDescriptor> Steps,
-    double TotalLatencyMs);
-
-public sealed record RuntimeTraceStepDescriptor(
-    string StepId,
-    string StepName,
-    string Kind,
-    DateTimeOffset StartedAtUtc,
-    DateTimeOffset EndedAtUtc,
-    string Outcome,
-    string? Model = null,
-    int? PromptTokens = null,
-    int? CompletionTokens = null,
-    double? CostUsd = null,
-    IReadOnlyDictionary<string, double>? Scores = null,
-    IReadOnlyList<string>? Diagnostics = null);
-
-public class StepExecutionException(
-    string stepId, string stepName, Exception inner)
-    : Exception($"Step '{stepName}' ({stepId}) failed.", inner);
-
-public class PredictException(
-    string stepName, string model, Exception inner)
-    : Exception($"Predict step '{stepName}' (model: {model}) failed.", inner);
-
-public class OutputParsingException(
-    string stepName, string rawText, Type targetType, Exception inner)
-    : Exception($"Failed to parse output of step '{stepName}' " +
-                $"into {targetType.Name}.", inner)
+public abstract class LmpModule
 {
-    public string RawText { get; } = rawText;
+    public Trace? Trace { get; set; }
+    public abstract IReadOnlyList<IPredictor> GetPredictors();
+    public abstract Task SaveAsync(string path, CancellationToken ct = default);
+    public abstract Task LoadAsync(string path, CancellationToken ct = default);
 }
 
-public class OutputValidationException(
-    string stepName, string errors, object parsed)
-    : Exception($"Output validation failed for step '{stepName}': {errors}")
+public interface IPredictor
 {
-    public object ParsedOutput { get; } = parsed;
+    string Name { get; set; }
+    string Instructions { get; set; }
+    IList Demos { get; }
+    ChatOptions Config { get; set; }
 }
 
-public class StepTimeoutException(string stepName, TimeSpan timeout)
-    : TimeoutException(
-        $"Step '{stepName}' timed out after {timeout.TotalMilliseconds}ms.");
+public sealed class Trace
+{
+    public IReadOnlyList<TraceEntry> Entries { get; }
+    public void Record<TInput, TOutput>(string name, TInput input, TOutput output);
+}
+
+public sealed record TraceEntry(
+    string PredictorName,
+    object Input,
+    object Output);
+
+public sealed record Example<TInput, TOutput>(
+    TInput Input,
+    TOutput Output);
+
+// === Retrieval ===
+
+public interface IRetriever
+{
+    Task<string[]> RetrieveAsync(string query, int k = 5,
+        CancellationToken cancellationToken = default);
+}
+
+// === Assertions ===
+
+public static class LmpAssert
+{
+    public static void That<T>(T result, Func<T, bool> predicate, string message);
+}
+
+public static class LmpSuggest
+{
+    public static void That<T>(T result, Func<T, bool> predicate, string message);
+}
+
+public class LmpAssertionException(string message, object? failedResult)
+    : Exception(message)
+{
+    public object? FailedResult { get; } = failedResult;
+}
+
+public class LmpMaxRetriesExceededException(string predictorName, int maxRetries)
+    : Exception($"Predictor '{predictorName}' failed after {maxRetries} retries.");
+
+// === State persistence ===
+
+public record ModuleState
+{
+    public Dictionary<string, PredictorState> Predictors { get; init; } = new();
+}
+
+public record PredictorState
+{
+    public string Instructions { get; init; } = "";
+    public IList Demos { get; init; } = new List<object>();
+}
 ```

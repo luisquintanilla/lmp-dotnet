@@ -1,6 +1,8 @@
 # MVP Demo Script
 
-> **Derived from:** Spec Sections 3 (Canonical MVP Story), 6 (Canonical Developer Experience), 17 (Acceptance Criteria).
+> **Derived from:** [System Architecture](../01-architecture/system-architecture.md)
+>
+> **Target:** .NET 10 / C# 14 · `Microsoft.Extensions.AI` (`IChatClient`)
 >
 > **Audience:** Anyone running or presenting the LMP MVP demo.
 
@@ -8,612 +10,536 @@
 
 ## Prerequisites
 
-### Software
-
 | Tool | Version | Install |
 |------|---------|---------|
 | .NET SDK | 10.0+ | `winget install Microsoft.DotNet.SDK.10` |
-| Git | Any | `winget install Git.Git` |
-| Terminal | Windows Terminal, iTerm2, or similar | — |
-
-### API Keys (Live Mode)
-
-```bash
-# Set your OpenAI API key for live LLM calls
-export OPENAI_API_KEY="sk-..."
-
-# Or for Azure OpenAI:
-export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
-export AZURE_OPENAI_API_KEY="your-key"
-```
-
-### Mock Mode (No API Key Needed)
-
-If presenting without API access, set:
-
-```bash
-export LMP_USE_MOCK=true
-```
-
-This activates the `FakeChatClient` which returns deterministic responses. All steps work identically — you just won't see real model latency or output variation.
-
-> **Junior Dev Note:** Mock mode is the default in the sample project. You don't need an API key to run the demo for the first time. Live mode is only needed to show real model variation.
-
-### Clone and Build
+| An `IChatClient` provider | Any | OpenAI, Azure OpenAI, Ollama, etc. |
 
 ```bash
 git clone https://github.com/your-org/lmp-framework.git
 cd lmp-framework
-dotnet build LMP.sln
-```
-
-Expected output:
-
-```
-Build succeeded.
-    0 Warning(s)
-    0 Error(s)
+dotnet build
 ```
 
 ---
 
-## Opening Pitch
+## Scenario
 
-> **"Compiled prompts are to AI what compiled code was to software."**
->
-> Enterprise AI is bleeding money — 70–85% of GenAI deployments fail to meet ROI expectations (NTT Data 2024), only ~25% of AI initiatives deliver expected ROI (Google Cloud/Deloitte 2025), and organizations without AI governance pay $1.9M more per data breach (IBM 2025). LMP brings the discipline of compiled software — type safety, versioned artifacts, constraint-based optimization — to AI workflows. What you're about to see is the first framework that treats LM programs as compilable, testable, deployable software.
+A support team receives raw ticket text. We need to:
+
+1. **Classify** the ticket by category and urgency.
+2. **Draft** a customer reply based on the classification.
+3. **Measure** accuracy, then **optimize** automatically.
+
+We'll build this end-to-end — from type definitions through optimization — using LMP's building blocks: `[LmpSignature]`, `Predictor<TInput, TOutput>`, `LmpModule`, `Evaluator`, and `BootstrapFewShot`.
 
 ---
 
-## Step 1: Show the Authored Source Code
+## Step 1: Define Types
 
-**Goal:** Demonstrate that LM programs are typed, declared C# — not prompt strings in files.
+**Goal:** Show that input and output are separate C# types — not prompt strings.
 
-### Terminal Commands
+LMP follows M.E.AI's natural shape: `chatClient.GetResponseAsync<T>()` takes messages in and deserializes `T` out. Input and output are separate.
 
-```bash
-# Show the signature
-cat src/LMP.Samples.SupportTriage/TriageTicket.cs
-```
-
-### What the Audience Sees
+### Input — Plain Record
 
 ```csharp
-[LmpSignature(
-    Instructions = """
-    You are a senior enterprise support triage assistant.
-    Classify the issue severity, determine the owning team, and draft a grounded
-    customer reply using only the provided evidence and policy context.
-    If the evidence is insufficient, say so explicitly.
-    """)]
-public partial class TriageTicket
+using System.ComponentModel;
+
+// No LMP attributes needed. Just data.
+public record TicketInput(
+    [Description("The raw support ticket text")] string TicketText);
+```
+
+Input types are plain C# records. `[Description]` provides field context for the prompt — the source generator reads it at build time. XML doc comments work too:
+
+```csharp
+/// <param name="TicketText">The raw support ticket text</param>
+public record TicketInput(string TicketText);
+```
+
+### Output — Partial Record with `[LmpSignature]`
+
+```csharp
+using System.ComponentModel;
+using LMP.Abstractions;
+
+[LmpSignature("Classify a support ticket by category and urgency")]
+public partial record ClassifyTicket
 {
-    [Input(Description = "Raw customer issue or support ticket text")]
-    public required string TicketText { get; init; }
+    [Description("Category: billing, technical, account")]
+    public required string Category { get; init; }
 
-    [Input(Description = "Customer plan tier such as Free, Pro, Enterprise")]
-    public required string AccountTier { get; init; }
-
-    [Input(Description = "Relevant knowledge base snippets")]
-    public required IReadOnlyList<string> KnowledgeSnippets { get; init; }
-
-    [Input(Description = "Relevant support or compliance policy snippets")]
-    public required IReadOnlyList<string> PolicySnippets { get; init; }
-
-    [Output(Description = "Severity: Low, Medium, High, Critical")]
-    public required string Severity { get; init; }
-
-    [Output(Description = "Owning team name")]
-    public required string RouteToTeam { get; init; }
-
-    [Output(Description = "Grounded customer reply draft")]
-    public required string DraftReply { get; init; }
-
-    [Output(Description = "Reasoning for severity and routing")]
-    public required string Rationale { get; init; }
-
-    [Output(Description = "True if escalation to a human is required")]
-    public required bool Escalate { get; init; }
+    [Description("Urgency from 1 (low) to 5 (critical)")]
+    public required int Urgency { get; init; }
 }
 ```
 
-```bash
-# Show the program
-cat src/LMP.Samples.SupportTriage/SupportTriageProgram.cs
-```
+`[LmpSignature]` is the entry point for the source generator. The `partial` keyword lets the generator emit companion code alongside your authored fields.
 
 ### Talking Points
 
-- **"Notice how** this is regular C# — `required`, `init`, strong types. No YAML, no magic strings."
-- **"Notice how** every field has a `Description`. If you remove one, analyzer LMP001 fires as a build warning."
-- **"Notice how** the program composes steps into a graph: retrieve → predict → evaluate → conditionally repair. This is a *software architecture*, not a prompt chain."
-
-### Show the Host Setup
-
-```bash
-# Show the DI registration and middleware
-cat src/LMP.Samples.SupportTriage/Program.cs
-```
-
-### What the Audience Sees
-
-```csharp
-var builder = Host.CreateApplicationBuilder(args);
-
-// M.E.AI provides built-in middleware — LMP doesn't reinvent these
-builder.Services.AddKeyedSingleton<IChatClient>("triage", (sp, _) =>
-    new ChatClientBuilder(new OpenAIChatClient("gpt-4.1-mini",
-        sp.GetRequiredService<OpenAIClient>()))
-        .UseOpenTelemetry()          // M.E.AI built-in
-        .UseDistributedCache(cache)  // M.E.AI built-in
-        .UseLogging(logger)          // M.E.AI built-in
-        .UseLmpStepContext()         // LMP-specific: injects step metadata
-        .UseLmpCostTracking()        // LMP-specific: accumulates cost per trial
-        .Build());
-
-// Register LMP programs
-builder.Services.AddLmpPrograms()
-    .AddProgram<SupportTriageProgram>();
-
-// Constraints use simple predicates — no solver dependency
-builder.Services.AddLmpCompiler(compiler =>
-{
-    compiler.Constrain(c =>
-    {
-        c.Require("policy_pass_rate", m => m["policy_pass_rate"] >= 1.0);
-        c.Require("p95_latency_ms",   m => m["p95_latency_ms"] <= 2500);
-        c.Require("avg_cost_usd",     m => m["avg_cost_usd"] <= 0.03);
-    });
-});
-
-var app = builder.Build();
-await app.RunAsync();
-```
-
-### Talking Points (Host Setup)
-
-- **"Notice how** LMP uses M.E.AI's built-in `UseOpenTelemetry()`, `UseDistributedCache()`, and `UseLogging()` middleware — we don't reinvent what the platform already provides."
-- **"Notice how** LMP adds only two custom middleware: `UseLmpStepContext()` for step metadata and `UseLmpCostTracking()` for cost accumulation. Everything else is standard .NET."
-- **"Notice how** constraints are simple C# predicates — lambda expressions the compiler can inline. No solver dependency for the MVP."
+- **"This is regular C#"** — `required`, `init`, strong types. No YAML, no prompt templates, no magic strings.
+- **"Input and output are separate types"** — mirrors how `IChatClient` actually works. One step's output can be the next step's input because they're just records.
+- **"Every output field has a `[Description]`."** Remove one and you get a build warning — not a runtime surprise.
 
 ---
 
-## Step 2: Build and Inspect Generated Code
+## Step 2: Create a Predictor
 
-**Goal:** Show that the build produces deterministic metadata and diagnostics — the framework understands the program at compile time.
+**Goal:** Bind input → output through an LLM call with one line of code.
 
-### Terminal Commands
+```csharp
+using LMP.Core;
+using Microsoft.Extensions.AI;
 
-```bash
-# Build the sample project
-dotnet build src/LMP.Samples.SupportTriage/LMP.Samples.SupportTriage.csproj
+IChatClient chatClient = /* your configured IChatClient */;
 
-# Show generated files
-find src/LMP.Samples.SupportTriage/obj -name "*.g.cs" -type f
-# On Windows:
-# Get-ChildItem -Recurse src\LMP.Samples.SupportTriage\obj -Filter "*.g.cs"
+var classifier = new Predictor<TicketInput, ClassifyTicket>(chatClient);
+var result = await classifier.PredictAsync(new TicketInput("I was charged twice"));
+
+Console.WriteLine($"{result.Category}, urgency {result.Urgency}");
+// → billing, urgency 4
 ```
 
-### Expected Output
+`Predictor<TInput, TOutput>` is the core primitive. Internally it uses the source-generated `PromptBuilder` to assemble `ChatMessage[]`, then calls `chatClient.GetResponseAsync<ClassifyTicket>()` — M.E.AI handles JSON schema negotiation with the provider natively.
+
+### What the Source Generator Produces
+
+When you build, the source generator reads your `[LmpSignature]` output type and your input record, then emits:
 
 ```
-src/LMP.Samples.SupportTriage/obj/Debug/net10.0/Generated/LMP.Roslyn/TriageTicket.g.cs
-src/LMP.Samples.SupportTriage/obj/Debug/net10.0/Generated/LMP.Roslyn/SupportTriageProgram.g.cs
+obj/Debug/net10.0/Generated/LMP.Roslyn/ClassifyTicket.g.cs
 ```
-
-```bash
-# Show the generated descriptor
-cat src/LMP.Samples.SupportTriage/obj/Debug/net10.0/Generated/LMP.Roslyn/TriageTicket.g.cs
-```
-
-### What the Audience Sees
 
 ```csharp
 // <auto-generated />
-namespace LMP.Samples.SupportTriage.Generated;
-
-internal static class TriageTicket_Descriptor
+// PromptBuilder — assembles ChatMessage[] from instructions + demos + input
+internal sealed class PromptBuilder_TicketInput_ClassifyTicket
+    : IPromptBuilder<TicketInput, ClassifyTicket>
 {
-    public static readonly SignatureDescriptor Instance = new(
-        Id: "triageticket",
-        Name: "TriageTicket",
-        Instructions: """
-        You are a senior enterprise support triage assistant.
+    private const string Instructions =
+        "Classify a support ticket by category and urgency";
+
+    // Field descriptions baked in as string constants — no reflection
+    private static readonly FieldInfo[] InputFields =
+    [
+        new("TicketText", "string", "The raw support ticket text"),
+    ];
+
+    private static readonly FieldInfo[] OutputFields =
+    [
+        new("Category", "string", "Category: billing, technical, account"),
+        new("Urgency",  "int",    "Urgency from 1 (low) to 5 (critical)"),
+    ];
+
+    public ChatMessage[] Build(
+        TicketInput input,
+        IReadOnlyList<Example<TicketInput, ClassifyTicket>>? demos = null)
+    {
+        // System message: instructions + field descriptions
+        // Demo pairs: user message (input) → assistant message (JSON output)
+        // Current input: user message with field values
         ...
-        """,
-        Inputs: new[]
-        {
-            new FieldDescriptor("TicketText", "Input", "System.String",
-                "Raw customer issue or support ticket text", true),
-            // ... all 4 inputs
-        },
-        Outputs: new[]
-        {
-            new FieldDescriptor("Severity", "Output", "System.String",
-                "Severity: Low, Medium, High, Critical", true),
-            // ... all 5 outputs
-        });
+    }
+}
+
+// JsonTypeInfo — zero-reflection serialization, AOT-safe
+[JsonSerializable(typeof(ClassifyTicket))]
+internal partial class ClassifyTicketJsonContext : JsonSerializerContext { }
+```
+
+Also emitted: **diagnostics** — missing `[Description]` on an output property → `LMP001` build warning. Non-serializable output type → build error.
+
+### What the Actual Prompt Looks Like
+
+The `PromptBuilder` assembles this `ChatMessage[]` for the classifier:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ System message                                              │
+│                                                             │
+│ Classify a support ticket by category and urgency           │
+│                                                             │
+│ Input Fields:                                               │
+│   - TicketText (string): The raw support ticket text        │
+│                                                             │
+│ Output Fields:                                              │
+│   - Category (string): Category: billing, technical,        │
+│     account                                                 │
+│   - Urgency (int): Urgency from 1 (low) to 5 (critical)    │
+├─────────────────────────────────────────────────────────────┤
+│ (Demo pairs appear here after optimization — Step 6)        │
+├─────────────────────────────────────────────────────────────┤
+│ User message                                                │
+│                                                             │
+│ TicketText: I was charged twice                             │
+└─────────────────────────────────────────────────────────────┘
+
+→ GetResponseAsync<ClassifyTicket>() handles JSON schema + deserialization
+```
+
+No output-delimiter parsing — M.E.AI's structured output does the heavy lifting.
+
+### Talking Points
+
+- **"One line to bind input → output through an LLM."** The source-generated `PromptBuilder` does the rest.
+- **"The generated code is inspectable"** — open the `.g.cs` file and read it. Field names are string constants, not reflection.
+- **"This is what DSPy does at runtime with `__dict__` walking."** LMP does it at build time — AOT-safe, no runtime surprises.
+
+---
+
+## Step 3: Add Chain of Thought
+
+**Goal:** Drop in structured reasoning with a one-line swap.
+
+```csharp
+// Before: direct prediction
+var classifier = new Predictor<TicketInput, ClassifyTicket>(chatClient);
+
+// After: chain-of-thought reasoning
+var cotClassifier = new ChainOfThought<TicketInput, ClassifyTicket>(chatClient);
+var result = await cotClassifier.PredictAsync(
+    new TicketInput("I was charged twice"));
+
+Console.WriteLine(result.Reasoning); // step-by-step reasoning
+Console.WriteLine(result.Category);  // billing
+Console.WriteLine(result.Urgency);   // 4
+```
+
+`ChainOfThought<TIn, TOut>` is a thin wrapper (~100 LOC). The source generator extends `ClassifyTicket` with a `Reasoning` field at build time, so the LM produces step-by-step reasoning *before* the final answer. Same `TInput`, same `TOutput` shape — reasoning is injected transparently.
+
+### Talking Points
+
+- **"One-line swap."** `Predictor` → `ChainOfThought` — same input type, same output type.
+- **"True parallelism is available too."** `BestOfN<TIn, TOut>` runs N predictions via `Task.WhenAll` — no GIL.
+
+---
+
+## Step 4: Compose a Module
+
+**Goal:** Chain multiple predictors into a multi-step LM program.
+
+Now we add a second output type and compose both steps into a module:
+
+```csharp
+[LmpSignature("Draft a helpful reply to the customer based on the classification")]
+public partial record DraftReply
+{
+    [Description("The reply text to send to the customer")]
+    public required string ReplyText { get; init; }
 }
 ```
 
-### Show a Diagnostic Firing
+```csharp
+public class SupportTriage : LmpModule
+{
+    private readonly ChainOfThought<TicketInput, ClassifyTicket> _classify;
+    private readonly Predictor<ClassifyTicket, DraftReply> _draft;
 
-```bash
-# Temporarily break the signature to trigger LMP001
-# (Remove Description from an Input, rebuild, see the warning)
+    public SupportTriage(IChatClient client)
+    {
+        _classify = new ChainOfThought<TicketInput, ClassifyTicket>(client);
+        _draft = new Predictor<ClassifyTicket, DraftReply>(client);
+    }
+
+    public async Task<DraftReply> ForwardAsync(TicketInput input)
+    {
+        var classification = await _classify.PredictAsync(input);
+
+        // Runtime assertion — retries on failure
+        LmpAssert.That(classification, c => c.Urgency >= 1 && c.Urgency <= 5);
+
+        return await _draft.PredictAsync(classification);
+    }
+}
 ```
 
-Expected diagnostic:
+The source generator emits `GetPredictors()` on the module — zero-reflection predictor discovery for optimization. Both `_classify` and `_draft` are discoverable at build time.
+
+### Data Flow
 
 ```
-warning LMP001: Field 'TicketText' is missing a Description.
-    Add Description to the [Input] attribute.
+TicketInput                ClassifyTicket              DraftReply
+┌──────────┐   Predict    ┌──────────────┐   Predict  ┌───────────┐
+│TicketText├──────────────►│Category      ├────────────►│ReplyText  │
+└──────────┘  (CoT)       │Urgency       │            └───────────┘
+                          └──────────────┘
 ```
+
+`ClassifyTicket` is both the output of step 1 and the input of step 2. The C# compiler verifies type compatibility — no runtime `KeyError` surprises.
 
 ### Talking Points
 
-- **"Notice how** the generated code is pure C# records — deterministic, inspectable, testable. No reflection at runtime."
-- **"Notice how** the framework caught a missing description *at build time*, not when a customer hits the API."
-- **"This is the .NET advantage:** Python frameworks discover program structure at import time. We discover it at compile time."
+- **"Composition is type-checked."** If `ClassifyTicket` doesn't have the fields `_draft` expects, the build fails.
+- **"`LmpAssert` retries with backtrack"** — if urgency is out of range, the predictor re-runs. `LmpSuggest` is the soft variant (logs a warning, no retry).
+- **"`ForwardAsync()` is plain async C#."** No graph DSL, no YAML pipeline definition. Just method calls.
 
 ---
 
-## Step 2b: Show the Three-Tier Binding Model
+## Step 5: Evaluate
 
-**Goal:** Demonstrate how steps bind to each other — from zero-config conventions to explicit attributes.
-
-### Terminal Commands
-
-```bash
-# Show the signature with [BindFrom] attributes
-cat src/LMP.Samples.SupportTriage/TriageTicket.cs
-```
-
-### What the Audience Sees
+**Goal:** Quantify program quality on a dataset — make "is the AI good enough?" an engineering question.
 
 ```csharp
-// Tier 2: Explicit attribute binding — data flows from retrieve step into predict step
-[Input(Description = "Relevant knowledge base snippets")]
-[BindFrom("retrieve-kb", nameof(RetrieveResult.Documents))]
-public required IReadOnlyList<string> KnowledgeSnippets { get; init; }
+// Load labeled examples
+var devSet = LoadExamples<TicketInput, DraftReply>("dev.jsonl");
 
-[Input(Description = "Relevant support or compliance policy snippets")]
-[BindFrom("retrieve-policy", nameof(RetrieveResult.Documents))]
-public required IReadOnlyList<string> PolicySnippets { get; init; }
+// Define a metric: does the draft mention the correct category?
+Func<DraftReply, DraftReply, float> metric =
+    (label, prediction) =>
+        prediction.ReplyText.Contains(label.ReplyText, StringComparison.OrdinalIgnoreCase)
+            ? 1f : 0f;
+
+// Evaluate
+var module = new SupportTriage(chatClient);
+var score = await Evaluator.EvaluateAsync(module, devSet, metric);
+
+Console.WriteLine($"Baseline accuracy: {score:P1}");
 ```
+
+### Expected Output — Baseline
+
+```
+Evaluating: SupportTriage on 50 examples...
+  [██████████████████████████████████████████████████] 50/50
+
+Baseline accuracy: 62.0%
+```
+
+`Evaluator` uses `Parallel.ForEachAsync` — concurrent evaluation across the dataset. Scores every example, aggregates.
 
 ### Talking Points
 
-- **"Notice how** `[BindFrom]` declares exactly where each input comes from — no lambda needed, no expression trees. This is Tier 2 of our binding model."
-- **"Tier 1 is convention-based:** if property names and types match between steps, binding is automatic."
-- **"Tier 3 uses C# 14 interceptors** — the compiler rewrites lambda bindings into direct method calls. Zero runtime overhead, fully AOT-safe."
-- **"Tier 4 is expression trees** — the same pattern Entity Framework uses, but only as a runtime fallback for dynamically constructed programs."
+- **"62% — that's our unoptimized baseline."** No few-shot examples, no tuned instructions. Can we do better without changing any code?
+- **"The metric is a plain C# lambda."** Or use `M.E.AI.Evaluation`'s built-in evaluators (Relevance, Coherence, Groundedness) — LMP doesn't rebuild what the platform provides.
 
 ---
 
-## Step 3: Run on a Single Ticket
+## Step 6: Optimize with BootstrapFewShot
 
-**Goal:** Show end-to-end program execution with trace output.
+**Goal:** Automatically find few-shot examples that improve accuracy — the core DSPy insight brought to .NET.
 
-### Terminal Commands
+```csharp
+var trainSet = LoadExamples<TicketInput, DraftReply>("train.jsonl");
 
-```bash
-dotnet run --project src/LMP.Samples.SupportTriage -- run \
-  --input '{"ticketText":"Since the latest release, SSO login intermittently fails for 300+ users in our EU tenant. This is blocking our support operations. Please advise ASAP.","accountTier":"Enterprise"}'
+var optimizer = new BootstrapFewShot(metric, maxDemos: 4);
+var optimized = await optimizer.OptimizeAsync(module, trainSet);
 ```
 
-Or using a file:
+`BootstrapFewShot` runs the module on each training example, collects successful traces (where the metric passes), and fills `predictor.Demos` with those traces as few-shot examples.
 
-```bash
-dotnet run --project src/LMP.Samples.SupportTriage -- run \
-  --input-file data/sample-ticket.json
-```
-
-### Expected Output
+### What Happens During Optimization
 
 ```
-Program: support-triage
-ProgramVersion: 0.1.0
-VariantId: baseline
+BootstrapFewShot: running teacher on 100 training examples...
+  [██████████████████████████████████████████████████] 100/100
 
-[retrieve-kb]
-  Retrieved: 5 docs
-  LatencyMs: 35
+Successful traces collected: 78/100
+Selected 4 best demos for _classify (Predictor<TicketInput, ClassifyTicket>)
+Selected 4 best demos for _draft    (Predictor<ClassifyTicket, DraftReply>)
 
-[retrieve-policy]
-  Retrieved: 3 docs
-  LatencyMs: 18
+Evaluating optimized module on dev set...
+  [██████████████████████████████████████████████████] 50/50
 
-[triage]
-  Signature: TriageTicket
-  Model: gpt-4.1-mini
-  Temperature: 0.3
-  PromptTokens: 2104
-  CompletionTokens: 262
-  CostUsd: 0.017
-  LatencyMs: 1480
-
-[groundedness-check]
-  Score: 0.96
-
-[policy-check]
-  Passed: True
-
-Final:
-  Severity: Critical
-  RouteToTeam: Identity Platform
-  DraftReply: "We are actively investigating the SSO login failures..."
-  Escalate: True
-  TotalLatencyMs: 1642
-  TotalCostUsd: 0.017
+Optimized accuracy: 81.0%
 ```
+
+### Before / After
+
+```
+┌────────────────────────────────────┐
+│         Optimization Results       │
+├────────────────┬───────┬───────────┤
+│ Metric         │Before │ After     │
+├────────────────┼───────┼───────────┤
+│ Accuracy       │ 62.0% │ 81.0%  ▲ │
+│ Few-shot demos │   0   │   4       │
+│ Code changes   │   0   │   0       │
+├────────────────┴───────┴───────────┤
+│ 19-point improvement, zero code    │
+│ changes — only learned demos.      │
+└────────────────────────────────────┘
+```
+
+For more aggressive search, use `BootstrapRandomSearch` — it runs `BootstrapFewShot` × N candidates with `Task.WhenAll` (true parallelism, no GIL) and returns the best:
+
+```csharp
+var search = new BootstrapRandomSearch(metric, numTrials: 8);
+var best = await search.OptimizeAsync(module, trainSet, devSet);
+```
+
+### What the Prompt Looks Like After Optimization
+
+After optimization, `predictor.Demos` is filled. The prompt now includes few-shot examples:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ System message                                              │
+│   Classify a support ticket by category and urgency         │
+│   (field descriptions...)                                   │
+├─────────────────────────────────────────────────────────────┤
+│ Demo 1 — User message                                       │
+│   TicketText: My invoice shows the wrong amount             │
+├─────────────────────────────────────────────────────────────┤
+│ Demo 1 — Assistant message                                  │
+│   {"Category":"billing","Urgency":3}                        │
+├─────────────────────────────────────────────────────────────┤
+│ Demo 2 — User message                                       │
+│   TicketText: Cannot connect to VPN since the update        │
+├─────────────────────────────────────────────────────────────┤
+│ Demo 2 — Assistant message                                  │
+│   {"Category":"technical","Urgency":4}                      │
+├─────────────────────────────────────────────────────────────┤
+│ (... demos 3–4 ...)                                         │
+├─────────────────────────────────────────────────────────────┤
+│ Current input — User message                                │
+│   TicketText: I was charged twice                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The demos are the *learned parameters* — selected from successful training traces, not hand-written.
 
 ### Talking Points
 
-- **"Notice how** every step has structured trace output — model, tokens, cost, latency. This is production observability, not print debugging."
-- **"Notice how** the groundedness check and policy check run as steps in the graph, not as afterthoughts."
+- **"62% → 81% with zero code changes."** The optimizer found few-shot examples that teach the model the right patterns.
+- **"This is DSPy's core insight:"** LM programs have learnable parameters (demos, instructions) that can be optimized programmatically.
+- **"`BootstrapRandomSearch` uses `Task.WhenAll`"** — true parallelism across trials. Python's GIL serializes this; .NET runs them concurrently.
 
 ---
 
-## Step 4: Run Evaluation on a Dataset
+## Step 7: Save and Deploy
 
-**Goal:** Show that program quality is measurable, not anecdotal.
+**Goal:** Persist optimized parameters as a versioned, auditable JSON artifact.
 
-### Terminal Commands
+```csharp
+// Save — uses source-generated JsonSerializerContext (AOT-compatible)
+await optimized.SaveAsync("triage-optimized.json");
 
-```bash
-dotnet run --project src/LMP.Samples.SupportTriage -- eval \
-  --dataset data/support-triage-val.jsonl
+// Later, in production — load into a fresh module
+var production = new SupportTriage(chatClient);
+await production.LoadAsync("triage-optimized.json");
+
+// Predict with optimized parameters
+var reply = await production.ForwardAsync(
+    new TicketInput("I was charged twice"));
 ```
 
-### Expected Output
-
-```
-Evaluation: support-triage
-Dataset: data/support-triage-val.jsonl (20 examples)
-
-Results:
-  routing_accuracy:  0.75
-  severity_accuracy: 0.70
-  groundedness:      0.88
-  policy_pass_rate:  0.90
-  avg_latency_ms:    1580
-  avg_cost_usd:      0.018
-
-Weighted Score: 0.81
-```
-
-### Talking Points
-
-- **"Notice how** we have quantified scores across a real dataset. This is how you make 'is the AI good enough?' an engineering question, not a vibes question."
-- **"A score of 0.81 with 90% policy pass rate is our baseline. Can we do better? That's what the compiler is for."
-
----
-
-## Step 5: Compile the Program
-
-**Goal:** Show the optimization loop in action — trial execution, constraint checking, and variant selection.
-
-### Terminal Commands
-
-```bash
-dotnet run --project src/LMP.Samples.SupportTriage -- compile \
-  --train data/support-triage-train.jsonl \
-  --validate data/support-triage-val.jsonl \
-  --output artifacts/support-triage \
-  --max-trials 20
-```
-
-### Expected Output
-
-```
-Compiling: support-triage
-Search space: 3 dimensions
-  - triage.temperature: [0.0, 0.7]
-  - triage.model: [gpt-4.1-mini, gpt-4.1]
-  - retrieve-kb.topK: [3, 10]
-
-Constraints:
-  - policy_pass_rate == 1.0 (Hard)
-  - p95_latency_ms <= 2500 (Hard)
-  - avg_cost_usd <= 0.03 (Hard)
-
-Trial  1/20: variant=triage-v1  score=0.78  constraints=PASS
-Trial  2/20: variant=triage-v2  score=0.82  constraints=PASS
-Trial  3/20: variant=triage-v3  score=0.85  constraints=FAIL (policy_pass_rate=0.90)
-Trial  4/20: variant=triage-v4  score=0.79  constraints=PASS
-...
-Trial 17/20: variant=triage-v17 score=0.91  constraints=PASS  ★ new best
-...
-Trial 20/20: variant=triage-v20 score=0.88  constraints=PASS
-
-────────────────────────────
-Compile Report:
-  Trials executed: 20
-  Valid trials: 14
-  Rejected trials: 6
-    policy_pass_rate: 4
-    p95_latency_ms: 1
-    avg_cost_usd: 1
-
-  Best valid variant: triage-v17
-  Score: 0.91
-
-  Artifact saved to: artifacts/support-triage/artifact.json
-────────────────────────────
-```
-
-### Talking Points
-
-- **"Notice how** trial 3 scored 0.85 but was *rejected* because it violated the policy constraint. This is the constraint model in action — high scores don't override business rules."
-- **"Notice how** 6 out of 20 trials were rejected. The compiler tells you *why* each one failed. This is enterprise-grade optimization."
-- **"The winning variant (0.91) vs our baseline (0.81) — a 12% improvement, found automatically."
-
----
-
-## Step 6: Inspect the Compiled Artifact
-
-**Goal:** Show that the compiled output is a versioned, inspectable JSON file — not a black box.
-
-### Terminal Commands
-
-```bash
-cat artifacts/support-triage/artifact.json
-```
-
-### Expected Output
+### What `triage-optimized.json` Contains
 
 ```json
 {
-  "program": "support-triage",
-  "compiledVersion": "0.1.0",
-  "variantId": "triage-v17",
-  "baseProgramHash": "sha256:abc123...",
-  "selectedParameters": {
-    "triage.instructionsVariant": "inst-3",
-    "triage.fewShotExampleIds": ["ex-12", "ex-44", "ex-78", "ex-121"],
-    "triage.model": "gpt-4.1-mini",
-    "triage.temperature": 0.1,
-    "retrieve-kb.topK": 6,
-    "retrieve-policy.topK": 3
-  },
-  "validationMetrics": {
-    "routing_accuracy": 0.89,
-    "severity_accuracy": 0.83,
-    "groundedness": 0.96,
-    "policy_pass_rate": 1.0,
-    "p95_latency_ms": 2210,
-    "avg_cost_usd": 0.021
-  },
-  "approved": true
+  "moduleType": "SupportTriage",
+  "predictors": {
+    "_classify": {
+      "signature": "Classify a support ticket by category and urgency",
+      "demos": [
+        {
+          "input": { "ticketText": "My invoice shows the wrong amount" },
+          "output": { "category": "billing", "urgency": 3 }
+        },
+        {
+          "input": { "ticketText": "Cannot connect to VPN since the update" },
+          "output": { "category": "technical", "urgency": 4 }
+        },
+        {
+          "input": { "ticketText": "I need to change my account email" },
+          "output": { "category": "account", "urgency": 1 }
+        },
+        {
+          "input": { "ticketText": "Production API returning 503 for all customers" },
+          "output": { "category": "technical", "urgency": 5 }
+        }
+      ],
+      "config": { "temperature": 0.7 }
+    },
+    "_draft": {
+      "signature": "Draft a helpful reply to the customer based on the classification",
+      "demos": [ /* 4 learned examples */ ],
+      "config": { "temperature": 0.7 }
+    }
+  }
 }
 ```
 
 ### Talking Points
 
-- **"Notice how** the artifact is plain JSON — auditable, diffable, version-controllable. You can check this into git."
-- **"Notice how** the artifact records exactly *which* parameters were selected — this is full provenance. You can explain to compliance *why* the system behaves the way it does."
-- **"Notice how** `approved: true` — only artifacts that passed all hard constraints get approved."
+- **"Plain JSON — auditable, diffable, version-controllable."** Check it into git. Diff it in a PR review.
+- **"The artifact records exactly which demos were selected."** Full provenance — you can explain to compliance *why* the system behaves the way it does.
+- **"Same module type, parameters filled in."** No new types, no code generation at deploy time. `LoadAsync` hydrates the existing predictors.
 
 ---
 
-## Step 7: Run with the Compiled Artifact
-
-**Goal:** Show that production can pin to a specific compiled variant.
-
-### Terminal Commands
-
-```bash
-dotnet run --project src/LMP.Samples.SupportTriage -- run \
-  --input-file data/sample-ticket.json \
-  --artifact artifacts/support-triage/artifact.json
-```
-
-### Expected Output
+## Full Journey Recap
 
 ```
-Program: support-triage
-ProgramVersion: 0.1.0-compiled
-VariantId: triage-v17
-
-[retrieve-kb]
-  Retrieved: 6 docs        ← topK=6 from artifact
-  LatencyMs: 42
-
-[retrieve-policy]
-  Retrieved: 3 docs
-  LatencyMs: 15
-
-[triage]
-  Signature: TriageTicket
-  Model: gpt-4.1-mini      ← model from artifact
-  Temperature: 0.1          ← temperature from artifact
-  FewShotExamples: 4        ← examples from artifact
-  PromptTokens: 2104
-  CompletionTokens: 262
-  CostUsd: 0.017
-  LatencyMs: 1380
-
-[groundedness-check]
-  Score: 0.97
-
-[policy-check]
-  Passed: True
-
-Final:
-  Severity: Critical
-  RouteToTeam: Identity Platform
-  DraftReply: "We are actively investigating the SSO login failures..."
-  Escalate: True
-  TotalLatencyMs: 1520
-  TotalCostUsd: 0.017
+ Step 1          Step 2           Step 3          Step 4
+ Define          Create           Add             Compose
+ Types           Predictor        CoT             Module
+┌──────────┐   ┌────────────┐   ┌────────────┐   ┌──────────────┐
+│TicketInput│   │Predictor   │   │ChainOf     │   │SupportTriage │
+│ClassifyTkt│──►│<TIn,TOut>  │──►│Thought     │──►│: LmpModule   │
+│DraftReply │   │.PredictAsync│   │<TIn,TOut>  │   │ForwardAsync()│
+└──────────┘   └────────────┘   └────────────┘   └──────┬───────┘
+                                                        │
+                ┌───────────────────────────────────────┘
+                ▼
+ Step 5          Step 6           Step 7
+ Evaluate        Optimize         Save &
+ Baseline        (BootstrapFS)    Deploy
+┌────────────┐   ┌────────────┐   ┌──────────────┐
+│Evaluator   │   │BootstrapFS │   │SaveAsync()   │
+│ 62% ───────│──►│ 62% → 81%  │──►│LoadAsync()   │
+│            │   │ 0 code chgs│   │triage-opt.json│
+└────────────┘   └────────────┘   └──────────────┘
 ```
 
-### Talking Points
-
-- **"Notice how** `VariantId: triage-v17` — production is pinned to the compiled variant. No drift, no surprises."
-- **"Notice how** the artifact's selected parameters (temperature=0.1, topK=6, 4 few-shot examples) are applied automatically."
-- **"This is the full lifecycle:** Author → Build → Evaluate → Compile → Deploy. Every step is typed, traced, and auditable."
+> **"Define types → Predict → Reason → Compose → Evaluate → Optimize → Deploy."**
+> Every step is typed, traced, and auditable. The 19-point accuracy improvement required zero code changes — only learned parameters.
 
 ---
 
-## Fallback Plan: Mock Mode
+## What Python Cannot Do
 
-If API keys are unavailable or you want a fully offline demo:
+These are structural advantages demonstrated in this walkthrough:
 
-### Setup
-
-```bash
-export LMP_USE_MOCK=true
-dotnet build LMP.sln
-```
-
-### What Changes
-
-| Step | Live Mode | Mock Mode |
-|------|-----------|-----------|
-| Build + Generated Code | Identical | Identical |
-| Single Run | Real model call, ~1.5s latency | Instant, deterministic response |
-| Evaluation | Real scores, some variation | Fixed scores (routing=0.75, etc.) |
-| Compile | Real trials, ~2-5 min | Fast trials, ~10s |
-| Artifact | Real metrics | Synthetic metrics |
-| Run with Artifact | Real model call | Deterministic response |
-
-### Mock Mode Demo Commands
-
-All commands are the same. The only difference is the environment variable. Every step produces structured output that looks real — the audience cannot tell the difference visually.
-
-> **Junior Dev Note:** Mock mode is great for developing and testing. Use it when iterating on the demo flow. Switch to live mode only for the final rehearsal or when you want to show real model variation.
+| Capability | DSPy (Python, runtime) | LMP (.NET, compile-time) |
+|---|---|---|
+| Signature validation | Runtime crash | Build warning (`LMP001`) |
+| Predictor discovery | `__dict__` walk at runtime | Source-gen `GetPredictors()` |
+| Prompt assembly | `string.format()` at runtime | Source-gen `PromptBuilder` class |
+| State serialization | `pickle` / runtime introspection | Source-gen `JsonSerializerContext` (AOT-safe) |
+| Parallel optimization | GIL-limited | `Task.WhenAll` — real OS threads |
 
 ---
 
-## Quick Reference: All Commands
+## Quick Reference
 
-```bash
-# Build
-dotnet build LMP.sln
+```csharp
+// 1. Types
+public record TicketInput([Description("...")] string TicketText);
 
-# Show generated code
-Get-ChildItem -Recurse src\LMP.Samples.SupportTriage\obj -Filter "*.g.cs"
+[LmpSignature("Classify a support ticket")]
+public partial record ClassifyTicket { ... }
 
-# Run single ticket
-dotnet run --project src/LMP.Samples.SupportTriage -- run --input-file data/sample-ticket.json
+// 2. Predict
+var p = new Predictor<TicketInput, ClassifyTicket>(client);
+var r = await p.PredictAsync(new TicketInput("..."));
 
-# Evaluate on dataset
-dotnet run --project src/LMP.Samples.SupportTriage -- eval --dataset data/support-triage-val.jsonl
+// 3. Chain of Thought
+var cot = new ChainOfThought<TicketInput, ClassifyTicket>(client);
 
-# Compile
-dotnet run --project src/LMP.Samples.SupportTriage -- compile \
-  --train data/support-triage-train.jsonl \
-  --validate data/support-triage-val.jsonl \
-  --output artifacts/support-triage \
-  --max-trials 20
+// 4. Module
+public class SupportTriage : LmpModule { /* ForwardAsync */ }
 
-# Inspect artifact
-cat artifacts/support-triage/artifact.json
+// 5. Evaluate
+var score = await Evaluator.EvaluateAsync(module, devSet, metric);
 
-# Run with artifact
-dotnet run --project src/LMP.Samples.SupportTriage -- run \
-  --input-file data/sample-ticket.json \
-  --artifact artifacts/support-triage/artifact.json
+// 6. Optimize
+var optimized = await new BootstrapFewShot(metric, maxDemos: 4)
+    .OptimizeAsync(module, trainSet);
+
+// 7. Save / Load
+await optimized.SaveAsync("triage-optimized.json");
+await production.LoadAsync("triage-optimized.json");
 ```
