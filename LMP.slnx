@@ -22,9 +22,11 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/LMP.Samples.Evaluation/LMP.Samples.Evaluation.csproj" />
+    <Project Path="samples/LMP.Samples.GEPA/LMP.Samples.GEPA.csproj" />
     <Project Path="samples/LMP.Samples.Middleware/LMP.Samples.Middleware.csproj" />
     <Project Path="samples/LMP.Samples.AdvancedOptimizers/LMP.Samples.AdvancedOptimizers.csproj" />
     <Project Path="samples/LMP.Samples.MIPROv2/LMP.Samples.MIPROv2.csproj" />
     <Project Path="samples/LMP.Samples.TicketTriage/LMP.Samples.TicketTriage.csproj" />
+    <Project Path="samples/LMP.Samples.Z3/LMP.Samples.Z3.csproj" />
   </Folder>
 </Solution>
