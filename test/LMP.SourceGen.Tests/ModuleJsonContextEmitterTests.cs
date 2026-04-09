@@ -64,12 +64,12 @@ public class ModuleJsonContextEmitterTests
     }
 
     [Fact]
-    public void GenerateSource_UsesFilePartialClass()
+    public void GenerateSource_UsesInternalPartialClass()
     {
         var model = CreateModuleModel(typeName: "TicketTriageModule");
         var source = ModuleJsonContextEmitter.GenerateSource(model);
 
-        Assert.Contains("file partial class TicketTriageModuleJsonContext : JsonSerializerContext;", source);
+        Assert.Contains("internal partial class TicketTriageModuleJsonContext : JsonSerializerContext;", source);
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public class ModuleJsonContextEmitterTests
         var model = CreateModuleModel(typeName: "CustomerSupportModule");
         var source = ModuleJsonContextEmitter.GenerateSource(model);
 
-        Assert.Contains("file partial class CustomerSupportModuleJsonContext : JsonSerializerContext;", source);
+        Assert.Contains("internal partial class CustomerSupportModuleJsonContext : JsonSerializerContext;", source);
     }
 
     #endregion
@@ -172,7 +172,7 @@ public class ModuleJsonContextEmitterTests
         var moduleStateIdx = source.IndexOf("[JsonSerializable(typeof(ModuleState))]");
         var predictorStateIdx = source.IndexOf("[JsonSerializable(typeof(PredictorState))]");
         var demoEntryIdx = source.IndexOf("[JsonSerializable(typeof(DemoEntry))]");
-        var classIdx = source.IndexOf("file partial class TicketTriageModuleJsonContext : JsonSerializerContext;");
+        var classIdx = source.IndexOf("internal partial class TicketTriageModuleJsonContext : JsonSerializerContext;");
 
         Assert.True(headerIdx >= 0, "Auto-generated header not found");
         Assert.True(usingStjIdx > headerIdx, "STJ usings should follow header");
@@ -196,18 +196,58 @@ public class ModuleJsonContextEmitterTests
         Assert.Contains("[JsonSerializable(typeof(ModuleState))]", source);
         Assert.Contains("[JsonSerializable(typeof(PredictorState))]", source);
         Assert.Contains("[JsonSerializable(typeof(DemoEntry))]", source);
-        Assert.Contains("file partial class SimpleModuleJsonContext : JsonSerializerContext;", source);
+        Assert.Contains("internal partial class SimpleModuleJsonContext : JsonSerializerContext;", source);
     }
 
     [Fact]
-    public void GenerateSource_EmitsAllThreeSerializableTypes()
+    public void GenerateSource_IncludesConcretePredictorTypes()
     {
         var model = CreateModuleModel();
         var source = ModuleJsonContextEmitter.GenerateSource(model);
 
-        // Count [JsonSerializable] occurrences — exactly 3
+        // Default model has _classify(TicketInput→ClassifyTicket) and _draft(ClassifyTicket→DraftReply)
+        // Unique types: ClassifyTicket, DraftReply, TicketInput (sorted by FQN)
+        Assert.Contains("[JsonSerializable(typeof(global::TestApp.ClassifyTicket))]", source);
+        Assert.Contains("[JsonSerializable(typeof(global::TestApp.DraftReply))]", source);
+        Assert.Contains("[JsonSerializable(typeof(global::TestApp.TicketInput))]", source);
+    }
+
+    [Fact]
+    public void GenerateSource_DeduplicatesSharedTypes()
+    {
+        // ClassifyTicket appears as both output of _classify and input of _draft
+        var model = CreateModuleModel();
+        var source = ModuleJsonContextEmitter.GenerateSource(model);
+
+        // Count occurrences of ClassifyTicket — should appear exactly once
+        var count = CountOccurrences(source, "global::TestApp.ClassifyTicket");
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public void GenerateSource_SortsConcreteTypes_ForDeterminism()
+    {
+        var model = CreateModuleModel();
+        var source = ModuleJsonContextEmitter.GenerateSource(model);
+
+        // Types should appear in sorted order by FQN
+        var classifyIdx = source.IndexOf("global::TestApp.ClassifyTicket");
+        var draftIdx = source.IndexOf("global::TestApp.DraftReply");
+        var ticketIdx = source.IndexOf("global::TestApp.TicketInput");
+
+        Assert.True(classifyIdx < draftIdx, "ClassifyTicket should appear before DraftReply");
+        Assert.True(draftIdx < ticketIdx, "DraftReply should appear before TicketInput");
+    }
+
+    [Fact]
+    public void GenerateSource_CountsAllSerializableAttributes()
+    {
+        var model = CreateModuleModel();
+        var source = ModuleJsonContextEmitter.GenerateSource(model);
+
+        // 3 core types (ModuleState, PredictorState, DemoEntry) + 3 unique concrete types
         var count = source.Split("[JsonSerializable(").Length - 1;
-        Assert.Equal(3, count);
+        Assert.Equal(6, count);
     }
 
     #endregion
@@ -265,7 +305,7 @@ public class ModuleJsonContextEmitterTests
     }
 
     [Fact]
-    public void Pipeline_ModuleJsonContext_UsesFilePartialClass()
+    public void Pipeline_ModuleJsonContext_UsesInternalPartialClass()
     {
         var source = GetModulePipelineSource();
         var (_, runResult) = RunGenerator(source);
@@ -274,7 +314,7 @@ public class ModuleJsonContextEmitterTests
             .First(s => s.HintName == "TicketTriageModule.JsonContext.g.cs");
 
         var text = jsonContextFile.SourceText.ToString();
-        Assert.Contains("file partial class TicketTriageModuleJsonContext : JsonSerializerContext;", text);
+        Assert.Contains("internal partial class TicketTriageModuleJsonContext : JsonSerializerContext;", text);
     }
 
     [Fact]
@@ -433,7 +473,41 @@ public class ModuleJsonContextEmitterTests
         Assert.Contains("[JsonSerializable(typeof(ModuleState))]", text);
         Assert.Contains("[JsonSerializable(typeof(PredictorState))]", text);
         Assert.Contains("[JsonSerializable(typeof(DemoEntry))]", text);
-        Assert.Contains("file partial class SingleModuleJsonContext : JsonSerializerContext;", text);
+        Assert.Contains("internal partial class SingleModuleJsonContext : JsonSerializerContext;", text);
+    }
+
+    [Fact]
+    public void Pipeline_ModuleJsonContext_ContainsConcretePredictorTypes()
+    {
+        var source = GetModulePipelineSource();
+        var (_, runResult) = RunGenerator(source);
+
+        var jsonContextFile = runResult.Results[0].GeneratedSources
+            .First(s => s.HintName == "TicketTriageModule.JsonContext.g.cs");
+
+        var text = jsonContextFile.SourceText.ToString();
+
+        // Module has Predictor<TicketInput, ClassifyTicket> and Predictor<ClassifyTicket, DraftReply>
+        // Unique concrete types: ClassifyTicket, DraftReply, TicketInput
+        Assert.Contains("[JsonSerializable(typeof(global::TestApp.TicketInput))]", text);
+        Assert.Contains("[JsonSerializable(typeof(global::TestApp.ClassifyTicket))]", text);
+        Assert.Contains("[JsonSerializable(typeof(global::TestApp.DraftReply))]", text);
+    }
+
+    [Fact]
+    public void Pipeline_ModuleJsonContext_TotalSerializableAttributes()
+    {
+        var source = GetModulePipelineSource();
+        var (_, runResult) = RunGenerator(source);
+
+        var jsonContextFile = runResult.Results[0].GeneratedSources
+            .First(s => s.HintName == "TicketTriageModule.JsonContext.g.cs");
+
+        var text = jsonContextFile.SourceText.ToString();
+
+        // 3 core types + 3 unique concrete types = 6 total
+        var count = text.Split("[JsonSerializable(").Length - 1;
+        Assert.Equal(6, count);
     }
 
     #endregion
@@ -535,6 +609,18 @@ public class ModuleJsonContextEmitterTests
         [
             MetadataReference.CreateFromFile(System.IO.Path.Combine(runtimeDir, "System.Runtime.dll")),
         ];
+    }
+
+    private static int CountOccurrences(string source, string substring)
+    {
+        int count = 0;
+        int idx = 0;
+        while ((idx = source.IndexOf(substring, idx)) != -1)
+        {
+            count++;
+            idx += substring.Length;
+        }
+        return count;
     }
 
     #endregion

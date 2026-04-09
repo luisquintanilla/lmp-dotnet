@@ -581,27 +581,30 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 **Spec:** `runtime-execution.md` §3.3, `source-generator.md` §5
 
 **Tasks:**
-- [x] Created `ModuleJsonContextEmitter` that generates a `file partial class {ModuleName}JsonContext : JsonSerializerContext` per module:
+- [x] Created `ModuleJsonContextEmitter` that generates an `internal partial class {ModuleName}JsonContext : JsonSerializerContext` per module:
   - `[JsonSourceGenerationOptions(PropertyNamingPolicy = CamelCase, WriteIndented = true, DefaultIgnoreCondition = WhenWritingNull)]`
   - `[JsonSerializable(typeof(ModuleState))]`
   - `[JsonSerializable(typeof(PredictorState))]`
   - `[JsonSerializable(typeof(DemoEntry))]`
-- [x] Wired Pipeline 3b in `LmpSourceGenerator` — reuses `moduleModels` provider from Pipeline 3 to emit JsonContext alongside GetPredictors
+  - `[JsonSerializable(typeof(TInput))]` / `[JsonSerializable(typeof(TOutput))]` per unique predictor type pair (sorted, deduplicated)
+- [x] Wired into Pipeline 3 in `LmpSourceGenerator` — combined callback emits both GetPredictors and JsonContext
 - [x] Hint name: `{ModuleName}.JsonContext.g.cs`
-- [x] 25 tests in `ModuleJsonContextEmitterTests`:
-  - Direct emitter tests: header, usings, namespace, GeneratedCode attribute, file partial class, type name in class name
+- [x] 30 tests in `ModuleJsonContextEmitterTests`:
+  - Direct emitter tests: header, usings, namespace, GeneratedCode attribute, internal partial class, type name in class name
   - JsonSourceGenerationOptions tests: options present, ModuleState/PredictorState/DemoEntry [JsonSerializable] attributes
+  - Concrete type tests: includes all unique TInput/TOutput types, deduplicates shared types, sorts for determinism, correct total attribute count
   - Syntax validity: valid C# with and without namespace
-  - Snapshot tests: full output structure ordering, no-namespace variant, exactly 3 serializable attributes
-  - Pipeline integration tests: emits JsonContext file, contains all 3 serializable types, uses file partial class, both Predictors and JsonContext emitted together, multiple modules emit separate JsonContext files, non-partial modules skip JsonContext, single-predictor module emits JsonContext
+  - Snapshot tests: full output structure ordering, no-namespace variant
+  - Pipeline integration tests: emits JsonContext file, contains all serializable types (core + concrete), uses internal partial class, both Predictors and JsonContext emitted together, multiple modules emit separate JsonContext files, non-partial modules skip JsonContext, single-predictor module emits JsonContext, total attribute count in pipeline
 
 **Implementation notes:**
 - Separate `ModuleJsonContextEmitter` class for clean separation from `ModuleEmitter` (GetPredictors)
-- Uses `file` access modifier to prevent namespace pollution (same pattern as per-type JsonContext)
+- Uses `internal` access modifier so module's `SaveAsync`/`LoadAsync` can reference the context (not `file`)
 - `WriteIndented = true` for human-readable artifact files (per `artifact-format.md`)
-- Non-generic `ModuleState`/`PredictorState`/`DemoEntry` types are sufficient — typed demo serialization uses `JsonElement` dictionaries
+- Concrete TInput/TOutput types included for AOT-safe demo serialization
+- Types sorted alphabetically by FQN for deterministic output
 
-**Status:** ✅ Complete. 300 total tests pass (51 Abstractions + 35 Core + 214 SourceGen). Generator now emits `{ModuleName}.JsonContext.g.cs` for every valid partial `LmpModule` subclass.
+**Status:** ✅ Complete. 305 total tests pass (51 Abstractions + 35 Core + 219 SourceGen). Generator now emits `{ModuleName}.JsonContext.g.cs` with concrete types for every valid partial `LmpModule` subclass.
 
 **Completion criteria:** ✅ Source-gen produces module-specific `JsonSerializerContext` for AOT-safe save/load.
 
