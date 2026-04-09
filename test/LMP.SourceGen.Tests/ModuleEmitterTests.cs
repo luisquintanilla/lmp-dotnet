@@ -371,6 +371,199 @@ public class ModuleEmitterTests
         Assert.Contains("(\"predict\", _predict),", text);
     }
 
+    [Fact]
+    public void Pipeline_ModuleWithPropertyPredictor_EmitsPropertyEntry()
+    {
+        var source = """
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                }
+                public interface IPredictor { }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                }
+            }
+
+            namespace TestApp
+            {
+                using LMP;
+
+                public record TestInput(string Text);
+                public partial record TestOutput { public required string Result { get; init; } }
+
+                public partial class PropModule : LmpModule
+                {
+                    public Predictor<TestInput, TestOutput> Classify { get; } = null!;
+
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+            }
+            """;
+
+        var (diagnostics, runResult) = RunGenerator(source);
+        Assert.Empty(diagnostics);
+
+        var predictorsFile = runResult.Results[0].GeneratedSources
+            .FirstOrDefault(s => s.HintName == "PropModule.Predictors.g.cs");
+        Assert.True(predictorsFile.HintName is not null,
+            "Expected PropModule.Predictors.g.cs");
+
+        var text = predictorsFile.SourceText.ToString();
+        Assert.Contains("(\"Classify\", Classify),", text);
+    }
+
+    [Fact]
+    public void Pipeline_ModuleWithMixedFieldsAndProperties_EmitsBoth()
+    {
+        var source = """
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                }
+                public interface IPredictor { }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                }
+            }
+
+            namespace TestApp
+            {
+                using LMP;
+
+                public record Input1(string Text);
+                public partial record Output1 { public required string Value { get; init; } }
+                public partial record Output2 { public required string Value { get; init; } }
+
+                public partial class MixedModule : LmpModule
+                {
+                    private readonly Predictor<Input1, Output1> _field = null!;
+                    public Predictor<Input1, Output2> Prop { get; } = null!;
+
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+            }
+            """;
+
+        var (diagnostics, runResult) = RunGenerator(source);
+        Assert.Empty(diagnostics);
+
+        var predictorsFile = runResult.Results[0].GeneratedSources
+            .FirstOrDefault(s => s.HintName == "MixedModule.Predictors.g.cs");
+        Assert.True(predictorsFile.HintName is not null,
+            "Expected MixedModule.Predictors.g.cs");
+
+        var text = predictorsFile.SourceText.ToString();
+        Assert.Contains("(\"field\", _field),", text);
+        Assert.Contains("(\"Prop\", Prop),", text);
+    }
+
+    [Fact]
+    public void Pipeline_IndirectModuleSubclass_EmitsGetPredictors()
+    {
+        var source = """
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                }
+                public interface IPredictor { }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                }
+            }
+
+            namespace TestApp
+            {
+                using LMP;
+
+                public record Input1(string Text);
+                public partial record Output1 { public required string Value { get; init; } }
+
+                public abstract partial class BaseModule : LmpModule { }
+
+                public partial class DerivedModule : BaseModule
+                {
+                    private readonly Predictor<Input1, Output1> _predict = null!;
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+            }
+            """;
+
+        var (diagnostics, runResult) = RunGenerator(source);
+        Assert.Empty(diagnostics);
+
+        Assert.Contains(runResult.Results[0].GeneratedSources,
+            s => s.HintName == "DerivedModule.Predictors.g.cs");
+    }
+
+    [Fact]
+    public void Pipeline_MultipleModules_EmitsGetPredictorsForEach()
+    {
+        var source = """
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                }
+                public interface IPredictor { }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                }
+            }
+
+            namespace TestApp
+            {
+                using LMP;
+
+                public record Input1(string Text);
+                public partial record Output1 { public required string Value { get; init; } }
+                public record Input2(string Text);
+                public partial record Output2 { public required string Value { get; init; } }
+
+                public partial class ModuleA : LmpModule
+                {
+                    private readonly Predictor<Input1, Output1> _predict = null!;
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+
+                public partial class ModuleB : LmpModule
+                {
+                    private readonly Predictor<Input2, Output2> _predict = null!;
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+            }
+            """;
+
+        var (diagnostics, runResult) = RunGenerator(source);
+        Assert.Empty(diagnostics);
+
+        Assert.Contains(runResult.Results[0].GeneratedSources,
+            s => s.HintName == "ModuleA.Predictors.g.cs");
+        Assert.Contains(runResult.Results[0].GeneratedSources,
+            s => s.HintName == "ModuleB.Predictors.g.cs");
+    }
+
     #endregion
 
     #region Model tests

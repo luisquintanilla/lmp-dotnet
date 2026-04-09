@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 2.5 complete — 183 tests passing. Next: Phase 2.6 (Diagnostics LMP001 and LMP002).
+> **Status:** Phase 2.5 complete — 187 tests passing. Next: Phase 2.6 (Diagnostics LMP001 and LMP002).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -491,7 +491,7 @@ Generate predictor discovery on `LmpModule` subclasses.
 **Tasks:**
 - [x] Implement module discovery pipeline using `CreateSyntaxProvider` (per **D9**):
   - Predicate: `ClassDeclarationSyntax` with base list and `partial` keyword
-  - Transform: validate `LmpModule` base type, walk all fields, identify `Predictor<,>` or subclasses
+  - Transform: validate `LmpModule` base type, walk all fields and properties, identify `Predictor<,>` or subclasses
   - Use `PredictorPairExtractor.IsPredictorType()` helper walking base types to match `LMP.Predictor<TInput, TOutput>`
 - [x] Create `ModuleModel` record: Namespace, TypeName, PredictorFields (EquatableArray)
 - [x] Create `PredictorFieldModel`: FieldName, InputTypeFQN, OutputTypeFQN
@@ -502,10 +502,10 @@ Generate predictor discovery on `LmpModule` subclasses.
   - Strips `_` prefix from field names for the Name string
 - [x] Hint name: `{ModuleName}.Predictors.g.cs`
 - [x] Wired Pipeline 3 in `LmpSourceGenerator` — scans partial class declarations for LmpModule subclasses
-- [x] Unit tests: 23 tests in `ModuleEmitterTests` — direct emitter tests (structure, syntax validity, field stripping, snapshot) + pipeline integration tests (module with fields, single field, non-module, empty module, non-partial module) + model equality tests
+- [x] Unit tests: 27 tests in `ModuleEmitterTests` — direct emitter tests (structure, syntax validity, field stripping, snapshot) + pipeline integration tests (module with fields, single field, non-module, empty module, non-partial module, property predictors, mixed fields/properties, indirect subclass, multiple modules) + model equality tests
 - [x] Un-skipped 5 PromptBuilder pipeline tests from Phase 2.3 (now all passing with the pipeline wired)
 
-**Status:** ✅ Complete. 183 total tests pass (51 Abstractions + 16 Core + 116 SourceGen). Full end-to-end pipeline: `partial class : LmpModule` → `ModuleExtractor` → `ModuleEmitter` → emitted `{ModuleName}.Predictors.g.cs`. Predictor fields named with `_` prefix get the prefix stripped in the name string.
+**Status:** ✅ Complete. 187 total tests pass (51 Abstractions + 16 Core + 120 SourceGen). Full end-to-end pipeline: `partial class : LmpModule` → `ModuleExtractor` → `ModuleEmitter` → emitted `{ModuleName}.Predictors.g.cs`. Walks both fields and properties. Predictor fields named with `_` prefix get the prefix stripped in the name string.
 
 **Completion criteria:** A module with `_classify` and `_draft` predictor fields gets a generated `GetPredictors()` returning `[("classify", _classify), ("draft", _draft)]`.
 

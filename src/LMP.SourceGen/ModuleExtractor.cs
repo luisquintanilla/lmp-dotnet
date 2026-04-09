@@ -45,25 +45,23 @@ internal static class ModuleExtractor
             return null;
 
         var predictorFields = new List<PredictorFieldModel>();
+        var seen = new HashSet<string>();
 
+        // Walk fields (e.g., private readonly Predictor<TIn,TOut> _classify)
         foreach (var member in typeSymbol.GetMembers().OfType<IFieldSymbol>())
         {
             ct.ThrowIfCancellationRequested();
+            TryAddPredictor(member.Name, member.Type, predictorFields, seen);
+        }
 
-            if (member.Type is not INamedTypeSymbol fieldType)
+        // Walk properties (e.g., public Predictor<TIn,TOut> Classify { get; })
+        // Skip properties whose backing fields were already captured.
+        foreach (var member in typeSymbol.GetMembers().OfType<IPropertySymbol>())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (member.IsIndexer)
                 continue;
-
-            if (!PredictorPairExtractor.IsPredictorType(fieldType))
-                continue;
-
-            var (inputType, outputType) = GetPredictorTypeArguments(fieldType);
-            if (inputType is null || outputType is null)
-                continue;
-
-            predictorFields.Add(new PredictorFieldModel(
-                FieldName: member.Name,
-                InputTypeFQN: inputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                OutputTypeFQN: outputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
+            TryAddPredictor(member.Name, member.Type, predictorFields, seen);
         }
 
         if (predictorFields.Count == 0)
@@ -78,6 +76,31 @@ internal static class ModuleExtractor
             TypeName: typeSymbol.Name,
             PredictorFields: new EquatableArray<PredictorFieldModel>(
                 predictorFields.ToImmutableArray()));
+    }
+
+    private static void TryAddPredictor(
+        string memberName,
+        ITypeSymbol memberType,
+        List<PredictorFieldModel> predictorFields,
+        HashSet<string> seen)
+    {
+        if (memberType is not INamedTypeSymbol namedType)
+            return;
+
+        if (!PredictorPairExtractor.IsPredictorType(namedType))
+            return;
+
+        var (inputType, outputType) = GetPredictorTypeArguments(namedType);
+        if (inputType is null || outputType is null)
+            return;
+
+        if (!seen.Add(memberName))
+            return;
+
+        predictorFields.Add(new PredictorFieldModel(
+            FieldName: memberName,
+            InputTypeFQN: inputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            OutputTypeFQN: outputType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
     }
 
     /// <summary>
