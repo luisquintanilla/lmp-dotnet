@@ -51,7 +51,11 @@ internal static class PredictorPairExtractor
         var instructions = lmpAttr.ConstructorArguments.FirstOrDefault().Value as string ?? "";
 
         var inputFields = ModelExtractor.ExtractInputFields(inputType, ct);
-        var outputFields = ModelExtractor.ExtractOutputFields(outputType, ct);
+        var outputFields = ModelExtractor.ExtractOutputFields(outputType, ct, out bool hasNonSerializable);
+
+        // Skip PromptBuilder emission if output type has non-serializable properties (LMP002)
+        if (hasNonSerializable)
+            return null;
 
         var ns = outputType.ContainingNamespace.IsGlobalNamespace
             ? ""

@@ -16,7 +16,7 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
     /// <inheritdoc />
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        // Pipeline 1: [LmpSignature]-annotated types → model extraction + LMP003 diagnostics
+        // Pipeline 1: [LmpSignature]-annotated types → model extraction + diagnostics
         var allTargets = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 "LMP.LmpSignatureAttribute",
@@ -37,8 +37,18 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
                     model.TypeKindDescription));
             });
 
-        // Valid output type models — used for JsonContext emission (no input type needed)
-        var outputModels = allTargets.Where(static m => m.IsPartialRecord);
+        // For valid partial records, report LMP001 (missing description) and LMP002 (non-serializable)
+        var partialRecords = allTargets.Where(static m => m.IsPartialRecord);
+
+        context.RegisterSourceOutput(
+            partialRecords,
+            static (spc, model) =>
+            {
+                ReportFieldDiagnostics(spc, model);
+            });
+
+        // Valid output type models without LMP002 errors — used for JsonContext emission
+        var outputModels = partialRecords.Where(static m => !m.HasNonSerializableProperty);
 
         context.RegisterSourceOutput(
             outputModels,
@@ -78,6 +88,35 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
 
         context.RegisterSourceOutput(moduleModels, static (spc, model) =>
             ModuleEmitter.Emit(spc, model));
+    }
+
+    /// <summary>
+    /// Reports LMP001 and LMP002 diagnostics for output field issues.
+    /// </summary>
+    private static void ReportFieldDiagnostics(SourceProductionContext spc, OutputTypeModel model)
+    {
+        foreach (var field in model.OutputFields)
+        {
+            // LMP001: Missing [Description] attribute
+            if (string.IsNullOrEmpty(field.Description))
+            {
+                spc.ReportDiagnostic(Diagnostic.Create(
+                    LmpDiagnostics.MissingDescription,
+                    field.Location.ToLocation(),
+                    field.Name,
+                    model.TypeName));
+            }
+
+            // LMP002: Non-serializable property type
+            if (field.IsNonSerializable)
+            {
+                spc.ReportDiagnostic(Diagnostic.Create(
+                    LmpDiagnostics.NonSerializableOutput,
+                    field.Location.ToLocation(),
+                    field.Name,
+                    model.TypeName));
+            }
+        }
     }
 
     private static IEnumerable<PromptBuilderModel> DeduplicateByOutputType(

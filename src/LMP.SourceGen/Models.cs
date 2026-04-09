@@ -20,7 +20,8 @@ internal sealed record OutputTypeModel(
     EquatableArray<OutputFieldModel> OutputFields,
     bool IsPartialRecord,
     string? TypeKindDescription,
-    LocationInfo Location)
+    LocationInfo Location,
+    bool HasNonSerializableProperty = false)
 {
     /// <summary>
     /// Simple name of the input type (e.g. "TicketInput").
@@ -44,6 +45,7 @@ internal sealed record OutputFieldModel(
     string FullyQualifiedTypeName,
     string? Description,
     bool IsRequired,
+    bool IsNonSerializable,
     LocationInfo Location);
 
 /// <summary>

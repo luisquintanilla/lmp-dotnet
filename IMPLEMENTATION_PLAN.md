@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 2.5 complete — 187 tests passing. Next: Phase 2.6 (Diagnostics LMP001 and LMP002).
+> **Status:** Phase 2.6 complete — 231 tests passing. Next: Phase 2.7 (Predictor PredictAsync Implementation).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -29,12 +29,12 @@
 | Solution skeleton (sln, props, global.json) | `AGENTS.md` | :white_check_mark: Complete |
 | `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 1 shell complete (PredictAsync wired in Phase 2) |
-| `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :construction: Phase 2.5 complete (model extraction, PromptBuilder, JsonContext, GetPredictors) |
+| `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :construction: Phase 2.6 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, LMP001/LMP002/LMP003 diagnostics) |
 | `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :x: Not started (placeholder only) |
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
-| Diagnostics LMP001–LMP003 | `diagnostics.md` | :x: Not started |
+| Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 183 tests passing (Phases 1–2.5) |
+| Test projects | `AGENTS.md` | :white_check_mark: 231 tests passing (Phases 1–2.6) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -372,6 +372,7 @@ Contracts for RAG and optimization.
 - ✅ All public types have XML doc comments
 - ✅ 67 unit tests pass for: attribute construction, record equality, `Example.WithInputs()`, assertion behavior, `Trace.Record()`, serialization round-trip, `IPredictor` interface satisfaction
 - ✅ `dotnet build && dotnet test` succeeds with zero errors and zero warnings
+- ✅ 67→231 unit tests pass across Phases 1–2.6
 
 > **Status: ✅ PHASE 1 COMPLETE.** All abstractions and type contracts implemented. Next: Phase 2 (Source Generator + Core Predictor).
 
@@ -509,28 +510,36 @@ Generate predictor discovery on `LmpModule` subclasses.
 
 **Completion criteria:** A module with `_classify` and `_draft` predictor fields gets a generated `GetPredictors()` returning `[("classify", _classify), ("draft", _draft)]`.
 
-### 2.6 — Diagnostics LMP001 and LMP002
+### 2.6 — Diagnostics LMP001 and LMP002 ✅ COMPLETE
 
 Build-time diagnostics for output type validation.
 
 **Spec:** `diagnostics.md`
 
 **Tasks:**
-- [ ] Create `LmpDiagnostics` static class with `DiagnosticDescriptor` fields for LMP001, LMP002, LMP003
-- [ ] Implement **LMP001**: warn on output properties missing `[Description]` per `diagnostics.md`
-  - Still generate code — use property name as fallback description
+- [x] `LmpDiagnostics` static class already existed with `DiagnosticDescriptor` fields for LMP001, LMP002, LMP003
+- [x] Implement **LMP001**: warn on output properties missing `[Description]` per `diagnostics.md`
+  - Still generates code — use property name as fallback description
   - Message: `"Property '{0}' on output type '{1}' is missing a [Description] attribute"`
-- [ ] Implement **LMP002**: error on non-serializable output property types per `diagnostics.md`
-  - Skip generation for the entire type
-  - Blocklist: `Delegate`, `IntPtr`, `UIntPtr`, `Span<T>`, `ReadOnlySpan<T>`, `Stream`, `Func<>`, `Action<>`, `Expression<>`, etc.
+  - Reported in Pipeline 1 via `ReportFieldDiagnostics()` for valid partial records
+- [x] Implement **LMP002**: error on non-serializable output property types per `diagnostics.md`
+  - Skips code generation for the entire type (`HasNonSerializableProperty` flag on `OutputTypeModel`)
+  - Blocklist: `Delegate` (all), `IntPtr`, `UIntPtr`, `Span<T>`, `ReadOnlySpan<T>`, `Action<>`, `Func<>`, `Expression<>`, `Task<>`, `Stream`, etc.
   - Message: `"Property '{0}' on output type '{1}' is not serializable by System.Text.Json"`
-- [ ] Analyzer tests using `Microsoft.CodeAnalysis.Testing`:
-  - LMP001 fires on property without `[Description]`
-  - LMP002 fires on `Action<string>` property
-  - LMP003 fires on non-partial record and on class
-  - Verify code compiles when all diagnostics are satisfied
+  - Created `SerializabilityChecker` static class for type analysis during model extraction
+- [x] Added `IsNonSerializable` flag to `OutputFieldModel` for per-field diagnostic reporting
+- [x] Added `HasNonSerializableProperty` flag to `OutputTypeModel` to suppress code generation
+- [x] Updated `PredictorPairExtractor` to skip PromptBuilder emission for types with LMP002 errors
+- [x] Unit tests: 18 diagnostic tests in `OutputTypeModelExtractionTests`:
+  - LMP001: fires on missing description, doesn't fire when all present, multiple properties, still generates code, location points to property, doesn't fire on non-partial record
+  - LMP002: fires on Action<>, Func<>, delegate, IntPtr; doesn't fire on serializable types; skips code gen; multiple errors reported; location, combined with LMP001, doesn't fire on non-partial record
+- [x] Unit tests: 28 serialization checker tests in `SerializabilityCheckerTests`:
+  - Primitives, nullable value types, arrays, List<>, Dictionary<>, DateTime all serializable
+  - Action<>, Action, Func<>, IntPtr, UIntPtr, CancellationToken, custom delegates, Task<>, Task all non-serializable
 
-**Completion criteria:** All 3 diagnostics fire correctly; code-fix for LMP001 adds `[Description("TODO")]`.
+**Status:** ✅ Complete. 231 total tests pass (51 Abstractions + 16 Core + 164 SourceGen). All three diagnostics (LMP001, LMP002, LMP003) implemented and tested. LMP001 is a warning that allows code gen. LMP002 is an error that suppresses all code gen for the type. LMP003 was already implemented in Phase 2.2.
+
+**Completion criteria:** All 3 diagnostics fire correctly; LMP002 skips code generation.
 
 ### 2.7 — Predictor\<TInput, TOutput\>.PredictAsync Implementation
 

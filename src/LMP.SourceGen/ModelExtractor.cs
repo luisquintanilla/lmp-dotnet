@@ -48,8 +48,9 @@ internal static class ModelExtractor
 
         var instructions = attr.ConstructorArguments.FirstOrDefault().Value as string ?? "";
 
+        bool hasNonSerializable = false;
         var outputFields = isPartialRecord
-            ? ExtractOutputFields(typeSymbol, ct)
+            ? ExtractOutputFields(typeSymbol, ct, out hasNonSerializable)
             : default;
 
         var ns = typeSymbol.ContainingNamespace.IsGlobalNamespace
@@ -64,7 +65,8 @@ internal static class ModelExtractor
             OutputFields: outputFields,
             IsPartialRecord: isPartialRecord,
             TypeKindDescription: typeKindDescription,
-            Location: LocationInfo.From(targetNode.GetLocation()));
+            Location: LocationInfo.From(targetNode.GetLocation()),
+            HasNonSerializableProperty: hasNonSerializable);
     }
 
     /// <summary>
@@ -73,7 +75,17 @@ internal static class ModelExtractor
     internal static EquatableArray<OutputFieldModel> ExtractOutputFields(
         INamedTypeSymbol typeSymbol, CancellationToken ct)
     {
+        return ExtractOutputFields(typeSymbol, ct, out _);
+    }
+
+    /// <summary>
+    /// Extracts output field metadata and reports whether any property is non-serializable.
+    /// </summary>
+    internal static EquatableArray<OutputFieldModel> ExtractOutputFields(
+        INamedTypeSymbol typeSymbol, CancellationToken ct, out bool hasNonSerializableProperty)
+    {
         var builder = ImmutableArray.CreateBuilder<OutputFieldModel>();
+        hasNonSerializableProperty = false;
 
         foreach (var member in typeSymbol.GetMembers().OfType<IPropertySymbol>())
         {
@@ -92,12 +104,20 @@ internal static class ModelExtractor
             var location = LocationInfo.From(
                 member.Locations.FirstOrDefault() ?? Location.None);
 
+            if (SerializabilityChecker.IsNonSerializable(member.Type))
+                hasNonSerializableProperty = true;
+
+            var isNonSerializable = SerializabilityChecker.IsNonSerializable(member.Type);
+            if (isNonSerializable)
+                hasNonSerializableProperty = true;
+
             builder.Add(new OutputFieldModel(
                 Name: member.Name,
                 ClrTypeName: clrType,
                 FullyQualifiedTypeName: fqnType,
                 Description: description,
                 IsRequired: member.IsRequired,
+                IsNonSerializable: isNonSerializable,
                 Location: location));
         }
 

@@ -561,6 +561,7 @@ public class PromptBuilderEmitterTests
             FullyQualifiedTypeName: "global::" + clrType,
             Description: description,
             IsRequired: isRequired,
+            IsNonSerializable: false,
             Location: default);
     }
 

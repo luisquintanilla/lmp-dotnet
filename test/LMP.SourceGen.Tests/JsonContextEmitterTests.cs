@@ -201,6 +201,7 @@ public class JsonContextEmitterTests
                 FullyQualifiedTypeName: "global::System.String",
                 Description: "Category: billing, technical, account",
                 IsRequired: true,
+                IsNonSerializable: false,
                 Location: default),
             new OutputFieldModel(
                 Name: "Urgency",
@@ -208,6 +209,7 @@ public class JsonContextEmitterTests
                 FullyQualifiedTypeName: "global::System.Int32",
                 Description: "Urgency from 1 (low) to 5 (critical)",
                 IsRequired: true,
+                IsNonSerializable: false,
                 Location: default),
         };
 

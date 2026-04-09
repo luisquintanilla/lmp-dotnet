@@ -307,6 +307,445 @@ public class OutputTypeModelExtractionTests
 
     #endregion
 
+    #region LMP001 — Missing Description
+
+    [Fact]
+    public void LMP001_Fires_OnPropertyWithoutDescription()
+    {
+        var source = """
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Classify a support ticket")]
+            public partial record ClassifyTicket
+            {
+                [Description("Category: billing, technical, account")]
+                public required string Category { get; init; }
+
+                public required int Urgency { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        var lmp001 = diagnostics.Where(d => d.Id == "LMP001").ToArray();
+        Assert.Single(lmp001);
+        Assert.Equal(DiagnosticSeverity.Warning, lmp001[0].Severity);
+        Assert.Contains("Urgency", lmp001[0].GetMessage());
+        Assert.Contains("ClassifyTicket", lmp001[0].GetMessage());
+    }
+
+    [Fact]
+    public void LMP001_DoesNotFire_WhenAllPropertiesHaveDescription()
+    {
+        var source = """
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Classify")]
+            public partial record ClassifyTicket
+            {
+                [Description("Category")]
+                public required string Category { get; init; }
+
+                [Description("Urgency level")]
+                public required int Urgency { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        Assert.Empty(diagnostics.Where(d => d.Id == "LMP001"));
+    }
+
+    [Fact]
+    public void LMP001_Fires_OnMultiplePropertiesMissingDescription()
+    {
+        var source = """
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Extract")]
+            public partial record Extraction
+            {
+                public required string Name { get; init; }
+                public required string Location { get; init; }
+                public required int Count { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        var lmp001s = diagnostics.Where(d => d.Id == "LMP001").ToArray();
+        Assert.Equal(3, lmp001s.Length);
+        Assert.Contains(lmp001s, d => d.GetMessage().Contains("Name"));
+        Assert.Contains(lmp001s, d => d.GetMessage().Contains("Location"));
+        Assert.Contains(lmp001s, d => d.GetMessage().Contains("Count"));
+    }
+
+    [Fact]
+    public void LMP001_StillGeneratesCode_WhenWarningPresent()
+    {
+        var source = """
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Classify")]
+            public partial record MyType
+            {
+                public required string Value { get; init; }
+            }
+            """;
+
+        var compilation = CreateCompilation(source);
+        var generator = new LmpSourceGenerator();
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+        driver = driver.RunGeneratorsAndUpdateCompilation(
+            compilation, out _, out var diagnostics);
+
+        // LMP001 warning fires
+        Assert.Single(diagnostics.Where(d => d.Id == "LMP001"));
+
+        // But JsonContext is still generated
+        var runResult = driver.GetRunResult();
+        Assert.Single(runResult.GeneratedTrees);
+        var generatedSource = runResult.GeneratedTrees[0].GetText().ToString();
+        Assert.Contains("MyTypeJsonContext", generatedSource);
+    }
+
+    [Fact]
+    public void LMP001_Location_PointsToProperty()
+    {
+        var source = """
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public partial record MyOutput
+            {
+                public required string MissingDesc { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        var lmp001 = Assert.Single(diagnostics.Where(d => d.Id == "LMP001"));
+        Assert.NotEqual(Location.None, lmp001.Location);
+        Assert.True(lmp001.Location.SourceSpan.Length > 0,
+            "Diagnostic should point at the property");
+    }
+
+    [Fact]
+    public void LMP001_DoesNotFire_OnNonPartialRecord()
+    {
+        // LMP003 fires but LMP001 should not (non-partial types don't get field extraction)
+        var source = """
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public record NotPartial
+            {
+                public required string Value { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        Assert.Empty(diagnostics.Where(d => d.Id == "LMP001"));
+        Assert.NotEmpty(diagnostics.Where(d => d.Id == "LMP003"));
+    }
+
+    #endregion
+
+    #region LMP002 — Non-Serializable Output
+
+    [Fact]
+    public void LMP002_Fires_OnActionProperty()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Extract entities")]
+            public partial record Entities
+            {
+                [Description("Matched entities")]
+                public required Action<string> Callback { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        var lmp002 = diagnostics.Where(d => d.Id == "LMP002").ToArray();
+        Assert.Single(lmp002);
+        Assert.Equal(DiagnosticSeverity.Error, lmp002[0].Severity);
+        Assert.Contains("Callback", lmp002[0].GetMessage());
+        Assert.Contains("Entities", lmp002[0].GetMessage());
+    }
+
+    [Fact]
+    public void LMP002_Fires_OnFuncProperty()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public partial record BadType
+            {
+                [Description("A function")]
+                public required Func<string, int> Handler { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        var lmp002 = diagnostics.Where(d => d.Id == "LMP002").ToArray();
+        Assert.Single(lmp002);
+        Assert.Contains("Handler", lmp002[0].GetMessage());
+    }
+
+    [Fact]
+    public void LMP002_Fires_OnDelegateProperty()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            public delegate void MyDelegate(string s);
+
+            [LmpSignature("Test")]
+            public partial record HasDelegate
+            {
+                [Description("A delegate")]
+                public required MyDelegate OnEvent { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        var lmp002 = diagnostics.Where(d => d.Id == "LMP002").ToArray();
+        Assert.Single(lmp002);
+        Assert.Contains("OnEvent", lmp002[0].GetMessage());
+    }
+
+    [Fact]
+    public void LMP002_Fires_OnIntPtrProperty()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public partial record HasIntPtr
+            {
+                [Description("A pointer")]
+                public required IntPtr Pointer { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        Assert.Single(diagnostics.Where(d => d.Id == "LMP002"));
+    }
+
+    [Fact]
+    public void LMP002_DoesNotFire_OnSerializableTypes()
+    {
+        var source = """
+            using System.ComponentModel;
+            using System.Collections.Generic;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Classify")]
+            public partial record GoodType
+            {
+                [Description("Name")]
+                public required string Name { get; init; }
+
+                [Description("Count")]
+                public required int Count { get; init; }
+
+                [Description("Score")]
+                public required double Score { get; init; }
+
+                [Description("Active")]
+                public required bool Active { get; init; }
+
+                [Description("Tags")]
+                public required List<string> Tags { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        Assert.Empty(diagnostics.Where(d => d.Id == "LMP002"));
+    }
+
+    [Fact]
+    public void LMP002_SkipsCodeGeneration_WhenNonSerializablePresent()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public partial record BadOutput
+            {
+                [Description("Good")]
+                public required string Good { get; init; }
+
+                [Description("Bad")]
+                public required Action BadAction { get; init; }
+            }
+            """;
+
+        var compilation = CreateCompilation(source);
+        var generator = new LmpSourceGenerator();
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+        driver = driver.RunGeneratorsAndUpdateCompilation(
+            compilation, out _, out var diagnostics);
+
+        // LMP002 fires
+        Assert.Single(diagnostics.Where(d => d.Id == "LMP002"));
+
+        // No JsonContext generated (code gen skipped)
+        var runResult = driver.GetRunResult();
+        Assert.Empty(runResult.GeneratedTrees);
+    }
+
+    [Fact]
+    public void LMP002_MultipleNonSerializableProperties_ReportsEach()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public partial record MultipleErrors
+            {
+                [Description("D1")]
+                public required Action<string> A { get; init; }
+
+                [Description("D2")]
+                public required Func<int> B { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        var lmp002s = diagnostics.Where(d => d.Id == "LMP002").ToArray();
+        Assert.Equal(2, lmp002s.Length);
+        Assert.Contains(lmp002s, d => d.GetMessage().Contains("A"));
+        Assert.Contains(lmp002s, d => d.GetMessage().Contains("B"));
+    }
+
+    [Fact]
+    public void LMP002_Location_PointsToProperty()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public partial record HasBadProp
+            {
+                [Description("Bad")]
+                public required Action<string> Callback { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        var lmp002 = Assert.Single(diagnostics.Where(d => d.Id == "LMP002"));
+        Assert.NotEqual(Location.None, lmp002.Location);
+        Assert.True(lmp002.Location.SourceSpan.Length > 0);
+    }
+
+    [Fact]
+    public void LMP001_And_LMP002_CanFireOnSameType()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public partial record MixedIssues
+            {
+                public required string NoDescription { get; init; }
+
+                [Description("Bad")]
+                public required Action<string> Callback { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        Assert.Single(diagnostics.Where(d => d.Id == "LMP001"));
+        Assert.Single(diagnostics.Where(d => d.Id == "LMP002"));
+    }
+
+    [Fact]
+    public void LMP002_DoesNotFire_OnNonPartialRecord()
+    {
+        var source = """
+            using System;
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            [LmpSignature("Test")]
+            public record NotPartial
+            {
+                [Description("Bad")]
+                public required Action<string> Callback { get; init; }
+            }
+            """;
+
+        var diagnostics = RunGeneratorDiagnostics(source);
+
+        Assert.Empty(diagnostics.Where(d => d.Id == "LMP002"));
+        Assert.NotEmpty(diagnostics.Where(d => d.Id == "LMP003"));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static ImmutableArray<Diagnostic> RunGeneratorDiagnostics(string source)
@@ -358,6 +797,7 @@ public class OutputTypeModelExtractionTests
         return
         [
             MetadataReference.CreateFromFile(System.IO.Path.Combine(runtimeDir, "System.Runtime.dll")),
+            MetadataReference.CreateFromFile(System.IO.Path.Combine(runtimeDir, "System.Collections.dll")),
         ];
     }
 
