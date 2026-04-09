@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 2.6 complete — 256 tests passing. Next: Phase 2.7 (Predictor PredictAsync Implementation).
+> **Status:** Phase 2.7 complete — 275 tests passing. Next: Phase 2.8 (Module-Level JsonSerializerContext Emission).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -28,13 +28,13 @@
 |---|---|---|
 | Solution skeleton (sln, props, global.json) | `AGENTS.md` | :white_check_mark: Complete |
 | `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
-| `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 1 shell complete (PredictAsync wired in Phase 2) |
+| `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :construction: Phase 2.6 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, LMP001/LMP002/LMP003 diagnostics) |
 | `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :x: Not started (placeholder only) |
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 231 tests passing (Phases 1–2.6) |
+| Test projects | `AGENTS.md` | :white_check_mark: 275 tests passing (Phases 1–2.7) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -541,30 +541,38 @@ Build-time diagnostics for output type validation.
 
 **Completion criteria:** All 3 diagnostics fire correctly; LMP002 skips code generation.
 
-### 2.7 — Predictor\<TInput, TOutput\>.PredictAsync Implementation
+### 2.7 — Predictor\<TInput, TOutput\>.PredictAsync Implementation ✅ COMPLETE
 
 Wire the core prediction flow.
 
 **Spec:** `runtime-execution.md` §2.2
 
 **Tasks:**
-- [ ] Implement `PredictAsync(TInput input, CancellationToken ct)` in `Predictor<TIn,TOut>`:
-  1. Build messages via source-gen `PromptBuilder<TIn,TOut>.BuildMessages(input, Demos)`
-  2. Call `_client.GetResponseAsync<TOutput>(messages, Config, ct)`
-  3. Record trace: `module?.Trace?.Record(Name, input, result)`
+- [x] Implement `PredictAsync(TInput input, CancellationToken ct)` in `Predictor<TIn,TOut>`:
+  1. Build messages via `BuildMessages()` virtual method (default: Instructions + demos + input as toString; source-gen wired via `MessageBuilder` delegate)
+  2. Call `_client.GetResponseAsync<TOutput>(messages, Config, ct)` → `ChatResponse<T>.Result`
+  3. Record trace: `trace?.Record(Name, input, result)`
   4. Return typed `TOutput`
-- [ ] Add internal `Trace? Trace` property on `Predictor` — set by `LmpModule` before calls
-- [ ] Implement `PredictAsync` overload with retry-on-assertion per `runtime-execution.md` §2.5:
-  - Accepts `string? lastError` parameter
-  - PromptBuilder appends error feedback to final user message: `"Previous attempt failed: {lastError}. Try again."`
+- [x] Trace passed as parameter to PredictAsync (matching existing signature design — module sets `Trace` and passes it)
+- [x] Implement retry-on-assertion per `runtime-execution.md` §2.5:
+  - `Action<TOutput>? validate` delegate parameter enables retry loop
+  - On `LmpAssertionException`, captures error message and appends feedback: `"Previous attempt failed: {lastError}. Try again."`
   - Retry loop: up to `maxRetries` (default 3), catches `LmpAssertionException`, feeds message back
-- [ ] Implement `GetState()` on Predictor — serializes `Instructions`, `Demos` (via JsonElement conversion), and optionally `Config`
-- [ ] Implement `LoadState(PredictorState)` on Predictor — restores Instructions and Demos
-- [ ] Create `FakeChatClient` test infrastructure that returns canned `TOutput` JSON
-- [ ] Integration test: `Predictor<TicketInput, ClassifyTicket>.PredictAsync()` -> `FakeChatClient` -> typed `ClassifyTicket`
-- [ ] Integration test: retry-on-assertion appends error feedback and re-calls
+  - Throws `LmpMaxRetriesExceededException` when budget exhausted
+- [x] Implement `GetState()` on Predictor — serializes `Instructions`, `Demos` (via JsonElement conversion)
+- [x] Implement `LoadState(PredictorState)` on Predictor — restores Instructions and Demos with full deserialization
+- [x] Create `FakeChatClient` test infrastructure that returns canned `TOutput` JSON
+- [x] Integration test: `Predictor<TicketInput, ClassifyTicket>.PredictAsync()` -> `FakeChatClient` -> typed `ClassifyTicket`
+- [x] Integration test: retry-on-assertion appends error feedback and re-calls
+- [x] 20 new integration tests covering: basic predict, trace recording, demo messages, cancellation, retry mechanics, GetState/LoadState round-trip
 
-**Completion criteria:** End-to-end prediction works against `FakeChatClient`; retry-on-assertion re-invokes with error context.
+**Implementation notes:**
+- `MessageBuilder` internal property allows source-gen PromptBuilder to be wired in (future)
+- `BuildMessages` is `protected virtual` for extensibility
+- Default prompt uses `ToString()` for input formatting; source-gen PromptBuilder provides field-aware formatting
+- `GetResponseAsync<TOutput>` returns `ChatResponse<TOutput>` with `.Result` property
+
+**Completion criteria:** ✅ End-to-end prediction works against `FakeChatClient`; retry-on-assertion re-invokes with error context. 275 tests passing.
 
 ### 2.8 — Module-Level JsonSerializerContext Emission
 

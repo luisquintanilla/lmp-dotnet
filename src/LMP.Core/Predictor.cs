@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 
 namespace LMP;
@@ -43,34 +44,127 @@ public class Predictor<TInput, TOutput> : IPredictor
     public ChatOptions Config { get; set; } = new();
 
     /// <summary>
+    /// Optional delegate for building prompt messages. When set (typically by source-generated code),
+    /// this is used instead of the default <see cref="BuildMessages"/> implementation.
+    /// Signature: (instructions, input, demos, lastError) → messages.
+    /// </summary>
+    internal Func<string, TInput, IReadOnlyList<(TInput Input, TOutput Output)>?, string?, IList<ChatMessage>>? MessageBuilder { get; set; }
+
+    /// <summary>
     /// Executes a single LM call: builds prompt from instructions + demos + input,
-    /// calls <see cref="IChatClient.GetResponseAsync{T}"/>, returns typed output.
+    /// calls <c>GetResponseAsync&lt;TOutput&gt;</c>, records trace, and returns typed output.
+    /// If <paramref name="validate"/> is provided, retries on <see cref="LmpAssertionException"/>
+    /// up to <paramref name="maxRetries"/> times with error feedback in the prompt.
     /// </summary>
     /// <param name="input">The input to predict from.</param>
     /// <param name="trace">Optional trace for recording the invocation.</param>
-    /// <param name="maxRetries">Maximum retry attempts on assertion failure.</param>
+    /// <param name="validate">
+    /// Optional validation delegate. Called after each prediction attempt.
+    /// Should use <see cref="LmpAssert.That{T}"/> to throw <see cref="LmpAssertionException"/>
+    /// on validation failure, triggering a retry with error feedback.
+    /// </param>
+    /// <param name="maxRetries">Maximum retry attempts on assertion failure (default 3).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The predicted output.</returns>
-    /// <exception cref="NotImplementedException">
-    /// Thrown until the source generator and prompt builder are wired in Phase 2.
+    /// <exception cref="LmpMaxRetriesExceededException">
+    /// Thrown when all retry attempts are exhausted due to repeated assertion failures.
     /// </exception>
-    public virtual Task<TOutput> PredictAsync(
+    public virtual async Task<TOutput> PredictAsync(
         TInput input,
         Trace? trace = null,
+        Action<TOutput>? validate = null,
         int maxRetries = 3,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException(
-            "PredictAsync will be wired in Phase 2 when the source generator emits PromptBuilder.");
+        string? lastError = null;
+
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
+        {
+            var messages = BuildMessages(input, lastError);
+
+            var response = await _client.GetResponseAsync<TOutput>(
+                messages, Config, cancellationToken: cancellationToken);
+
+            var result = response.Result
+                ?? throw new InvalidOperationException(
+                    $"Predictor '{Name}': structured output returned null.");
+
+            trace?.Record(Name, input!, result);
+
+            if (validate is null)
+                return result;
+
+            try
+            {
+                validate(result);
+                return result;
+            }
+            catch (LmpAssertionException ex)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        throw new LmpMaxRetriesExceededException(Name, maxRetries);
+    }
+
+    /// <summary>
+    /// Builds the prompt messages for an LM call.
+    /// Uses <see cref="MessageBuilder"/> if set (source-generated), otherwise falls back
+    /// to a default implementation using <see cref="Instructions"/> and <c>ToString()</c>.
+    /// </summary>
+    /// <param name="input">The current input.</param>
+    /// <param name="lastError">Optional error from a previous assertion failure for retry feedback.</param>
+    /// <returns>The list of chat messages to send to the LM.</returns>
+    protected virtual IList<ChatMessage> BuildMessages(TInput input, string? lastError)
+    {
+        if (MessageBuilder is not null)
+            return MessageBuilder(Instructions, input, Demos, lastError);
+
+        return BuildDefaultMessages(input, lastError);
+    }
+
+    private IList<ChatMessage> BuildDefaultMessages(TInput input, string? lastError)
+    {
+        var messages = new List<ChatMessage>();
+
+        if (!string.IsNullOrEmpty(Instructions))
+            messages.Add(new ChatMessage(ChatRole.System, Instructions));
+
+        // Few-shot demo pairs
+        foreach (var (demoInput, demoOutput) in Demos)
+        {
+            messages.Add(new ChatMessage(ChatRole.User, demoInput?.ToString() ?? ""));
+            messages.Add(new ChatMessage(ChatRole.Assistant, JsonSerializer.Serialize(demoOutput)));
+        }
+
+        // Current input with optional retry feedback
+        var userContent = input?.ToString() ?? "";
+        if (lastError is not null)
+            userContent += $"\n\nPrevious attempt failed: {lastError}. Try again.";
+
+        messages.Add(new ChatMessage(ChatRole.User, userContent));
+
+        return messages;
     }
 
     /// <inheritdoc />
     public PredictorState GetState()
     {
+        var demoEntries = new List<DemoEntry>();
+        foreach (var (demoInput, demoOutput) in Demos)
+        {
+            demoEntries.Add(new DemoEntry
+            {
+                Input = JsonElementFromObject(demoInput),
+                Output = JsonElementFromObject(demoOutput)
+            });
+        }
+
         return new PredictorState
         {
             Instructions = Instructions,
-            Demos = [],
+            Demos = demoEntries,
             Config = null
         };
     }
@@ -80,5 +174,36 @@ public class Predictor<TInput, TOutput> : IPredictor
     {
         ArgumentNullException.ThrowIfNull(state);
         Instructions = state.Instructions;
+
+        Demos.Clear();
+        foreach (var entry in state.Demos)
+        {
+            var inputJson = JsonSerializer.Serialize(entry.Input);
+            var outputJson = JsonSerializer.Serialize(entry.Output);
+            var input = JsonSerializer.Deserialize<TInput>(inputJson);
+            var output = JsonSerializer.Deserialize<TOutput>(outputJson);
+            if (input is not null && output is not null)
+                Demos.Add((input, output));
+        }
+    }
+
+    private static Dictionary<string, JsonElement> JsonElementFromObject<T>(T value)
+    {
+        var json = JsonSerializer.Serialize(value);
+        using var doc = JsonDocument.Parse(json);
+
+        if (doc.RootElement.ValueKind == JsonValueKind.Object)
+        {
+            var dict = new Dictionary<string, JsonElement>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                dict[prop.Name] = prop.Value.Clone();
+            return dict;
+        }
+
+        // Non-object types (string, int, etc.) wrapped as { "value": ... }
+        return new Dictionary<string, JsonElement>
+        {
+            ["value"] = doc.RootElement.Clone()
+        };
     }
 }

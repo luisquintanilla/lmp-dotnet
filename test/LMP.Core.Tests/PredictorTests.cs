@@ -121,12 +121,27 @@ public class PredictorTests
     }
 
     [Fact]
-    public async Task PredictAsync_ThrowsNotImplemented()
+    public async Task PredictAsync_CallsClient()
     {
-        var predictor = new Predictor<string, TestOutput>(CreateMockClient());
+        var mockClient = new Mock<IChatClient>();
+        mockClient
+            .Setup(c => c.GetResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(),
+                It.IsAny<ChatOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatResponse(
+                new ChatMessage(ChatRole.Assistant,
+                    System.Text.Json.JsonSerializer.Serialize(new TestOutput { Value = "result" }))));
 
-        await Assert.ThrowsAsync<NotImplementedException>(
-            () => predictor.PredictAsync("test"));
+        var predictor = new Predictor<string, TestOutput>(mockClient.Object);
+
+        var result = await predictor.PredictAsync("test");
+
+        Assert.Equal("result", result.Value);
+        mockClient.Verify(c => c.GetResponseAsync(
+            It.IsAny<IEnumerable<ChatMessage>>(),
+            It.IsAny<ChatOptions>(),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
