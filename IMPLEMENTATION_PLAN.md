@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 in progress — 802 tests passing. Next: C# 14 interceptors.
+> **Status:** Phase 8 complete — 822 tests passing. All phases done.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -978,7 +978,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Entry criteria:** Phase 2 complete; C# 14 interceptor feature available.
 
-- [ ] C# 14 interceptors for zero-dispatch `PredictAsync` optimization
+- [x] C# 14 interceptors for zero-dispatch `PredictAsync` optimization
 - [x] `[Predict]` partial method sugar — source gen emits method body
 - [x] `ProgramOfThought<TIn, TOut>` — LM generates C# code -> Roslyn scripting executes -> structured result
 
@@ -1004,6 +1004,20 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 - 18 new tests: direct emitter (backing fields, method bodies, GetPredictors, mixed, clone, parameter names, no-predict), pipeline integration (single, multiple, mixed, non-partial, JsonContext), attribute usage
 - 6 additional robustness tests: syntax validity (single/mixed), edge cases (0 params ignored, 2+ params ignored, non-Task return ignored, global namespace)
 
+**Implementation notes (C# 14 interceptors):**
+- Pipeline 5 in `LmpSourceGenerator.cs` scans for `PredictAsync` `InvocationExpressionSyntax` call sites
+- `InterceptorExtractor` validates: method is on `Predictor<TIn,TOut>`, types are concrete (not open generic), TOutput has `[LmpSignature]`
+- Uses Roslyn `SemanticModel.GetInterceptableLocation()` API (Roslyn 5.3.0) for location encoding
+- `InterceptorCallSiteModel` record stores location version/data, type FQNs, display location
+- `InterceptorEmitter` groups call sites by (InputType, OutputType) — shared interceptor method per type pair
+- Each interceptor: (1) wires PromptBuilder via `SetPromptBuilder()`, (2) delegates to original `PredictAsync`
+- `Predictor<TIn,TOut>.SetPromptBuilder()` — new `[EditorBrowsable(Never)]` public method, no-op if already set
+- PromptBuilder changed from `file static class` to `internal static class` for cross-file access by interceptors
+- PromptBuilder gets 4-param `BuildMessages(instructions, input, demos, lastError)` overload matching `MessageBuilder` delegate
+- File-local `InterceptsLocationAttribute` declaration in generated code (recommended pattern)
+- `InterceptorsNamespaces` configured in `Directory.Build.props` for `LMP.Generated` namespace
+- 20 new tests: emitter (empty, header, usings, attribute declaration, class shape, location attributes, method signature, wiring order, grouping, separate types, global namespace, generated code attribute), extractor (non-invocation, PredictAsync match, other methods, static calls), PromptBuilder 4-param (overload shape, lastError handling, delegation)
+
 ---
 
 ## Implementation Priority Summary
@@ -1017,7 +1031,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 | **P1** | Phase 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface area | ✅ Complete |
 | **P2** | Phase 6: Advanced Optimization (MIPROv2) | Complex | Bayesian search backend / TPE sampler | ✅ Complete |
 | **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | ✅ Complete |
-| **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | ProgramOfThought ✅, [Predict] ✅, Interceptors pending |
+| **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | ✅ Complete |
 
 ---
 

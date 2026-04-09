@@ -5,7 +5,7 @@ using Microsoft.CodeAnalysis.Text;
 namespace LMP.SourceGen;
 
 /// <summary>
-/// Emits <c>file static class {TypeName}PromptBuilder</c> source code
+/// Emits <c>internal static class {TypeName}PromptBuilder</c> source code
 /// that assembles <c>ChatMessage[]</c> from instructions, field metadata,
 /// demos, and the current input.
 /// </summary>
@@ -37,7 +37,7 @@ internal static class PromptBuilderEmitter
 
         // Class declaration
         sb.AppendLine("[GeneratedCode(\"LMP.Generators\", \"1.0.0\")]");
-        sb.Append("file static class ").Append(model.OutputTypeName).AppendLine("PromptBuilder");
+        sb.Append("internal static class ").Append(model.OutputTypeName).AppendLine("PromptBuilder");
         sb.AppendLine("{");
 
         // Instructions constant
@@ -52,8 +52,12 @@ internal static class PromptBuilderEmitter
         sb.AppendLine("    public static string DefaultInstructions => Instructions;");
         sb.AppendLine();
 
-        // BuildMessages method
+        // BuildMessages method (simple 2-param)
         EmitBuildMessages(sb, model);
+        sb.AppendLine();
+
+        // BuildMessages overload matching Predictor.MessageBuilder delegate
+        EmitBuildMessagesForPredictor(sb, model);
         sb.AppendLine();
 
         // FormatInput method
@@ -130,11 +134,24 @@ internal static class PromptBuilderEmitter
         sb.Append("        IReadOnlyList<(").Append(model.InputTypeName)
           .Append(" Input, ").Append(model.OutputTypeName).AppendLine(" Output)>? demos = null)");
         sb.AppendLine("    {");
+        sb.AppendLine("        return BuildMessages(Instructions, input, demos, null);");
+        sb.AppendLine("    }");
+    }
+
+    private static void EmitBuildMessagesForPredictor(StringBuilder sb, PromptBuilderModel model)
+    {
+        sb.AppendLine("    public static IList<ChatMessage> BuildMessages(");
+        sb.AppendLine("        string instructions,");
+        sb.Append("        ").Append(model.InputTypeName).AppendLine(" input,");
+        sb.Append("        IReadOnlyList<(").Append(model.InputTypeName)
+          .Append(" Input, ").Append(model.OutputTypeName).AppendLine(" Output)>? demos,");
+        sb.AppendLine("        string? lastError)");
+        sb.AppendLine("    {");
         sb.AppendLine("        var messages = new List<ChatMessage>();");
         sb.AppendLine();
-        sb.AppendLine("        // System message: instructions + field descriptions");
+        sb.AppendLine("        // System message: custom instructions + field descriptions");
         sb.AppendLine("        messages.Add(new ChatMessage(ChatRole.System,");
-        sb.AppendLine("            Instructions + \"\\n\\n\" + FieldDescriptions));");
+        sb.AppendLine("            instructions + \"\\n\\n\" + FieldDescriptions));");
         sb.AppendLine();
         sb.AppendLine("        // Few-shot demo pairs");
         sb.AppendLine("        if (demos is not null)");
@@ -146,8 +163,12 @@ internal static class PromptBuilderEmitter
         sb.AppendLine("            }");
         sb.AppendLine("        }");
         sb.AppendLine();
-        sb.AppendLine("        // Current input");
-        sb.AppendLine("        messages.Add(new ChatMessage(ChatRole.User, FormatInput(input)));");
+        sb.AppendLine("        // Current input with optional retry feedback");
+        sb.AppendLine("        var userContent = FormatInput(input);");
+        sb.AppendLine("        if (lastError is not null)");
+        sb.AppendLine("            userContent += $\"\\n\\nPrevious attempt failed: {lastError}. Try again.\";");
+        sb.AppendLine();
+        sb.AppendLine("        messages.Add(new ChatMessage(ChatRole.User, userContent));");
         sb.AppendLine();
         sb.AppendLine("        return messages;");
         sb.AppendLine("    }");

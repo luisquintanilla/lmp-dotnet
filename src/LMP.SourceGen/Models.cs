@@ -104,3 +104,17 @@ internal sealed record PredictMethodModel(
     string InputTypeFQN,
     string OutputTypeFQN,
     string InputParameterName);
+
+/// <summary>
+/// Metadata for a single <c>PredictAsync</c> call site that can be intercepted.
+/// The source generator emits an <c>[InterceptsLocation]</c>-decorated method
+/// that wires the type-specific PromptBuilder before delegating to the real call.
+/// </summary>
+internal sealed record InterceptorCallSiteModel(
+    string InputTypeFQN,
+    string OutputTypeFQN,
+    string OutputTypeName,
+    string Namespace,
+    int LocationVersion,
+    string LocationData,
+    string DisplayLocation);

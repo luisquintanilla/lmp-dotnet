@@ -56,12 +56,12 @@ public class PromptBuilderEmitterTests
     }
 
     [Fact]
-    public void GenerateSource_UsesFileStaticClass()
+    public void GenerateSource_UsesInternalStaticClass()
     {
         var model = CreateFullModel(outputTypeName: "ClassifyTicket");
         var source = PromptBuilderEmitter.GenerateSource(model);
 
-        Assert.Contains("file static class ClassifyTicketPromptBuilder", source);
+        Assert.Contains("internal static class ClassifyTicketPromptBuilder", source);
     }
 
     [Fact]
@@ -173,7 +173,7 @@ public class PromptBuilderEmitterTests
         var source = PromptBuilderEmitter.GenerateSource(model);
 
         Assert.Contains("ChatRole.System", source);
-        Assert.Contains("Instructions + \"\\n\\n\" + FieldDescriptions", source);
+        Assert.Contains("instructions + \"\\n\\n\" + FieldDescriptions", source);
     }
 
     [Fact]
@@ -194,7 +194,7 @@ public class PromptBuilderEmitterTests
         var model = CreateFullModel();
         var source = PromptBuilderEmitter.GenerateSource(model);
 
-        Assert.Contains("ChatRole.User, FormatInput(input)", source);
+        Assert.Contains("ChatRole.User, userContent", source);
     }
 
     #endregion
@@ -352,7 +352,7 @@ public class PromptBuilderEmitterTests
         Assert.NotNull(promptBuilder);
 
         var generatedSource = promptBuilder!.GetText().ToString();
-        Assert.Contains("file static class ClassifyTicketPromptBuilder", generatedSource);
+        Assert.Contains("internal static class ClassifyTicketPromptBuilder", generatedSource);
         Assert.Contains("Classify a support ticket", generatedSource);
     }
 

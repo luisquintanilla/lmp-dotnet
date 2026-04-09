@@ -106,6 +106,21 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
 
         context.RegisterSourceOutput(cotModels, static (spc, model) =>
             ChainOfThoughtEmitter.Emit(spc, model));
+
+        // Pipeline 5: PredictAsync call sites → interceptor emission
+        // Scans for PredictAsync invocations on Predictor<TIn, TOut> instances,
+        // resolves the concrete type arguments, and emits interceptor methods that
+        // wire the type-specific PromptBuilder for zero-dispatch prompt assembly.
+        var interceptorCallSites = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, ct) => InterceptorExtractor.IsCandidate(node, ct),
+                transform: static (ctx, ct) => InterceptorExtractor.Extract(ctx, ct))
+            .Where(static m => m is not null)
+            .Select(static (m, _) => m!)
+            .Collect();
+
+        context.RegisterSourceOutput(interceptorCallSites, static (spc, callSites) =>
+            InterceptorEmitter.Emit(spc, callSites));
     }
 
     /// <summary>

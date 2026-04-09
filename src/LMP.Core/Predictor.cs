@@ -1,4 +1,5 @@
 using System.Collections;
+using System.ComponentModel;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
@@ -25,6 +26,12 @@ public class Predictor<TInput, TOutput> : IPredictor
         Name = $"{typeof(TInput).Name}\u2192{typeof(TOutput).Name}";
     }
 
+    /// <summary>
+    /// The chat client used for LM calls. Exposed for use by source-generated
+    /// interceptors that inline the <see cref="PredictAsync"/> logic.
+    /// </summary>
+    public IChatClient Client => _client;
+
     /// <inheritdoc />
     public string Name { get; set; }
 
@@ -49,6 +56,18 @@ public class Predictor<TInput, TOutput> : IPredictor
     /// Signature: (instructions, input, demos, lastError) → messages.
     /// </summary>
     internal Func<string, TInput, IReadOnlyList<(TInput Input, TOutput Output)>?, string?, IList<ChatMessage>>? MessageBuilder { get; set; }
+
+    /// <summary>
+    /// Sets the prompt builder delegate for this predictor instance.
+    /// This method is called by source-generated interceptor code to wire
+    /// type-specific prompt formatting before the first prediction.
+    /// </summary>
+    /// <param name="builder">The prompt builder delegate.</param>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public void SetPromptBuilder(Func<string, TInput, IReadOnlyList<(TInput Input, TOutput Output)>?, string?, IList<ChatMessage>> builder)
+    {
+        MessageBuilder ??= builder;
+    }
 
     /// <summary>
     /// Executes a single LM call: builds prompt from instructions + demos + input,
