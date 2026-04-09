@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 complete + samples + CLI `run` command — 865 tests passing. All phases done. CoT optimization bug fixed.
+> **Status:** Phase 8 complete + samples + CLI `run` command — 865 tests passing. All phases done. CoT optimization bug fixed. README updated to reflect actual project state.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
