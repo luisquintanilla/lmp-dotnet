@@ -4,12 +4,12 @@ using Microsoft.Extensions.AI;
 namespace LMP.Tests;
 
 /// <summary>
-/// A fake <see cref="IChatClient"/> that returns canned JSON responses for testing.
+/// A fake <see cref="IChatClient"/> that returns canned responses for testing.
 /// Captures sent messages for verification. Thread-safe for concurrent access (e.g., BestOfN).
 /// </summary>
 internal sealed class FakeChatClient : IChatClient
 {
-    private readonly Queue<string> _responses = new();
+    private readonly Queue<ChatResponse> _responses = new();
     private readonly object _lock = new();
     private int _callCount;
 
@@ -17,6 +17,11 @@ internal sealed class FakeChatClient : IChatClient
     /// All messages sent to this client across all calls, in order.
     /// </summary>
     public List<IList<ChatMessage>> SentMessages { get; } = [];
+
+    /// <summary>
+    /// All <see cref="ChatOptions"/> passed to this client across all calls, in order.
+    /// </summary>
+    public List<ChatOptions?> SentOptions { get; } = [];
 
     /// <summary>
     /// The number of times <see cref="GetResponseAsync"/> was called.
@@ -28,7 +33,8 @@ internal sealed class FakeChatClient : IChatClient
     /// </summary>
     public void EnqueueResponse<T>(T value) where T : class
     {
-        _responses.Enqueue(JsonSerializer.Serialize(value));
+        var json = JsonSerializer.Serialize(value);
+        _responses.Enqueue(new ChatResponse(new ChatMessage(ChatRole.Assistant, json)));
     }
 
     /// <summary>
@@ -36,7 +42,16 @@ internal sealed class FakeChatClient : IChatClient
     /// </summary>
     public void EnqueueJsonResponse(string json)
     {
-        _responses.Enqueue(json);
+        _responses.Enqueue(new ChatResponse(new ChatMessage(ChatRole.Assistant, json)));
+    }
+
+    /// <summary>
+    /// Enqueues an arbitrary <see cref="ChatResponse"/> (e.g., one containing
+    /// <see cref="FunctionCallContent"/> for tool-call simulation).
+    /// </summary>
+    public void EnqueueChatResponse(ChatResponse response)
+    {
+        _responses.Enqueue(response);
     }
 
     public Task<ChatResponse> GetResponseAsync(
@@ -50,16 +65,14 @@ internal sealed class FakeChatClient : IChatClient
         {
             var messageList = messages.ToList();
             SentMessages.Add(messageList);
+            SentOptions.Add(options);
             Interlocked.Increment(ref _callCount);
 
             if (_responses.Count == 0)
                 throw new InvalidOperationException(
                     $"FakeChatClient: no more canned responses available (call #{_callCount}).");
 
-            var json = _responses.Dequeue();
-
-            var response = new ChatResponse(
-                new ChatMessage(ChatRole.Assistant, json));
+            var response = _responses.Dequeue();
 
             return Task.FromResult(response);
         }

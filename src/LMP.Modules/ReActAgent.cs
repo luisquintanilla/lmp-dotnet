@@ -5,33 +5,32 @@ namespace LMP;
 /// <summary>
 /// ReAct agent: interleaves reasoning (Think) with tool calls (Act)
 /// and observation of results (Observe) until the final answer.
-/// Uses M.E.AI's <see cref="AIFunction"/> and <see cref="FunctionInvokingChatClient"/> —
-/// zero new abstractions.
+/// Uses M.E.AI's <see cref="AIFunction"/> and <see cref="FunctionInvokingChatClient"/>
+/// — zero new abstractions.
 /// </summary>
 /// <typeparam name="TInput">The input type for the agent.</typeparam>
 /// <typeparam name="TOutput">The output type for the agent. Must be a reference type.</typeparam>
 /// <remarks>
 /// The agent wraps the provided <see cref="IChatClient"/> with
-/// <see cref="ChatClientBuilderExtensions.UseFunctionInvocation"/> for automatic
-/// tool dispatch. The Think → Act → Observe loop is handled internally by
-/// <see cref="FunctionInvokingChatClient"/>. Each call to
-/// <see cref="PredictAsync"/> may trigger multiple tool invocations before the LM
-/// produces a final structured response.
+/// <see cref="FunctionInvokingChatClient"/> middleware for automatic tool dispatch.
+/// When <see cref="PredictAsync"/> is called, the available tools are passed via
+/// <see cref="ChatOptions.Tools"/>. The middleware handles the Think → Act → Observe
+/// loop internally — each call to <c>GetResponseAsync</c> may trigger multiple tool
+/// invocations before the LM produces a final structured response.
 /// </remarks>
 public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
     where TOutput : class
 {
     private readonly IChatClient _wrappedClient;
-    private readonly IList<AIFunction> _tools;
+    private readonly IReadOnlyList<AIFunction> _tools;
     private readonly int _maxSteps;
 
     /// <summary>
     /// Creates a ReAct agent that uses tools to reason about and answer queries.
+    /// The provided <paramref name="client"/> is wrapped with
+    /// <see cref="FunctionInvokingChatClient"/> for automatic tool dispatch.
     /// </summary>
-    /// <param name="client">
-    /// The base chat client. Will be wrapped with
-    /// <see cref="ChatClientBuilderExtensions.UseFunctionInvocation"/> for automatic tool dispatch.
-    /// </param>
+    /// <param name="client">The underlying chat client.</param>
     /// <param name="tools">Available tools as <see cref="AIFunction"/> instances.</param>
     /// <param name="maxSteps">Maximum Think→Act→Observe iterations (default: 5).</param>
     /// <exception cref="ArgumentNullException">
@@ -46,13 +45,13 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
         ArgumentNullException.ThrowIfNull(tools);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxSteps, 1);
 
-        _tools = tools as IList<AIFunction> ?? tools.ToList();
+        _tools = tools.ToList();
         _maxSteps = maxSteps;
 
-        // Wrap with FunctionInvokingChatClient for automatic tool dispatch
-        _wrappedClient = new ChatClientBuilder(client)
-            .UseFunctionInvocation()
-            .Build();
+        _wrappedClient = new FunctionInvokingChatClient(client)
+        {
+            MaximumIterationsPerRequest = maxSteps
+        };
     }
 
     /// <summary>
@@ -63,7 +62,7 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
     /// <summary>
     /// Gets the tools available to this agent.
     /// </summary>
-    public IReadOnlyList<AIFunction> Tools => _tools.AsReadOnly();
+    public IReadOnlyList<AIFunction> Tools => _tools;
 
     /// <summary>
     /// Executes the ReAct loop: builds a prompt from instructions and input,
@@ -95,7 +94,7 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
 
         for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
-            var messages = BuildMessages(input, lastError);
+            var messages = BuildAgentMessages(input, lastError);
 
             var options = new ChatOptions
             {
@@ -135,13 +134,26 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
     }
 
     /// <summary>
-    /// Creates an independent copy of this agent with the same client binding
-    /// and tools but separate learnable state (Demos, Instructions, Config).
+    /// Builds prompt messages with ReAct instruction appended to the system message.
     /// </summary>
-    /// <returns>A new <see cref="IPredictor"/> with independent learnable state.</returns>
-    public override IPredictor Clone()
+    private IList<ChatMessage> BuildAgentMessages(TInput input, string? lastError)
     {
-        var clone = (ReActAgent<TInput, TOutput>)base.Clone();
-        return clone;
+        var messages = BuildMessages(input, lastError);
+
+        var reactInstruction =
+            "You have access to tools. Use them when needed to gather information before producing your final answer.";
+
+        if (messages.Count > 0 && messages[0].Role == ChatRole.System)
+        {
+            var existingText = messages[0].Text ?? "";
+            messages[0] = new ChatMessage(ChatRole.System,
+                existingText + "\n\n" + reactInstruction);
+        }
+        else
+        {
+            messages.Insert(0, new ChatMessage(ChatRole.System, reactInstruction));
+        }
+
+        return messages;
     }
 }
