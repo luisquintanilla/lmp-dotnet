@@ -88,6 +88,15 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
 
         context.RegisterSourceOutput(moduleModels, static (spc, model) =>
             ModuleEmitter.Emit(spc, model));
+
+        context.RegisterSourceOutput(moduleModels, static (spc, model) =>
+            ModuleJsonContextEmitter.Emit(spc, model));
+
+        // Pipeline 3b: LmpModule subclasses → module-level JsonSerializerContext emission
+        // Emits a per-module JsonSerializerContext for AOT-safe save/load of
+        // ModuleState, PredictorState, and DemoEntry.
+        context.RegisterSourceOutput(moduleModels, static (spc, model) =>
+            ModuleJsonContextEmitter.Emit(spc, model));
     }
 
     /// <summary>

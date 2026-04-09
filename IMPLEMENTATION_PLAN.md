@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 2.7 complete — 275 tests passing. Next: Phase 2.8 (Module-Level JsonSerializerContext Emission).
+> **Status:** Phase 2.8 complete — 300 tests passing. Next: Phase 3 (Reasoning Modules).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -29,7 +29,7 @@
 | Solution skeleton (sln, props, global.json) | `AGENTS.md` | :white_check_mark: Complete |
 | `LMP.Abstractions` — attributes, interfaces, base types | `public-api.md` §4 | :white_check_mark: Complete (Phase 1) |
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
-| `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :construction: Phase 2.6 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, LMP001/LMP002/LMP003 diagnostics) |
+| `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
 | `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :x: Not started (placeholder only) |
 | `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
@@ -574,20 +574,36 @@ Wire the core prediction flow.
 
 **Completion criteria:** ✅ End-to-end prediction works against `FakeChatClient`; retry-on-assertion re-invokes with error context. 275 tests passing.
 
-### 2.8 — Module-Level JsonSerializerContext Emission
+### 2.8 — Module-Level JsonSerializerContext Emission ✅ COMPLETE
 
 Source generator emits per-module `JsonSerializerContext` for typed save/load of predictor demos.
 
 **Spec:** `runtime-execution.md` §3.3, `source-generator.md` §5
 
 **Tasks:**
-- [ ] Extend `ModuleEmitter` to generate a `JsonSerializerContext` per module:
-  - `[JsonSerializable(typeof(ModuleState))]` (shared)
-  - `[JsonSerializable(typeof(PredictorState<TInput, TOutput>))]` per predictor type pair
-- [ ] Hint name: `{ModuleName}.JsonContext.g.cs`
-- [ ] Snapshot test: module with 2 predictor types -> generated context with all serializable types
+- [x] Created `ModuleJsonContextEmitter` that generates a `file partial class {ModuleName}JsonContext : JsonSerializerContext` per module:
+  - `[JsonSourceGenerationOptions(PropertyNamingPolicy = CamelCase, WriteIndented = true, DefaultIgnoreCondition = WhenWritingNull)]`
+  - `[JsonSerializable(typeof(ModuleState))]`
+  - `[JsonSerializable(typeof(PredictorState))]`
+  - `[JsonSerializable(typeof(DemoEntry))]`
+- [x] Wired Pipeline 3b in `LmpSourceGenerator` — reuses `moduleModels` provider from Pipeline 3 to emit JsonContext alongside GetPredictors
+- [x] Hint name: `{ModuleName}.JsonContext.g.cs`
+- [x] 25 tests in `ModuleJsonContextEmitterTests`:
+  - Direct emitter tests: header, usings, namespace, GeneratedCode attribute, file partial class, type name in class name
+  - JsonSourceGenerationOptions tests: options present, ModuleState/PredictorState/DemoEntry [JsonSerializable] attributes
+  - Syntax validity: valid C# with and without namespace
+  - Snapshot tests: full output structure ordering, no-namespace variant, exactly 3 serializable attributes
+  - Pipeline integration tests: emits JsonContext file, contains all 3 serializable types, uses file partial class, both Predictors and JsonContext emitted together, multiple modules emit separate JsonContext files, non-partial modules skip JsonContext, single-predictor module emits JsonContext
 
-**Completion criteria:** Source-gen produces module-specific `JsonSerializerContext` for AOT-safe save/load.
+**Implementation notes:**
+- Separate `ModuleJsonContextEmitter` class for clean separation from `ModuleEmitter` (GetPredictors)
+- Uses `file` access modifier to prevent namespace pollution (same pattern as per-type JsonContext)
+- `WriteIndented = true` for human-readable artifact files (per `artifact-format.md`)
+- Non-generic `ModuleState`/`PredictorState`/`DemoEntry` types are sufficient — typed demo serialization uses `JsonElement` dictionaries
+
+**Status:** ✅ Complete. 300 total tests pass (51 Abstractions + 35 Core + 214 SourceGen). Generator now emits `{ModuleName}.JsonContext.g.cs` for every valid partial `LmpModule` subclass.
+
+**Completion criteria:** ✅ Source-gen produces module-specific `JsonSerializerContext` for AOT-safe save/load.
 
 ### Phase 2 Exit Criteria
 
