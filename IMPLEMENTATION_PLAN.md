@@ -385,7 +385,7 @@ Contracts for RAG and optimization.
 
 **Entry criteria:** Phase 1 complete; `Microsoft.Extensions.AI` configured.
 
-### 2.1 — Generator Project Setup (Partially Done)
+### 2.1 — Generator Project Setup ✅ COMPLETE
 
 **Spec:** `source-generator.md` §2
 
@@ -396,11 +396,15 @@ Contracts for RAG and optimization.
   - PackageReference: `Microsoft.CodeAnalysis.CSharp` >= 4.12
 - [x] Create `LmpGenerator : IIncrementalGenerator` skeleton with empty `Initialize()` method
   - `[Generator]` attribute (note: spec uses `[Generator(LanguageNames.CSharp)]` but `[Generator]` also works)
-- [ ] Create `EquatableArray<T>` helper struct for incremental model cache correctness
-- [ ] Wire `LMP.SourceGen` as analyzer reference in consumer test projects (`LMP.Core.Tests`, integration test projects)
-- [ ] Verify `dotnet build` runs the generator (empty — no output yet)
+- [x] Create `EquatableArray<T>` helper struct for incremental model cache correctness
+- [x] Wire `LMP.SourceGen` as analyzer reference in consumer test projects (`LMP.Core.Tests`, integration test projects)
+- [x] Add `InternalsVisibleTo("LMP.SourceGen.Tests")` for testing internal types
+- [x] Add `Microsoft.CodeAnalysis.CSharp` + `LMP.Abstractions` references to `LMP.SourceGen.Tests` for Roslyn test infrastructure
+- [x] Verify `dotnet build` runs the generator (empty — no output yet)
+- [x] Unit tests: `EquatableArray<T>` equality, hash code, enumeration (16 tests)
+- [x] Smoke tests: generator runs on empty compilation and `[LmpSignature]` types without errors (3 tests)
 
-**Status:** `LMP.SourceGen.csproj` is properly configured. `LmpSourceGenerator.cs` exists with `[Generator]` and empty `Initialize()`. Remaining: `EquatableArray<T>` helper and test project wiring.
+**Status:** ✅ Complete. `EquatableArray<T>` implemented with element-wise equality. Test projects wired with Roslyn infrastructure. 86 total tests pass.
 
 **Completion criteria:** `dotnet build` triggers the generator; no errors.
 
