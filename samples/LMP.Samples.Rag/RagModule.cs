@@ -18,7 +18,7 @@ public record AugmentedInput(string Question, string[] Passages)
 /// Flow: question → retrieve top-K passages → predict answer with context.
 /// The source generator emits GetPredictors() and CloneCore().
 /// </summary>
-public partial class RagModule : LmpModule
+public partial class RagModule : LmpModule<QuestionInput, AnswerOutput>
 {
     private readonly Predictor<AugmentedInput, AnswerOutput> _answer;
     private readonly IRetriever _retriever;
@@ -45,18 +45,16 @@ public partial class RagModule : LmpModule
     }
 
     /// <inheritdoc />
-    public override async Task<object> ForwardAsync(
-        object input,
+    public override async Task<AnswerOutput> ForwardAsync(
+        QuestionInput input,
         CancellationToken cancellationToken = default)
     {
-        var questionInput = (QuestionInput)input;
-
         // Step 1: Retrieve relevant passages
         var passages = await _retriever.RetrieveAsync(
-            questionInput.Question, _topK, cancellationToken);
+            input.Question, _topK, cancellationToken);
 
         // Step 2: Build augmented input with retrieved context
-        var augmented = new AugmentedInput(questionInput.Question, passages);
+        var augmented = new AugmentedInput(input.Question, passages);
 
         // Step 3: Predict answer using context
         var result = await _answer.PredictAsync(

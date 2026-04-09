@@ -47,7 +47,7 @@ Console.WriteLine("────────────────────�
 
 var module = new RagModule(client, retriever);
 
-var result = (AnswerOutput)await module.ForwardAsync(
+var result = await module.ForwardAsync(
     new QuestionInput("What encryption does NovaBridge use?"));
 
 Console.WriteLine($"  Answer:     {result.Answer}");
@@ -58,7 +58,7 @@ Console.WriteLine();
 Console.WriteLine("Step 2: Another Question");
 Console.WriteLine("────────────────────────");
 
-result = (AnswerOutput)await module.ForwardAsync(
+result = await module.ForwardAsync(
     new QuestionInput("Which SDKs does NovaBridge offer?"));
 
 Console.WriteLine($"  Answer:     {result.Answer}");

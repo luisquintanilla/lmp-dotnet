@@ -188,6 +188,58 @@ public class LmpModuleTests
 
     #endregion
 
+    #region Generic LmpModule<TInput, TOutput>
+
+    private sealed class TypedModule : LmpModule<string, int>
+    {
+        public override Task<int> ForwardAsync(
+            string input, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(input.Length);
+        }
+    }
+
+    [Fact]
+    public async Task GenericModule_TypedForwardAsync_ReturnsTypedResult()
+    {
+        var module = new TypedModule();
+
+        int result = await module.ForwardAsync("hello");
+
+        Assert.Equal(5, result);
+    }
+
+    [Fact]
+    public async Task GenericModule_UntypedBridge_BoxesResult()
+    {
+        LmpModule module = new TypedModule();
+
+        object result = await module.ForwardAsync("hello");
+
+        Assert.Equal(5, result);
+    }
+
+    [Fact]
+    public async Task GenericModule_UntypedBridge_CastsInput()
+    {
+        LmpModule module = new TypedModule();
+
+        object result = await module.ForwardAsync((object)"test");
+
+        Assert.Equal(4, result);
+    }
+
+    [Fact]
+    public async Task GenericModule_UntypedBridge_ThrowsOnWrongInputType()
+    {
+        LmpModule module = new TypedModule();
+
+        await Assert.ThrowsAsync<InvalidCastException>(
+            () => module.ForwardAsync(42));
+    }
+
+    #endregion
+
     #region SaveAsync
 
     [Fact]

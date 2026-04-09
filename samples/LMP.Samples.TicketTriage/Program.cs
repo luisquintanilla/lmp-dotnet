@@ -61,7 +61,7 @@ Console.WriteLine("Step 3: Module Composition (SupportTriageModule)");
 Console.WriteLine("────────────────────────────────────────────────");
 
 var module = new SupportTriageModule(client);
-var reply = (DraftReply)await module.ForwardAsync(
+var reply = await module.ForwardAsync(
     new TicketInput("Production API returning 503 for all customers"));
 
 Console.WriteLine($"  Reply: {reply.ReplyText}");

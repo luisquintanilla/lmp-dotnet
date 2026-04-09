@@ -38,7 +38,7 @@ public record AnswerWithContext
 /// The predictor is discoverable via <see cref="GetPredictors"/> so optimizers
 /// can fill demos and tune instructions automatically.
 /// </summary>
-public class RagQaModule : LmpModule
+public class RagQaModule : LmpModule<QuestionInput, AnswerWithContext>
 {
     private readonly IRetriever _retriever;
     private readonly Predictor<AnswerInput, AnswerWithContext> _answer;
@@ -65,17 +65,8 @@ public class RagQaModule : LmpModule
         };
     }
 
-    /// <summary>
-    /// Typed entry point: retrieves context passages for the question,
-    /// then predicts an answer using the predictor.
-    /// </summary>
-    /// <param name="input">The user's question.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The answer with a confidence score.</returns>
-    /// <exception cref="LmpAssertionException">
-    /// Thrown when the predicted confidence is outside [0.0, 1.0].
-    /// </exception>
-    public async Task<AnswerWithContext> ForwardAsync(
+    /// <inheritdoc />
+    public override async Task<AnswerWithContext> ForwardAsync(
         QuestionInput input,
         CancellationToken cancellationToken = default)
     {
@@ -97,12 +88,6 @@ public class RagQaModule : LmpModule
 
         return result;
     }
-
-    /// <inheritdoc />
-    public override async Task<object> ForwardAsync(
-        object input,
-        CancellationToken cancellationToken = default)
-        => await ForwardAsync((QuestionInput)input, cancellationToken);
 
     /// <inheritdoc />
     public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()

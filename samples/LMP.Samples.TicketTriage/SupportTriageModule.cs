@@ -6,7 +6,7 @@ namespace LMP.Samples.TicketTriage;
 /// A two-step LM program: classify a support ticket, then draft a reply.
 /// Demonstrates predictor composition, assertions, and tracing.
 /// </summary>
-public partial class SupportTriageModule : LmpModule
+public partial class SupportTriageModule : LmpModule<TicketInput, DraftReply>
 {
     private readonly Predictor<TicketInput, ClassifyTicket> _classify;
     private readonly Predictor<ClassifyTicket, DraftReply> _draft;
@@ -22,15 +22,13 @@ public partial class SupportTriageModule : LmpModule
     }
 
     /// <inheritdoc />
-    public override async Task<object> ForwardAsync(
-        object input,
+    public override async Task<DraftReply> ForwardAsync(
+        TicketInput input,
         CancellationToken cancellationToken = default)
     {
-        var ticketInput = (TicketInput)input;
-
         // Step 1: Classify the ticket with assertion on urgency range
         var classification = await _classify.PredictAsync(
-            ticketInput,
+            input,
             trace: Trace,
             validate: result =>
                 LmpAssert.That(result, c => c.Urgency >= 1 && c.Urgency <= 5,
