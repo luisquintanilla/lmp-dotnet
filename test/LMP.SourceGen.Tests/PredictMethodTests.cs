@@ -292,6 +292,269 @@ public class PredictMethodTests
 
     #endregion
 
+    #region Syntax validity tests
+
+    [Fact]
+    public void GenerateSource_PredictMethods_ProducesSyntacticallyValidCSharp()
+    {
+        var model = CreateModuleModelWithMultiplePredictMethods();
+        var source = ModuleEmitter.GenerateSource(model);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var syntaxDiagnostics = tree.GetDiagnostics().ToArray();
+
+        Assert.Empty(syntaxDiagnostics);
+    }
+
+    [Fact]
+    public void GenerateSource_MixedFieldsAndPredictMethods_ProducesSyntacticallyValidCSharp()
+    {
+        var model = new ModuleModel(
+            Namespace: "TestApp",
+            TypeName: "MixedModule",
+            PredictorFields: new EquatableArray<PredictorFieldModel>(ImmutableArray.Create(
+                new PredictorFieldModel("_classify", "global::TestApp.In", "global::TestApp.Out",
+                    "global::LMP.Predictor<global::TestApp.In, global::TestApp.Out>",
+                    CanAssignDirectly: false, UnsafeAccessorFieldName: "_classify"))),
+            PredictMethods: new EquatableArray<PredictMethodModel>(ImmutableArray.Create(
+                new PredictMethodModel("DraftAsync", "global::TestApp.In2", "global::TestApp.Out2", "input"))));
+
+        var source = ModuleEmitter.GenerateSource(model);
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var syntaxDiagnostics = tree.GetDiagnostics().ToArray();
+
+        Assert.Empty(syntaxDiagnostics);
+    }
+
+    #endregion
+
+    #region Edge case tests — extractor filtering
+
+    [Fact]
+    public void Pipeline_PredictMethodWithNoParameters_IsIgnored()
+    {
+        var source = """
+            namespace Microsoft.Extensions.AI
+            {
+                public interface IChatClient { }
+            }
+
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                    protected virtual LmpModule CloneCore() => throw new System.NotSupportedException();
+                    protected Microsoft.Extensions.AI.IChatClient? Client { get; set; }
+                    public Trace? Trace { get; set; }
+                }
+                public interface IPredictor { IPredictor Clone(); }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                    public IPredictor Clone() => this;
+                }
+                public class Trace { }
+                [System.AttributeUsage(System.AttributeTargets.Method)]
+                public sealed class PredictAttribute : System.Attribute { }
+            }
+
+            namespace TestApp
+            {
+                using LMP;
+
+                public record Output { public required string Value { get; init; } }
+
+                public partial class NoParamModule : LmpModule
+                {
+                    [Predict]
+                    public partial System.Threading.Tasks.Task<Output> GetOutputAsync();
+
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+            }
+            """;
+
+        var (_, runResult) = RunGenerator(source);
+
+        // No partial method with 0 params should be detected as [Predict]
+        Assert.DoesNotContain(runResult.Results[0].GeneratedSources,
+            s => s.HintName.Contains("Predictors"));
+    }
+
+    [Fact]
+    public void Pipeline_PredictMethodWithMultipleParameters_IsIgnored()
+    {
+        var source = """
+            namespace Microsoft.Extensions.AI
+            {
+                public interface IChatClient { }
+            }
+
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                    protected virtual LmpModule CloneCore() => throw new System.NotSupportedException();
+                    protected Microsoft.Extensions.AI.IChatClient? Client { get; set; }
+                    public Trace? Trace { get; set; }
+                }
+                public interface IPredictor { IPredictor Clone(); }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                    public IPredictor Clone() => this;
+                }
+                public class Trace { }
+                [System.AttributeUsage(System.AttributeTargets.Method)]
+                public sealed class PredictAttribute : System.Attribute { }
+            }
+
+            namespace TestApp
+            {
+                using LMP;
+
+                public record Input(string Text);
+                public record Output { public required string Value { get; init; } }
+
+                public partial class MultiParamModule : LmpModule
+                {
+                    [Predict]
+                    public partial System.Threading.Tasks.Task<Output> ClassifyAsync(Input input, string extra);
+
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+            }
+            """;
+
+        var (_, runResult) = RunGenerator(source);
+
+        // Method with 2 params should not be detected
+        Assert.DoesNotContain(runResult.Results[0].GeneratedSources,
+            s => s.HintName.Contains("Predictors"));
+    }
+
+    [Fact]
+    public void Pipeline_PredictMethodWithNonTaskReturn_IsIgnored()
+    {
+        var source = """
+            namespace Microsoft.Extensions.AI
+            {
+                public interface IChatClient { }
+            }
+
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                    protected virtual LmpModule CloneCore() => throw new System.NotSupportedException();
+                    protected Microsoft.Extensions.AI.IChatClient? Client { get; set; }
+                    public Trace? Trace { get; set; }
+                }
+                public interface IPredictor { IPredictor Clone(); }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                    public IPredictor Clone() => this;
+                }
+                public class Trace { }
+                [System.AttributeUsage(System.AttributeTargets.Method)]
+                public sealed class PredictAttribute : System.Attribute { }
+            }
+
+            namespace TestApp
+            {
+                using LMP;
+
+                public record Input(string Text);
+                public record Output { public required string Value { get; init; } }
+
+                public partial class WrongReturnModule : LmpModule
+                {
+                    [Predict]
+                    public partial Output Classify(Input input);
+
+                    public override System.Threading.Tasks.Task<object> ForwardAsync(
+                        object input, System.Threading.CancellationToken ct = default)
+                        => System.Threading.Tasks.Task.FromResult<object>(null!);
+                }
+            }
+            """;
+
+        var (_, runResult) = RunGenerator(source);
+
+        // Method not returning Task<T> should not be detected
+        Assert.DoesNotContain(runResult.Results[0].GeneratedSources,
+            s => s.HintName.Contains("Predictors"));
+    }
+
+    [Fact]
+    public void Pipeline_PredictMethod_InGlobalNamespace_EmitsCorrectly()
+    {
+        var source = """
+            namespace Microsoft.Extensions.AI
+            {
+                public interface IChatClient { }
+            }
+
+            namespace LMP
+            {
+                public abstract class LmpModule
+                {
+                    public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                    protected virtual LmpModule CloneCore() => throw new System.NotSupportedException();
+                    protected Microsoft.Extensions.AI.IChatClient? Client { get; set; }
+                    public Trace? Trace { get; set; }
+                }
+                public interface IPredictor { IPredictor Clone(); }
+                public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+                {
+                    public Predictor(object client) { }
+                    public System.Threading.Tasks.Task<TOutput> PredictAsync(TInput input, Trace? trace = null) => throw new System.NotImplementedException();
+                    public IPredictor Clone() => this;
+                }
+                public class Trace { }
+                [System.AttributeUsage(System.AttributeTargets.Method)]
+                public sealed class PredictAttribute : System.Attribute { }
+            }
+
+            // Types in global namespace
+            public record GlobalInput(string Text);
+            public record GlobalOutput { public required string Value { get; init; } }
+
+            public partial class GlobalModule : LMP.LmpModule
+            {
+                [LMP.Predict]
+                public partial System.Threading.Tasks.Task<GlobalOutput> ProcessAsync(GlobalInput input);
+
+                public override System.Threading.Tasks.Task<object> ForwardAsync(
+                    object input, System.Threading.CancellationToken ct = default)
+                    => System.Threading.Tasks.Task.FromResult<object>(null!);
+            }
+            """;
+
+        var (diagnostics, runResult) = RunGenerator(source);
+
+        Assert.Empty(diagnostics);
+
+        var predictorsFile = runResult.Results[0].GeneratedSources
+            .FirstOrDefault(s => s.HintName.Contains("Predictors"));
+        Assert.True(predictorsFile.HintName is not null,
+            "Expected a .Predictors.g.cs file for global namespace module");
+
+        var generatedSource = predictorsFile.SourceText.ToString();
+        Assert.Contains("__predict_ProcessAsync", generatedSource);
+        Assert.DoesNotContain("namespace", generatedSource);
+    }
+
+    #endregion
+
     #region PredictAttribute tests
 
     [Fact]

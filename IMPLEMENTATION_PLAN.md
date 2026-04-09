@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 in progress — 796 tests passing. Next: C# 14 interceptors.
+> **Status:** Phase 8 in progress — 802 tests passing. Next: C# 14 interceptors.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -1002,6 +1002,7 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 - `ModuleEmitter` emits: (1) `__predict_{Method}` nullable backing fields, (2) partial method bodies with lazy initialization from Client, (3) backing fields included in GetPredictors(), (4) CloneCore handles nullable [Predict] fields
 - `ModuleJsonContextEmitter` includes [Predict] method types in JsonContext
 - 18 new tests: direct emitter (backing fields, method bodies, GetPredictors, mixed, clone, parameter names, no-predict), pipeline integration (single, multiple, mixed, non-partial, JsonContext), attribute usage
+- 6 additional robustness tests: syntax validity (single/mixed), edge cases (0 params ignored, 2+ params ignored, non-Task return ignored, global namespace)
 
 ---
 
