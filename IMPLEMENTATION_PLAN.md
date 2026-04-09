@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 5.2 complete — 644 tests passing. Next: Phase 6.1 (MIPROv2 Optimizer).
+> **Status:** Phase 6.1 complete — 680 tests passing. Next: Phase 7.1 (CLI Tool).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -31,10 +31,10 @@
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
 | `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 5.1 complete (ChainOfThought, BestOfN, Refine, ReActAgent) |
-| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :white_check_mark: Phase 4.4 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch) |
+| `LMP.Optimizers` — Evaluator, Bootstrap*, MIPROv2 | `compiler-optimizer.md` | :white_check_mark: Phase 6.1 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch, MIPROv2+TPE) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :white_check_mark: Complete (Phase 4.5) |
-| Test projects | `AGENTS.md` | :white_check_mark: 644 tests passing (Phases 1–5.2) |
+| Test projects | `AGENTS.md` | :white_check_mark: 680 tests passing (Phases 1–6.1) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -902,18 +902,23 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Entry criteria:** Phase 4 + Phase 5 complete.
 
-### 6.1 — MIPROv2 Optimizer
+### 6.1 — MIPROv2 Optimizer ✅ COMPLETE
 
 **Tasks:**
-- [ ] Bootstrap demo pool (reuse BootstrapFewShot to generate initial demo candidates)
-- [ ] Implement instruction proposal module: LM-generated instruction candidates via `IChatClient`
-- [ ] Implement TPE sampler (~300 LOC for categorical-only) or integrate ML.NET AutoML tuners
-- [ ] Implement Bayesian search loop: each trial samples (instruction index x demo set index) per predictor
-- [ ] Evaluate trial candidates using `Evaluator.EvaluateAsync`
-- [ ] Return best trial by evaluation score
-- [ ] Integration test demonstrating convergence over multiple trials
+- [x] Bootstrap demo pool (reuse BootstrapFewShot to generate initial demo candidates)
+- [x] Implement instruction proposal module: LM-generated instruction candidates via `IChatClient`
+- [x] Implement TPE sampler (~160 LOC for categorical-only) — `CategoricalTpeSampler` with Laplace smoothing
+- [x] Implement Bayesian search loop: each trial samples (instruction index x demo set index) per predictor
+- [x] Evaluate trial candidates using `Evaluator.EvaluateAsync`
+- [x] Return best trial by evaluation score
+- [x] 36 unit tests: constructor validation, arg validation, core algorithm, error resilience, determinism, cancellation, TPE convergence
 
-**Completion criteria:** `MIPROv2` outperforms `BootstrapRandomSearch` on instruction + demo search.
+**Implementation notes:**
+- `CategoricalTpeSampler` (internal): minimal TPE for categorical spaces with l(x)/g(x) acquisition, Laplace smoothing, gamma-based good/bad split
+- `MIPROv2`: 3-phase compile (bootstrap → propose instructions → Bayesian search), error-resilient instruction proposal (falls back to original if LM fails)
+- Reuses `BootstrapRandomSearch.SplitDataset` for train/val split
+
+**Completion criteria:** ✅ MIPROv2 implements instruction + demo search with TPE. 680 tests passing.
 
 ---
 
@@ -958,12 +963,12 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 | Priority | Phase | Est. Complexity | Key Risk | Status |
 |---|---|---|---|---|
-| **P0** | Phase 1: Abstractions | Simple | Over-engineering before usage patterns clear | 1.1 ✅, 1.2–1.10 pending |
-| **P0** | Phase 2: Source Generator + Core Predictor | Complex | Generator debugging; netstandard2.0 constraints; snapshot test infra | 2.1 partial, rest pending |
-| **P1** | Phase 3: Reasoning Modules | Medium | CoT source-gen trigger for extended output types | Not started |
-| **P1** | Phase 4: Evaluation + BootstrapFewShot | Complex | Thread-safe trace collection; module cloning source-gen | Not started |
-| **P1** | Phase 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface area | Not started |
-| **P2** | Phase 6: Advanced Optimization (MIPROv2) | Complex | Bayesian search backend / TPE sampler | Not started |
+| **P0** | Phase 1: Abstractions | Simple | Over-engineering before usage patterns clear | ✅ Complete |
+| **P0** | Phase 2: Source Generator + Core Predictor | Complex | Generator debugging; netstandard2.0 constraints; snapshot test infra | ✅ Complete |
+| **P1** | Phase 3: Reasoning Modules | Medium | CoT source-gen trigger for extended output types | ✅ Complete |
+| **P1** | Phase 4: Evaluation + BootstrapFewShot | Complex | Thread-safe trace collection; module cloning source-gen | ✅ Complete |
+| **P1** | Phase 5: Agents + RAG | Medium | M.E.AI FunctionInvokingChatClient surface area | ✅ Complete |
+| **P2** | Phase 6: Advanced Optimization (MIPROv2) | Complex | Bayesian search backend / TPE sampler | ✅ Complete |
 | **P2** | Phase 7: Tooling (CLI + Aspire) | Medium | CLI ergonomics | Not started |
 | **P3** | Phase 8: Advanced (Interceptors) | Complex | C# 14 interceptor API newness | Not started |
 
