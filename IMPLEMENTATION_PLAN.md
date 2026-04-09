@@ -428,8 +428,9 @@ Read `[LmpSignature]` types at build time.
 - [x] Report **LMP003** diagnostic for non-partial-record types per `diagnostics.md` — skip generation entirely
 - [x] Unit tests (Roslyn `CSharpGeneratorDriver`): LMP003 fires on `class` and non-partial `record` (9 tests in `ModelExtractionTests`)
 - [x] Unit tests: `InputFieldExtractionTests` — ctor params, property descriptions, priority, filtering (7 tests)
+- [x] Unit tests: `OutputTypeModelExtractionTests` — LMP003 on class/non-partial record, valid partial record, location, multiple types, field extraction, description extraction (12 tests)
 
-**Status:** ✅ Complete. 102 total tests pass (51 Abstractions + 16 Core + 35 SourceGen).
+**Status:** ✅ Complete. 114 total tests pass (51 Abstractions + 16 Core + 47 SourceGen).
 
 **Completion criteria:** Generator extracts correct metadata from `[LmpSignature]` records; LMP003 fires and skips non-partial types.
 
