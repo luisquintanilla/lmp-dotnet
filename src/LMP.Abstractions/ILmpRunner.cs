@@ -35,4 +35,17 @@ public interface ILmpRunner
     /// <param name="path">Path to the JSONL file.</param>
     /// <returns>A list of examples loaded from the file.</returns>
     IReadOnlyList<Example> LoadDataset(string path);
+
+    /// <summary>
+    /// Deserializes a JSON string into the module's input type.
+    /// Used by the <c>dotnet lmp run</c> command to load a single input
+    /// from a JSON file and pass it to <see cref="LmpModule.ForwardAsync"/>.
+    /// </summary>
+    /// <param name="json">The raw JSON string representing the input object.</param>
+    /// <returns>The deserialized input object.</returns>
+    /// <exception cref="System.Text.Json.JsonException">Thrown when the JSON is invalid.</exception>
+    object DeserializeInput(string json) =>
+        throw new NotSupportedException(
+            "This ILmpRunner does not support DeserializeInput. " +
+            "Implement this method to use the 'dotnet lmp run' command.");
 }

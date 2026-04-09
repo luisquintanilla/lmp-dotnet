@@ -4,7 +4,7 @@ namespace LMP.Cli;
 
 /// <summary>
 /// Entry point for the <c>dotnet lmp</c> CLI tool.
-/// Dispatches to subcommands: inspect, optimize, eval.
+/// Dispatches to subcommands: inspect, optimize, eval, run.
 /// </summary>
 public static class Program
 {
@@ -38,6 +38,7 @@ public static class Program
                 "inspect" => await InspectCommand.ExecuteAsync(args[1..]),
                 "optimize" => await OptimizeCommand.ExecuteAsync(args[1..]),
                 "eval" => await EvalCommand.ExecuteAsync(args[1..]),
+                "run" => await RunCommand.ExecuteAsync(args[1..]),
                 "--help" or "-h" => PrintUsageAndReturn(),
                 "--version" => PrintVersion(),
                 _ => PrintUnknownCommand(args[0])
@@ -87,6 +88,7 @@ public static class Program
               inspect     Pretty-print saved module parameters
               optimize    Optimize a module via IOptimizer.CompileAsync
               eval        Evaluate a module against a dataset
+              run         Execute a module on a single input
 
             Options:
               --help, -h     Show this help message

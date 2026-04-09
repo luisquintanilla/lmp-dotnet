@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 complete + samples — 852 tests passing. All phases done.
+> **Status:** Phase 8 complete + samples + CLI `run` command — 864 tests passing. All phases done.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-09
@@ -34,7 +34,7 @@
 | `LMP.Optimizers` — Evaluator, Bootstrap*, MIPROv2 | `compiler-optimizer.md` | :white_check_mark: Phase 6.1 complete (Evaluator, Clone, BootstrapFewShot, BootstrapRandomSearch, MIPROv2+TPE) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :white_check_mark: Complete (Phase 4.5) |
-| `LMP.Cli` — CLI tool (`dotnet lmp`) | `cli.md` | :white_check_mark: Phase 7.1 complete (inspect, optimize, eval commands) |
+| `LMP.Cli` — CLI tool (`dotnet lmp`) | `cli.md` | :white_check_mark: Phase 7.1 complete (inspect, optimize, eval, run commands) |
 | `LMP.Aspire.Hosting` — Aspire integration | `phased-plan.md` Phase 7 | :white_check_mark: Phase 7.2 complete (AddLmpOptimizer, LmpTelemetry) |
 | Test projects | `AGENTS.md` | :white_check_mark: 756 tests passing (Phases 1–7.2) |
 | End-to-end sample (`LMP.Samples.TicketTriage`) | `phased-plan.md` Phase 7, `mvp-demo-script.md` | :white_check_mark: Phase 7.3 complete (18 train + 10 dev examples, mock client demo) |
@@ -939,19 +939,21 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 - [x] `dotnet lmp inspect` — reads saved module state JSON and pretty-prints (module name, predictors, instructions, demo counts, config)
 - [x] `dotnet lmp optimize` — builds user project, discovers `ILmpRunner` implementation, runs `IOptimizer.CompileAsync`, saves optimized state JSON
 - [x] `dotnet lmp eval` — builds user project, discovers `ILmpRunner`, optionally loads saved artifact, evaluates on JSONL dataset via `Evaluator.EvaluateAsync`
+- [x] `dotnet lmp run` — builds user project, discovers `ILmpRunner`, deserializes single JSON input, optionally loads artifact, executes `ForwardAsync`, prints result
 
 **Implementation notes:**
 - Created `ILmpRunner` interface in `LMP.Abstractions` — user projects implement this to expose module factory, metric, and dataset loading to the CLI
+- Added `ILmpRunner.DeserializeInput(string json)` default interface method for `run` command single-input deserialization
 - `LMP.Cli` project as a .NET tool (`PackAsTool`, `ToolCommandName=lmp`)
 - `ProjectBuilder` — shells out to `dotnet build`, locates output DLL in standard paths
 - `RunnerDiscovery` — loads assembly via custom `AssemblyLoadContext`, scans for `ILmpRunner` implementations
-- Manual arg parsing (no `System.CommandLine` dependency) for 3 commands
+- Manual arg parsing (no `System.CommandLine` dependency) for 4 commands
 - Exit codes per CLI spec: 0=success, 1=unknown, 2=invalid args, 3=project not found, 4=compile failed, 5=eval failed, 6=artifact error, 7=input parse error
-- `--json` flag on inspect/eval for machine-readable output
+- `--json` flag on inspect/eval/run for machine-readable output
 - `--dev <path>` flag on optimize for post-optimization validation scoring
 - `--version` flag on main entry point
 - Early validation of `--optimizer` name (rejects unknown optimizers at arg parse time)
-- 40 tests: argument parsing, file not found, invalid JSON, formatted/JSON output, FormatDemoFields, CLI entry point dispatch, --version, --dev, unknown optimizer
+- 52 tests: argument parsing, file not found, invalid JSON, formatted/JSON output, FormatDemoFields, CLI entry point dispatch, --version, --dev, unknown optimizer, run command (12 new)
 
 ### 7.2 — Aspire Integration ✅ COMPLETE
 
