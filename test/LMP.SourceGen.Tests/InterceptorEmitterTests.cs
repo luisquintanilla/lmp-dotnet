@@ -107,18 +107,18 @@ public class InterceptorEmitterTests
     }
 
     [Fact]
-    public void GenerateSource_WiresPromptBuilder_BeforeDelegating()
+    public void GenerateSource_InlinesPromptBuilder_DirectCalls()
     {
         var sites = CreateSingleCallSite();
         var source = InterceptorEmitter.GenerateSource(sites);
 
-        Assert.Contains("self.SetPromptBuilder(global::TestApp.ClassifyTicketPromptBuilder.BuildMessages);", source);
-        Assert.Contains("return await self.PredictAsync(input, trace, validate, maxRetries, cancellationToken).ConfigureAwait(false);", source);
+        // Interceptor inlines PromptBuilder calls directly (no SetPromptBuilder indirection)
+        Assert.Contains("global::TestApp.ClassifyTicketPromptBuilder.BuildMessages(", source);
+        Assert.Contains("global::TestApp.ClassifyTicketPromptBuilder.DefaultInstructions", source);
 
-        // SetPromptBuilder must come before PredictAsync delegation
-        var wireIdx = source.IndexOf("SetPromptBuilder");
-        var delegateIdx = source.IndexOf("return await self.PredictAsync");
-        Assert.True(wireIdx < delegateIdx, "SetPromptBuilder should be called before delegating to PredictAsync");
+        // Should have retry loop with direct GetResponseAsync<T>
+        Assert.Contains("GetResponseAsync<global::TestApp.ClassifyTicket>", source);
+        Assert.Contains("trace?.Record(self.Name, input!, result);", source);
     }
 
     [Fact]
