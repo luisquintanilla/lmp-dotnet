@@ -21,6 +21,7 @@ public class IPredictorTests
         {
             Instructions = state.Instructions;
         }
+        public void AddDemo(object input, object output) { }
         public IPredictor Clone() => new StubPredictor
         {
             Name = Name,

@@ -1,9 +1,9 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 4.2 complete — 485 tests passing. Next: Phase 4.3 (BootstrapFewShot).
+> **Status:** Phase 4.3 complete — 513 tests passing. Next: Phase 4.4 (BootstrapRandomSearch).
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
-> **Last updated:** 2025-07-21
+> **Last updated:** 2026-04-09
 
 ---
 
@@ -31,10 +31,10 @@
 | `LMP.Core` — Predictor, LmpModule, assertions | `runtime-execution.md` §2–3, §6 | :white_check_mark: Phase 2.7 complete (PredictAsync wired, retry-on-assertion, GetState/LoadState with demos) |
 | `LMP.SourceGen` — IIncrementalGenerator | `source-generator.md` | :white_check_mark: Phase 2.8 complete (model extraction, PromptBuilder, JsonContext, GetPredictors, module JsonContext, LMP001/LMP002/LMP003 diagnostics) |
 | `LMP.Modules` — CoT, BestOfN, Refine, ReAct | `runtime-execution.md` §4–5 | :white_check_mark: Phase 3.3 (Refine) complete |
-| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :x: Not started (placeholder only) |
+| `LMP.Optimizers` — Evaluator, Bootstrap* | `compiler-optimizer.md` | :construction: Phase 4.3 complete (Evaluator, Clone, BootstrapFewShot) |
 | Diagnostics LMP001–LMP003 | `diagnostics.md` | :white_check_mark: Complete |
 | Artifact save/load (JSON) | `artifact-format.md` | :x: Not started |
-| Test projects | `AGENTS.md` | :white_check_mark: 403 tests passing (Phases 1–3.3) |
+| Test projects | `AGENTS.md` | :white_check_mark: 513 tests passing (Phases 1–4.3) |
 
 **Skeleton issues to address during Phase 1:**
 - `LMP.Modules.csproj` and `LMP.Optimizers.csproj` lack `<RootNamespace>`. Add `<RootNamespace>LMP.Modules</RootNamespace>` and `<RootNamespace>LMP.Optimizers</RootNamespace>` (or `LMP` if types should be in root namespace — spec shows `namespace LMP` for most types).
@@ -749,26 +749,31 @@ Source generator emits per-module `JsonSerializerContext` for typed save/load of
 
 **Status:** ✅ Complete. 485 total tests pass (59 Abstractions + 59 Core + 71 Modules + 22 Optimizers + 274 SourceGen). Clone infrastructure implemented: `Predictor.Clone()` via MemberwiseClone + independent Demos/Config, `LmpModule.Clone<TModule>()` via source-gen `CloneCore()` with UnsafeAccessor for readonly fields.
 
-### 4.3 — BootstrapFewShot
+### 4.3 — BootstrapFewShot ✅ COMPLETE
 
 **Spec:** `compiler-optimizer.md` §4
 
 **Tasks:**
-- [ ] Implement `BootstrapFewShot : IOptimizer` in `LMP.Optimizers`:
+- [x] Added `AddDemo(object input, object output)` to `IPredictor` interface and `Predictor<TIn,TOut>` implementation — enables optimizers to add demos via erased types from trace entries
+- [x] Implement `BootstrapFewShot : IOptimizer` in `LMP.Optimizers`:
   - Constructor: `(int maxDemos = 4, int maxRounds = 1, float metricThreshold = 1.0f)`
   - `CompileAsync<TModule>` algorithm:
-    1. `teacher = module.Clone<TModule>()` — deep copy
-    2. For each example in trainSet (via `Parallel.ForEachAsync`):
-       a. `teacher.EnableTracing()`
+    1. `teacher = module.Clone<TModule>()` — deep copy per round
+    2. For each example in trainSet (sequential for trace isolation):
+       a. `teacher.Trace = new Trace()` — fresh trace per example
        b. `output = await teacher.ForwardAsync(example.WithInputs(), ct)`
        c. `score = metric(example, output)`
-       d. If `score >= metricThreshold`: collect traces into `ConcurrentDictionary<string, ConcurrentBag<Demo>>`
+       d. If `score >= metricThreshold`: collect trace entries into `ConcurrentDictionary<string, ConcurrentBag<TraceEntry>>`
     3. For each predictor in student (`module.GetPredictors()`):
-       `predictor.Demos = successfulTraces[pred.Name].Take(maxDemos)`
+       `predictor.Demos.Clear()` then `predictor.AddDemo(entry.Input, entry.Output)` for each trace up to maxDemos
     4. Return student module
+  - Multi-round support: round N>1 copies demos from student to teacher before processing
   - Swallow exceptions on failed examples (except `OperationCanceledException`)
-- [ ] Integration test: optimizer fills predictor Demos from successful teacher traces
-- [ ] Verify thread-safe trace collection works with concurrent executions
+- [x] 28 unit tests: argument validation (5), empty trainSet (1), basic bootstrapping (3), threshold filtering (3), maxDemos limit (1), failed example swallowing (2), cancellation (2), multi-predictor modules (2), teacher/student isolation (1), IOptimizer interface (1), real predictor integration (1), existing demos cleared (1), no successful traces (1), constructor defaults (1), multi-round (1), trace isolation (1), no predictors (1), large training set (1)
+
+**Status:** ✅ Complete. 513 total tests pass (59 Abstractions + 59 Core + 71 Modules + 50 Optimizers + 274 SourceGen). BootstrapFewShot clones teacher, runs on training set, collects successful traces, fills student predictors with demos.
+
+**Design note:** Examples are processed sequentially (not `Parallel.ForEachAsync`) because `LmpModule.Trace` is a shared property — concurrent ForwardAsync calls on the same module would cause trace cross-contamination. Per-example teacher cloning would enable parallelism but at significant cost. Sequential processing is correct and sufficient for MVP; parallel support can be added later via `AsyncLocal<Trace>` or per-example cloning.
 
 **Completion criteria:** `BootstrapFewShot.CompileAsync` fills `predictor.Demos` from successful traces.
 

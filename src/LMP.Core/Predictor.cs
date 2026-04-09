@@ -187,6 +187,12 @@ public class Predictor<TInput, TOutput> : IPredictor
         }
     }
 
+    /// <inheritdoc />
+    public void AddDemo(object input, object output)
+    {
+        Demos.Add(((TInput)input, (TOutput)output));
+    }
+
     /// <summary>
     /// Creates an independent copy of this predictor. The clone shares the same
     /// <see cref="IChatClient"/> binding but has its own <see cref="Demos"/> list

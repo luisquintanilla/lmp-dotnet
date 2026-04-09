@@ -44,6 +44,15 @@ public interface IPredictor
     void LoadState(PredictorState state);
 
     /// <summary>
+    /// Adds a demo to this predictor's demo list using untyped input and output.
+    /// The concrete implementation casts to the expected <c>TInput</c>/<c>TOutput</c> types.
+    /// Used by optimizers that work with erased types via <see cref="Trace"/> entries.
+    /// </summary>
+    /// <param name="input">The demo input (must be the correct <c>TInput</c> at runtime).</param>
+    /// <param name="output">The demo output (must be the correct <c>TOutput</c> at runtime).</param>
+    void AddDemo(object input, object output);
+
+    /// <summary>
     /// Creates an independent copy of this predictor with the same client binding
     /// but separate learnable state (Demos, Instructions, Config).
     /// Used by optimizers that need teacher/student separation.
