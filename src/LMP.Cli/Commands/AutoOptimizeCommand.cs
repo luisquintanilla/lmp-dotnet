@@ -140,20 +140,32 @@ internal static class AutoOptimizeCommand
             return Program.ExitCodes.InvalidArguments;
         }
 
-        // Step 3: Discover ILmpRunner
+        // Step 3: Discover ILmpRunner (or fall back to auto-wiring)
         // Set LMP_MODEL env var if --model was specified, so runner can read it
         if (!string.IsNullOrEmpty(model))
             Environment.SetEnvironmentVariable("LMP_MODEL", model);
 
+        ILmpRunner runner;
         var discovery = RunnerDiscovery.Discover(buildResult.OutputAssembly);
-        if (discovery.Runner is null)
+        if (discovery.Runner is not null)
         {
-            await Console.Error.WriteLineAsync($"ERROR [discovery] {discovery.Error}");
-            return Program.ExitCodes.ProjectNotFound;
+            runner = discovery.Runner;
+        }
+        else
+        {
+            // No ILmpRunner found — try auto-wiring from [AutoOptimize] + user secrets
+            await Console.Error.WriteLineAsync("No ILmpRunner found. Auto-wiring from [AutoOptimize] + user secrets...");
+            var (autoRunner, autoError) = AutoWireRunner.TryCreate(buildResult.OutputAssembly, project);
+            if (autoRunner is null)
+            {
+                await Console.Error.WriteLineAsync($"ERROR [discovery] {autoError}");
+                return Program.ExitCodes.ProjectNotFound;
+            }
+            runner = autoRunner;
         }
 
         // Step 4: Check staleness (skip if up-to-date unless --force)
-        var moduleName = discovery.Runner.CreateModule().GetType().Name;
+        var moduleName = runner.CreateModule().GetType().Name;
         var generatedDir = outputDir ?? Path.Combine(projectDir, "Generated");
         var generatedPath = Path.Combine(generatedDir, $"{moduleName}.Optimized.g.cs");
 
@@ -174,7 +186,7 @@ internal static class AutoOptimizeCommand
         IReadOnlyList<Example> trainSet;
         try
         {
-            trainSet = discovery.Runner.LoadDataset(trainPath);
+            trainSet = runner.LoadDataset(trainPath);
         }
         catch (Exception ex)
         {
@@ -187,8 +199,8 @@ internal static class AutoOptimizeCommand
         Func<Example, object, float> metric;
         try
         {
-            module = discovery.Runner.CreateModule();
-            metric = discovery.Runner.CreateMetric();
+            module = runner.CreateModule();
+            metric = runner.CreateMetric();
         }
         catch (Exception ex)
         {
@@ -269,7 +281,7 @@ internal static class AutoOptimizeCommand
 
             try
             {
-                var devSet = discovery.Runner.LoadDataset(devPath);
+                var devSet = runner.LoadDataset(devPath);
                 var evalResult = await Evaluator.EvaluateAsync(
                     module, devSet, metric, cancellationToken: cancellationToken);
 

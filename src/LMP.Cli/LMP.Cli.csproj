@@ -16,4 +16,11 @@
   <ItemGroup>
     <ProjectReference Include="..\LMP.Optimizers\LMP.Optimizers.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
+  </ItemGroup>
 </Project>

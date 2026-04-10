@@ -118,7 +118,7 @@ internal static class RunnerDiscovery
     /// type identity for shared types like ILmpRunner, IChatClient, LmpModule), then
     /// falls back to loading from the target assembly's output directory.
     /// </summary>
-    private sealed class LmpAssemblyLoadContext : AssemblyLoadContext
+    internal sealed class LmpAssemblyLoadContext : AssemblyLoadContext
     {
         private readonly string _basePath;
 
