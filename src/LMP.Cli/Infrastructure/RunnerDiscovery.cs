@@ -114,26 +114,37 @@ internal static class RunnerDiscovery
     }
 
     /// <summary>
-    /// Custom AssemblyLoadContext that resolves dependencies from the same directory as the target assembly.
+    /// Custom AssemblyLoadContext that defers to the default context first (preserving
+    /// type identity for shared types like ILmpRunner, IChatClient, LmpModule), then
+    /// falls back to loading from the target assembly's output directory.
     /// </summary>
     private sealed class LmpAssemblyLoadContext : AssemblyLoadContext
     {
         private readonly string _basePath;
 
         public LmpAssemblyLoadContext(string assemblyPath)
-            : base(isCollectible: false) // non-collectible for simplicity
+            : base(isCollectible: false)
         {
             _basePath = Path.GetDirectoryName(Path.GetFullPath(assemblyPath))!;
+            Resolving += OnResolving;
         }
 
         protected override Assembly? Load(AssemblyName assemblyName)
         {
-            // Try to resolve from the same directory as the target assembly
+            // Always return null → let the default context try first.
+            // This preserves type identity for all shared assemblies
+            // (LMP.*, MEAI.*, System.*). The Resolving event handles
+            // project-specific assemblies (Azure.*, user code) that
+            // the default context can't find.
+            return null;
+        }
+
+        private Assembly? OnResolving(AssemblyLoadContext context, AssemblyName assemblyName)
+        {
+            // Default context couldn't resolve — load from target's output directory
             var candidatePath = Path.Combine(_basePath, $"{assemblyName.Name}.dll");
             if (File.Exists(candidatePath))
                 return LoadFromAssemblyPath(candidatePath);
-
-            // Fall back to default resolution
             return null;
         }
     }

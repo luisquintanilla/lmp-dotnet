@@ -44,15 +44,17 @@ internal static class CSharpArtifactWriter
                 p => p.Predictor.GetState())
         };
 
-        // Serialize to JSON string for embedding
+        // Serialize to JSON string for embedding (already pretty-printed by context options)
         var stateJson = JsonSerializer.Serialize(
             state,
             ModuleStateSerializerContext.Default.ModuleState);
 
-        // Escape for C# raw string literal (triple-quote safe)
-        // Raw string literals handle most escaping, but we need to ensure
-        // no triple-quote sequences exist in the JSON
-        var safeJson = stateJson.Replace("\"\"\"", "\\\"\\\"\\\"");
+        // Indent every line of the JSON to align with raw string literal closure.
+        // The closing """u8 has 12-char indent, so all JSON lines need ≥12 chars indent.
+        const string jsonIndent = "            "; // 12 spaces
+        var indentedJson = string.Join(
+            Environment.NewLine,
+            stateJson.Split('\n').Select(line => jsonIndent + line.TrimEnd()));
 
         // Compute staleness hashes
         var trainHash = File.Exists(trainPath)
@@ -81,7 +83,7 @@ internal static class CSharpArtifactWriter
         sb.AppendLine("    partial void ApplyOptimizedState()");
         sb.AppendLine("    {");
         sb.AppendLine("        var json = \"\"\"");
-        sb.AppendLine($"            {safeJson}");
+        sb.AppendLine(indentedJson);
         sb.AppendLine("            \"\"\"u8;");
         sb.AppendLine();
         sb.AppendLine("        var state = System.Text.Json.JsonSerializer.Deserialize(");
