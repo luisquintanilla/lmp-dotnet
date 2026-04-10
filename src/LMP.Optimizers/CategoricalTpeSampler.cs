@@ -1,3 +1,5 @@
+using System.Numerics.Tensors;
+
 namespace LMP.Optimizers;
 
 /// <summary>
@@ -142,8 +144,8 @@ public sealed class CategoricalTpeSampler : ISampler
         }
 
         // Normalize to probabilities
-        double goodTotal = goodCounts.Sum();
-        double badTotal = badCounts.Sum();
+        double goodTotal = TensorPrimitives.Sum<double>(goodCounts);
+        double badTotal = TensorPrimitives.Sum<double>(badCounts);
 
         // Compute acquisition values: l(x) / g(x)
         var acquisitionValues = new double[cardinality];
@@ -155,7 +157,7 @@ public sealed class CategoricalTpeSampler : ISampler
         }
 
         // Sample proportional to acquisition values
-        double totalAcq = acquisitionValues.Sum();
+        double totalAcq = TensorPrimitives.Sum<double>(acquisitionValues);
         double roll = _rng.NextDouble() * totalAcq;
         double cumulative = 0;
         for (int i = 0; i < cardinality; i++)

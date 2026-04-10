@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Numerics.Tensors;
 
 namespace LMP.Optimizers;
 
@@ -57,9 +58,9 @@ public static class Evaluator
         var scores = results.Select(r => r.Score).ToArray();
         return new EvaluationResult(
             PerExample: [.. results],
-            AverageScore: (float)scores.Average(),
-            MinScore: scores.Min(),
-            MaxScore: scores.Max(),
+            AverageScore: TensorPrimitives.Average<float>(scores),
+            MinScore: TensorPrimitives.Min<float>(scores),
+            MaxScore: TensorPrimitives.Max<float>(scores),
             Count: scores.Length);
     }
 
@@ -161,9 +162,9 @@ public static class Evaluator
         var scores = results.Select(r => r.Score).ToArray();
         return new EvaluationResult(
             PerExample: [.. results],
-            AverageScore: (float)scores.Average(),
-            MinScore: scores.Min(),
-            MaxScore: scores.Max(),
+            AverageScore: TensorPrimitives.Average<float>(scores),
+            MinScore: TensorPrimitives.Min<float>(scores),
+            MaxScore: TensorPrimitives.Max<float>(scores),
             Count: scores.Length);
     }
 

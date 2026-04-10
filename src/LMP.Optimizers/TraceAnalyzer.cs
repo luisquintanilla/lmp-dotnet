@@ -1,3 +1,6 @@
+using System.Numerics.Tensors;
+using System.Runtime.InteropServices;
+
 namespace LMP.Optimizers;
 
 /// <summary>
@@ -56,10 +59,17 @@ public static class TraceAnalyzer
                 if (scores.Count == 0)
                     continue;
 
-                double mean = scores.Average();
-                double stdDev = scores.Count > 1
-                    ? Math.Sqrt(scores.Sum(s => (s - mean) * (s - mean)) / (scores.Count - 1))
-                    : 0;
+                var scoresSpan = CollectionsMarshal.AsSpan(scores);
+                double mean = TensorPrimitives.Average<double>(scoresSpan);
+                double stdDev = 0;
+                if (scores.Count > 1)
+                {
+                    var deviations = new double[scores.Count];
+                    for (int i = 0; i < scores.Count; i++)
+                        deviations[i] = scoresSpan[i] - mean;
+                    TensorPrimitives.Multiply<double>(deviations, deviations, deviations);
+                    stdDev = Math.Sqrt(TensorPrimitives.Sum<double>(deviations) / (scores.Count - 1));
+                }
                 double stdError = stdDev / Math.Sqrt(scores.Count);
 
                 posteriors[valueIdx] = new ParameterPosterior(mean, stdError, scores.Count);

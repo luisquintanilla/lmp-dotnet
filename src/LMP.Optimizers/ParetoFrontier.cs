@@ -1,3 +1,5 @@
+using System.Numerics.Tensors;
+
 namespace LMP.Optimizers;
 
 /// <summary>
@@ -105,10 +107,20 @@ internal sealed class ParetoFrontier<TModule> where TModule : LmpModule
     /// </summary>
     private static double ComputeDisagreement(IReadOnlyList<ExampleResult> a, IReadOnlyList<ExampleResult> b)
     {
-        double sum = 0;
         int count = Math.Min(a.Count, b.Count);
+        if (count == 0) return 0;
+
+        var scoresA = new float[count];
+        var scoresB = new float[count];
         for (int i = 0; i < count; i++)
-            sum += Math.Abs(a[i].Score - b[i].Score);
-        return count > 0 ? sum / count : 0;
+        {
+            scoresA[i] = a[i].Score;
+            scoresB[i] = b[i].Score;
+        }
+
+        Span<float> diff = stackalloc float[count];
+        TensorPrimitives.Subtract<float>(scoresA, scoresB, diff);
+        TensorPrimitives.Abs(diff, diff);
+        return TensorPrimitives.Sum<float>(diff) / count;
     }
 }

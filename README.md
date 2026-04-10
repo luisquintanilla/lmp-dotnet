@@ -52,15 +52,15 @@ When you hit **Build**, the Roslyn source generator reads your `[LmpSignature]` 
 - **Diagnostics** — IDE warnings/errors for missing descriptions, non-serializable types, and invalid signatures
 - **C# 14 interceptors** — opt-in zero-dispatch `PredictAsync` inlining at call sites
 
-## Five Things Python Can't Do
+## What LMP Gives You
 
-| # | Capability | Why It Matters |
+| # | Capability | What It Means |
 |---|---|---|
 | 1 | **Compile-time signature validation** | Catch errors at `dotnet build`, not at runtime after an API call |
 | 2 | **Zero-reflection predictor discovery** | Optimizers enumerate all predictors without reflection or decorators |
 | 3 | **Source-generated prompt builders** | Typed, inspectable prompt assembly — no string formatting at runtime |
-| 4 | **AOT-deployable LM programs** | 50 ms cold start — no JIT, no reflection, no interpreter |
-| 5 | **True parallelism in optimization** | `Task.WhenAll` across real threads — no GIL |
+| 4 | **AOT-deployable LM programs** | ~50 ms cold start — no JIT, no reflection, no interpreter |
+| 5 | **True parallelism in optimization** | `Task.WhenAll` across real threads for concurrent trial evaluation |
 
 ## Module Catalog
 
@@ -81,6 +81,10 @@ When you hit **Build**, the Roslyn source generator reads your `[LmpSignature]` 
 | `BootstrapFewShot` | Collects successful traces as few-shot demos for each predictor |
 | `BootstrapRandomSearch` | Runs BootstrapFewShot × N candidates, returns the best |
 | `MIPROv2` | Bayesian optimization (TPE) over both instructions and demos |
+| `SmacSampler` | SMAC/Random Forest sampler — alternative to TPE via pluggable `ISampler` |
+| `TraceAnalyzer` | Post-optimization analysis: parameter posteriors, interactions, warm-start |
+| `Z3ConstrainedDemoSelector` | Z3-based constraint solver for demo selection (category coverage + quality) |
+| `GEPA` | Evolutionary reflection-driven optimizer — LLM diagnoses failures, evolves instructions |
 
 ## CLI Tool
 
@@ -119,18 +123,26 @@ LmpSuggest.That(result, r => r.Category != "unknown",
 
 ```
 src/
-├── LMP.Abstractions/      # Interfaces, attributes, base types (no dependencies)
-├── LMP.Core/               # Predictor<TIn,TOut> — the core primitive
-├── LMP.SourceGen/          # Roslyn IIncrementalGenerator (netstandard2.0)
-├── LMP.Modules/            # ChainOfThought, BestOfN, Refine, ReActAgent, ProgramOfThought
-├── LMP.Optimizers/         # Evaluator, BootstrapFewShot, BootstrapRandomSearch, MIPROv2
-├── LMP.Cli/                # CLI tool: inspect, optimize, eval, run
-└── LMP.Aspire.Hosting/     # Aspire dashboard integration for optimization runs
-test/                       # xUnit tests for each project (865 tests)
+├── LMP.Abstractions/         # Interfaces, attributes, base types (no dependencies)
+├── LMP.Core/                  # Predictor<TIn,TOut> — the core primitive
+├── LMP.SourceGen/             # Roslyn IIncrementalGenerator (netstandard2.0)
+├── LMP.Modules/               # ChainOfThought, BestOfN, Refine, ReActAgent, ProgramOfThought
+├── LMP.Optimizers/            # Evaluator, Bootstrap*, MIPROv2, SmacSampler, TraceAnalyzer, GEPA
+├── LMP.Extensions.Z3/         # Z3 constraint-based demo selector (Microsoft.Z3)
+├── LMP.Extensions.Evaluation/ # Bridge to Microsoft.Extensions.AI.Evaluation
+├── LMP.Cli/                   # CLI tool: inspect, optimize, eval, run
+└── LMP.Aspire.Hosting/        # Aspire dashboard integration for optimization runs
+test/                          # xUnit tests for each project (964 tests)
 samples/
-├── LMP.Samples.TicketTriage/  # End-to-end: classify → draft → evaluate → optimize → save/load
-├── LMP.Samples.Rag/           # RAG: IRetriever + Predictor composition with evaluation
-└── LMP.Samples.Agent/         # ReAct agent: tool-calling with Think → Act → Observe loop
+├── LMP.Samples.TicketTriage/       # End-to-end: classify → draft → evaluate → optimize → save/load
+├── LMP.Samples.Rag/                # RAG: IRetriever + Predictor composition with evaluation
+├── LMP.Samples.Agent/              # ReAct agent: tool-calling with Think → Act → Observe loop
+├── LMP.Samples.Middleware/          # M.E.AI middleware: caching, logging, OpenTelemetry
+├── LMP.Samples.MIPROv2/            # MIPROv2 Bayesian optimization with instruction + demo search
+├── LMP.Samples.Evaluation/         # M.E.AI Evaluation bridge with quality metrics
+├── LMP.Samples.AdvancedOptimizers/  # ISampler, SmacSampler, TraceAnalyzer — strategy comparison
+├── LMP.Samples.Z3/                 # Z3 constraint-based demo selection vs random
+└── LMP.Samples.GEPA/               # GEPA evolutionary optimizer — reflection-driven instruction evolution
 ```
 
 ## Getting Started
@@ -144,9 +156,11 @@ cd lmp-dotnet
 dotnet build
 dotnet test
 
-# Run the sample (no API key needed — uses mock client)
+# Run a sample (no API key needed — uses mock client)
 dotnet run --project samples/LMP.Samples.TicketTriage
 ```
+
+> **Azure OpenAI samples:** The [`azure-openai-samples`](https://github.com/luisquintanilla/lmp-dotnet/tree/azure-openai-samples) branch has all 9 samples configured with `Azure.AI.OpenAI` + `DefaultAzureCredential`. See the per-sample README for user-secrets setup.
 
 Reference LMP in your project:
 
@@ -173,8 +187,10 @@ The samples use `MockChatClient` so they run without API keys. To use a real LLM
 # OpenAI
 dotnet add package Microsoft.Extensions.AI.OpenAI
 
-# Azure OpenAI
-dotnet add package Microsoft.Extensions.AI.AzureAIInference
+# Azure OpenAI (recommended — supports managed identity)
+dotnet add package Azure.AI.OpenAI
+dotnet add package Azure.Identity
+dotnet add package Microsoft.Extensions.AI.OpenAI
 
 # Ollama (local)
 dotnet add package Microsoft.Extensions.AI.Ollama
@@ -189,11 +205,12 @@ using Microsoft.Extensions.AI;
 IChatClient client = new OpenAI.OpenAIClient("your-api-key")
     .AsChatClient("gpt-4o-mini");
 
-// Azure OpenAI
-IChatClient client = new Azure.AI.Inference.ChatCompletionsClient(
+// Azure OpenAI (managed identity — no API key)
+IChatClient client = new Azure.AI.OpenAI.AzureOpenAIClient(
     new Uri("https://your-resource.openai.azure.com/"),
-    new Azure.AzureKeyCredential("your-key"))
-    .AsChatClient("gpt-4o-mini");
+    new Azure.Identity.DefaultAzureCredential())
+    .GetChatClient("gpt-4o-mini")
+    .AsIChatClient();
 
 // Ollama (local, no key needed)
 IChatClient client = new OllamaChatClient(new Uri("http://localhost:11434"), "llama3.2");
@@ -214,6 +231,8 @@ All LMP modules, predictors, and optimizers work identically regardless of which
 - [`Microsoft.Extensions.AI`](https://www.nuget.org/packages/Microsoft.Extensions.AI/) 10.4.1 — `IChatClient`, `GetResponseAsync<T>`, `AIFunction`
 - [`Microsoft.CodeAnalysis.CSharp`](https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/) 5.3.0 — source generator (build-time only)
 - [`Microsoft.CodeAnalysis.CSharp.Scripting`](https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp.Scripting/) 5.3.0 — `ProgramOfThought` code execution
+- [`Microsoft.Z3`](https://www.nuget.org/packages/Microsoft.Z3/) 4.12.2 — Z3 constraint solver (`LMP.Extensions.Z3` only)
+- [`Microsoft.Extensions.AI.Evaluation`](https://www.nuget.org/packages/Microsoft.Extensions.AI.Evaluation/) 10.4.0 — evaluation bridge (`LMP.Extensions.Evaluation` only)
 
 ## Design Documents
 
@@ -224,10 +243,11 @@ Full architecture and specs live in [`docs/`](docs/):
 - [`phased-plan.md`](docs/01-architecture/phased-plan.md) — implementation phases
 - [`source-generator.md`](docs/02-specs/source-generator.md) — source generator internals
 - [`compiler-optimizer.md`](docs/02-specs/compiler-optimizer.md) — optimizer design
+- [`advanced-optimizers.md`](docs/03-implementation/advanced-optimizers.md) — ISampler, SmacSampler, TraceAnalyzer, Z3, GEPA
 
 ## Status
 
-✅ **All 8 phases complete** — 865 tests passing. Core framework, source generator, reasoning modules, optimizers, CLI tool, Aspire integration, interceptors, and `[Predict]` sugar are all implemented.
+✅ **All 8 phases complete** — 964 tests passing. Core framework, source generator, reasoning modules, optimizers (MIPROv2, SmacSampler, TraceAnalyzer, Z3, GEPA), CLI tool, Aspire integration, interceptors, and `[Predict]` sugar are all implemented.
 
 ## License
 

@@ -1,3 +1,5 @@
+using System.Numerics.Tensors;
+
 namespace LMP.Optimizers;
 
 /// <summary>
@@ -61,8 +63,12 @@ internal sealed class CategoricalRandomForest
         for (int t = 0; t < _trees.Length; t++)
             predictions[t] = _trees[t].Predict(config, featureNames);
 
-        double mean = predictions.Average();
-        double variance = predictions.Select(p => (p - mean) * (p - mean)).Average();
+        double mean = TensorPrimitives.Average<double>(predictions);
+        Span<double> deviations = stackalloc double[predictions.Length];
+        for (int t = 0; t < predictions.Length; t++)
+            deviations[t] = predictions[t] - mean;
+        TensorPrimitives.Multiply(deviations, deviations, deviations);
+        double variance = TensorPrimitives.Average<double>(deviations);
         return (mean, Math.Sqrt(variance));
     }
 
