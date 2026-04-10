@@ -1272,7 +1272,7 @@ In the trial evaluation loop:
 **Tests:** MIPROv2 passes TrialCost when sampler supports it.
 **Completion:** `dotnet test` — 0 regressions in existing MIPROv2 tests.
 
-#### Task 9B.5: CostAwareSampler Tests + Sample ❌
+#### Task 9B.5: CostAwareSampler Tests + Sample ✅
 
 **Files:** `test/LMP.Optimizers.Tests/CostAwareSamplerTests.cs`, `samples/LMP.Samples.AdvancedOptimizers/Program.cs`
 

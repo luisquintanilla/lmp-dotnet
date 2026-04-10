@@ -4,19 +4,21 @@ using LMP.Samples.AdvancedOptimizers;
 using Microsoft.Extensions.AI;
 
 // ──────────────────────────────────────────────────────────────
-// LMP Advanced Optimizers — ISampler, SmacSampler, TraceAnalyzer
+// LMP Advanced Optimizers — ISampler, SmacSampler, TraceAnalyzer, CostAwareSampler
 //
 // This sample demonstrates:
 //   1. Optimize with MIPROv2 (default TPE sampler) — collect trial history
 //   2. Analyze trial history with TraceAnalyzer — posteriors, interactions
 //   3. Re-optimize with SmacSampler (SMAC/RF) — different search strategy
 //   4. Warm-start a new optimization from prior posteriors
-//   5. Compare all strategies side-by-side
+//   5. CostAwareSampler — cost-frugal optimization with custom cost functions
+//   6. Compare all strategies side-by-side
 // ──────────────────────────────────────────────────────────────
 
 Console.WriteLine("╔══════════════════════════════════════════════════════╗");
 Console.WriteLine("║   LMP — Advanced Optimizers Demo                     ║");
 Console.WriteLine("║   ISampler · SmacSampler · TraceAnalyzer              ║");
+Console.WriteLine("║   CostAwareSampler — Cost-Frugal Optimization         ║");
 Console.WriteLine("╚══════════════════════════════════════════════════════╝");
 Console.WriteLine();
 
@@ -161,11 +163,103 @@ Console.WriteLine($"  Trials collected: {smacHistory?.Count ?? 0}");
 Console.WriteLine();
 
 // ═══════════════════════════════════════════════════════════
-// Step 5: Warm-Start — Transfer Knowledge to New Optimization
+// Step 5: CostAwareSampler — Cost-Frugal Optimization
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("Step 5: CostAwareSampler — Cost-Frugal Optimization");
+Console.WriteLine("────────────────────────────────────────────────────");
+Console.WriteLine("  FLAML Flow2 + adaptive step size driven by cost...");
+Console.WriteLine();
+
+// 5a: Default cost projection (TotalTokens)
+Console.WriteLine("  5a) Default projection (TotalTokens):");
+var costModule = new SupportTriageModule(client);
+var miproCost = new MIPROv2(
+    proposalClient: client,
+    numTrials: 10,
+    numInstructionCandidates: 4,
+    numDemoSubsets: 4,
+    maxDemos: 4,
+    metricThreshold: 0.3f,
+    seed: 42,
+    samplerFactory: cards => new CostAwareSampler(cards, seed: 42));
+
+var costOptimized = await miproCost.CompileAsync(costModule, trainSet, untypedMetric);
+var costScore = await Evaluator.EvaluateAsync(costOptimized, devSet, metric);
+Console.WriteLine($"      Score: {costScore.AverageScore:P1}");
+Console.WriteLine();
+
+// 5b: Dollar pricing projection
+Console.WriteLine("  5b) Dollar pricing projection:");
+Console.WriteLine("      cost => OutputTokens * $0.06/1K + InputTokens * $0.01/1K");
+var dollarModule = new SupportTriageModule(client);
+var miproDollar = new MIPROv2(
+    proposalClient: client,
+    numTrials: 10,
+    numInstructionCandidates: 4,
+    numDemoSubsets: 4,
+    maxDemos: 4,
+    metricThreshold: 0.3f,
+    seed: 42,
+    samplerFactory: cards => new CostAwareSampler(
+        cards,
+        costProjection: c => c.OutputTokens * 0.06 / 1000 + c.InputTokens * 0.01 / 1000,
+        seed: 42));
+
+var dollarOptimized = await miproDollar.CompileAsync(dollarModule, trainSet, untypedMetric);
+var dollarScore = await Evaluator.EvaluateAsync(dollarOptimized, devSet, metric);
+Console.WriteLine($"      Score: {dollarScore.AverageScore:P1}");
+Console.WriteLine();
+
+// 5c: Latency projection
+Console.WriteLine("  5c) Latency projection:");
+Console.WriteLine("      cost => ElapsedMilliseconds");
+var latencyModule = new SupportTriageModule(client);
+var miproLatency = new MIPROv2(
+    proposalClient: client,
+    numTrials: 10,
+    numInstructionCandidates: 4,
+    numDemoSubsets: 4,
+    maxDemos: 4,
+    metricThreshold: 0.3f,
+    seed: 42,
+    samplerFactory: cards => new CostAwareSampler(
+        cards,
+        costProjection: c => c.ElapsedMilliseconds,
+        seed: 42));
+
+var latencyOptimized = await miproLatency.CompileAsync(latencyModule, trainSet, untypedMetric);
+var latencyScore = await Evaluator.EvaluateAsync(latencyOptimized, devSet, metric);
+Console.WriteLine($"      Score: {latencyScore.AverageScore:P1}");
+Console.WriteLine();
+
+// 5d: Blended cost (quality + latency)
+Console.WriteLine("  5d) Blended projection:");
+Console.WriteLine("      cost => TotalTokens * 0.7 + ElapsedMilliseconds * 0.3");
+var blendedModule = new SupportTriageModule(client);
+var miproBlended = new MIPROv2(
+    proposalClient: client,
+    numTrials: 10,
+    numInstructionCandidates: 4,
+    numDemoSubsets: 4,
+    maxDemos: 4,
+    metricThreshold: 0.3f,
+    seed: 42,
+    samplerFactory: cards => new CostAwareSampler(
+        cards,
+        costProjection: c => c.TotalTokens * 0.7 + c.ElapsedMilliseconds * 0.3,
+        seed: 42));
+
+var blendedOptimized = await miproBlended.CompileAsync(blendedModule, trainSet, untypedMetric);
+var blendedScore = await Evaluator.EvaluateAsync(blendedOptimized, devSet, metric);
+Console.WriteLine($"      Score: {blendedScore.AverageScore:P1}");
+Console.WriteLine();
+
+// ═══════════════════════════════════════════════════════════
+// Step 6: Warm-Start — Transfer Knowledge to New Optimization
 // ═══════════════════════════════════════════════════════════
 if (tpeHistory is { Count: > 0 })
 {
-    Console.WriteLine("Step 5: Warm-Start Transfer Learning");
+    Console.WriteLine("Step 6: Warm-Start Transfer Learning");
     Console.WriteLine("─────────────────────────────────────");
     Console.WriteLine("  Transferring TPE posteriors → new SmacSampler...");
 
@@ -203,22 +297,27 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine();
 
     // ═══════════════════════════════════════════════════════════
-    // Step 6: Results Comparison
+    // Step 7: Results Comparison
     // ═══════════════════════════════════════════════════════════
-    Console.WriteLine("╔══════════════════════════════════════════════════════╗");
-    Console.WriteLine("║   Results Comparison                                 ║");
-    Console.WriteLine("╠══════════════════════════════════════════════════════╣");
-    Console.WriteLine($"║   Baseline (no opt):           {baseline.AverageScore,6:P1}              ║");
-    Console.WriteLine($"║   MIPROv2 + TPE:               {tpeScore.AverageScore,6:P1}              ║");
-    Console.WriteLine($"║   MIPROv2 + SmacSampler:       {smacScore.AverageScore,6:P1}              ║");
-    Console.WriteLine($"║   MIPROv2 + Warm-Start SMAC:   {warmScore.AverageScore,6:P1}              ║");
-    Console.WriteLine("╠══════════════════════════════════════════════════════╣");
-    Console.WriteLine("║                                                      ║");
-    Console.WriteLine("║   ISampler lets you swap search strategies:           ║");
-    Console.WriteLine("║   · TPE — fast, good for independent params           ║");
-    Console.WriteLine("║   · SMAC — RF surrogate, better for interactions      ║");
-    Console.WriteLine("║   TraceAnalyzer enables cross-run transfer learning.  ║");
-    Console.WriteLine("╚══════════════════════════════════════════════════════╝");
+    Console.WriteLine("╔══════════════════════════════════════════════════════════╗");
+    Console.WriteLine("║   Results Comparison                                     ║");
+    Console.WriteLine("╠══════════════════════════════════════════════════════════╣");
+    Console.WriteLine($"║   Baseline (no opt):             {baseline.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   MIPROv2 + TPE:                 {tpeScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   MIPROv2 + SmacSampler:         {smacScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   MIPROv2 + CostAware (tokens):  {costScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   MIPROv2 + CostAware (dollar):  {dollarScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   MIPROv2 + CostAware (latency): {latencyScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   MIPROv2 + CostAware (blended): {blendedScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   MIPROv2 + Warm-Start SMAC:     {warmScore.AverageScore,6:P1}                ║");
+    Console.WriteLine("╠══════════════════════════════════════════════════════════╣");
+    Console.WriteLine("║                                                          ║");
+    Console.WriteLine("║   ISampler lets you swap search strategies:               ║");
+    Console.WriteLine("║   · TPE — fast, good for independent params               ║");
+    Console.WriteLine("║   · SMAC — RF surrogate, better for interactions          ║");
+    Console.WriteLine("║   · CostAware — FLAML Flow2, balances quality vs. cost    ║");
+    Console.WriteLine("║   TraceAnalyzer enables cross-run transfer learning.      ║");
+    Console.WriteLine("╚══════════════════════════════════════════════════════════╝");
 }
 
 // ── Helpers ─────────────────────────────────────────────────
