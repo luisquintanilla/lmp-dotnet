@@ -1,9 +1,9 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 8 complete + samples + CLI `run` command — 865 tests passing. All phases done. CoT optimization bug fixed. README updated to reflect actual project state.
+> **Status:** Phase 9 in progress — Doc spec freshness audit + CostAwareSampler. 964 tests passing.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
-> **Last updated:** 2026-04-09
+> **Last updated:** 2026-04-10
 
 ---
 
@@ -1088,3 +1088,204 @@ Phase 4 recommends Phase 3 but does not require it. Phase 6 requires both Phase 
 ---
 
 *Generated from spec analysis. Solution skeleton complete (Phase 1.1). Implementation starts at Phase 1.2.*
+
+---
+
+## Phase 9: Doc Freshness + CostAwareSampler
+
+> **Status:** In progress
+> **Prerequisite:** Phases 1-8 complete, 964 tests passing
+> **Context:** Specs were written in Phases 1-7 but the code evolved significantly (typed modules, async metrics, ISampler, SMAC, GEPA, TensorPrimitives, AOT). Specs are heavily stale. CostAwareSampler adds cost-aware Bayesian optimization from ML.NET/FLAML CostFrugal (AAAI 2021).
+
+### Phase 9A: Doc Spec Freshness
+
+#### Task 9A.1: Fix `public-api.md` ❌
+
+**File:** `docs/02-specs/public-api.md`
+**Reference code:** `src/LMP.Abstractions/`, `src/LMP.Core/Predictor.cs`, `src/LMP.Optimizers/`
+
+Fix these discrepancies between spec and actual code:
+- `Demos` type: doc says `IReadOnlyList<(TInput, TOutput)>` → actual: `List<(TInput Input, TOutput Output)>`
+- `PredictorConfig` doesn't exist → actual: `ChatOptions Config` (from M.E.AI)
+- `PredictAsync` signature missing `trace`, `validate`, `maxRetries` parameters
+- ADD missing APIs: `SerializerOptions` property, `SetPromptBuilder()` method
+- ADD: `Metric.Create<TPredicted, TExpected>` predicate overload, `Metric.CreateAsync`
+- ADD: `ISampler` interface section (Propose/Update pattern)
+- ADD: `EvaluationBridge` section (LMP.Extensions.Evaluation)
+
+**Completion:** `dotnet build` passes. Spec matches actual public API surface.
+
+#### Task 9A.2: Fix `runtime-execution.md` ❌
+
+**File:** `docs/02-specs/runtime-execution.md`
+**Reference code:** `src/LMP.Core/Predictor.cs`
+
+- `Demos` type: doc says `List<Example<TIn,TOut>>` → actual: `List<(TInput Input, TOutput Output)>`
+- Expand retry/validation logic: `maxRetries`, `LmpAssertionException`, `LmpMaxRetriesExceededException`
+- ADD: `SetPromptBuilder()` / `MessageBuilder` mechanism (how source gen plugs into runtime)
+- ADD: TensorPrimitives usage note in Evaluator section
+
+**Completion:** Code examples in doc compile against actual API.
+
+#### Task 9A.3: Fix `compiler-optimizer.md` ❌
+
+**File:** `docs/02-specs/compiler-optimizer.md`
+**Reference code:** `src/LMP.Optimizers/`
+
+This is the most stale spec. Fix:
+- `GetPredictors()` code example uses wrong return type (should be `IReadOnlyList<(string Name, IPredictor Predictor)>`)
+- ADD **entire section** for GEPA optimizer (currently COMPLETELY undocumented)
+- ADD section for SmacSampler (random forest + Expected Improvement)
+- ADD section for TraceAnalyzer + warm-start loop
+- ADD section for ISampler interface + CategoricalTpeSampler
+- ADD TensorPrimitives usage in Evaluator (TensorPrimitives.Average, Min, Max)
+- ADD typed Evaluator overloads (`EvaluateAsync<TInput, TPredicted, TExpected>`)
+
+**Completion:** All optimizer classes documented with correct APIs.
+
+#### Task 9A.4: Fix `phased-plan.md` ❌
+
+**File:** `docs/01-architecture/phased-plan.md`
+
+- Fix: `Predictor<TInput, TOutput>` is a **class**, not "interface" (line 48)
+- Remove: `PredictorConfig` phantom type from Phase 1 deliverables
+- Fix: `OptimizeAsync` → `CompileAsync` (Phase 4 API name)
+- Update: Phases 6-8 are COMPLETE, not "Post-MVP"
+- ADD: Phase completion status summary
+
+**Completion:** Plan reflects actual implementation state.
+
+#### Task 9A.5: Verify `system-architecture.md` ❌
+
+**File:** `docs/01-architecture/system-architecture.md`
+
+- Verify 4-layer diagram accuracy — should reflect:
+  - ISampler abstraction in Layer 3
+  - LMP.Extensions.Evaluation in extension layer
+  - LMP.Extensions.Z3 in extension layer
+  - AOT compatibility note
+  - TensorPrimitives as internal implementation detail
+
+**Completion:** Architecture diagram matches actual project structure.
+
+#### Task 9A.6: Update `AGENTS.md` ❌
+
+**File:** `AGENTS.md`
+
+Solution structure is stale. Add:
+- `LMP.Extensions.Evaluation/` — M.E.AI evaluation bridge
+- `LMP.Extensions.Z3/` — Z3 constraint optimization
+- `LMP.Aspire.Hosting/` — Aspire integration
+- Update LMP.Optimizers description: add ISampler, SmacSampler, GEPA, TraceAnalyzer
+- Update test projects list to match actual
+- Update dependencies list (System.Numerics.Tensors, Microsoft.Z3)
+
+**Completion:** `AGENTS.md` accurately describes the actual solution structure.
+
+---
+
+### Phase 9B: CostAwareSampler
+
+> **Design principle:** Reuse M.E.AI's `UsageDetails` from `ChatResponse.Usage`. Auto-collect multi-dimensional cost. User provides `Func<TrialCost, double>` projection — same pattern as `Metric.Create`.
+
+#### Task 9B.1: Capture ChatResponse.Usage in Predictor/Trace ❌
+
+**Files:** `src/LMP.Abstractions/Trace.cs`, `src/LMP.Core/Predictor.cs`
+
+Currently `Predictor.PredictAsync` calls `GetResponseAsync<TOutput>` and only uses `response.Result`, discarding `response.Usage`. Fix:
+
+1. `TraceEntry` record: add `UsageDetails? Usage` parameter (from `Microsoft.Extensions.AI`)
+2. `Trace.Record()`: accept optional `UsageDetails?` parameter
+3. `Predictor.PredictAsync`: pass `response.Usage` when recording trace
+4. `Trace`: add convenience rollup properties:
+   - `long TotalTokens` — sum of all entries' TotalTokenCount
+   - `int TotalApiCalls` — count of entries
+
+**Tests:** TraceEntry records Usage. Trace.TotalTokens aggregates correctly.
+**Completion:** `dotnet test` passes. Usage data flows through traces.
+
+#### Task 9B.2: Create TrialCost + Extend ISampler ❌
+
+**Files:** `src/LMP.Abstractions/TrialCost.cs` (new), `src/LMP.Abstractions/ISampler.cs`
+
+1. Create `TrialCost` record:
+```csharp
+public record TrialCost(
+    long TotalTokens,
+    long InputTokens,
+    long OutputTokens,
+    long ElapsedMilliseconds,
+    int ApiCalls);
+```
+
+2. Extend `ISampler` with default interface method:
+```csharp
+void Update(Dictionary<string, int> config, float score, TrialCost cost)
+    => Update(config, score);
+```
+
+This is backward-compatible — CategoricalTpeSampler and SmacSampler don't need changes.
+
+**Tests:** TrialCost record equality. ISampler default method ignores cost.
+**Completion:** `dotnet build && dotnet test` — 0 regressions.
+
+#### Task 9B.3: Implement CostAwareSampler ❌
+
+**Files:** `src/LMP.Optimizers/Samplers/CostAwareSampler.cs` (new), internal helpers
+
+Port ML.NET CostFrugal (AAAI 2021 Flow2) discretized for categoricals:
+
+```csharp
+public class CostAwareSampler : ISampler
+{
+    public CostAwareSampler(
+        Dictionary<string, int> cardinalities,
+        Func<TrialCost, double>? costProjection = null, // default: c => c.TotalTokens
+        int seed = 42);
+}
+```
+
+Internal classes:
+- `SearchThread` (~120 LOC): cost tracking, step adaptation, convergence detection
+- `Flow2Categorical` (~180 LOC): discretized local search on categorical space
+- Vector helpers (~60 LOC): sphere sampling, normalize, project to categorical bounds
+
+User-customizable cost projection examples:
+- Default: `cost => cost.TotalTokens`
+- Dollar pricing: `cost => cost.OutputTokens * 0.06/1000 + cost.InputTokens * 0.01/1000`
+- Latency: `cost => cost.ElapsedMilliseconds`
+- Weighted blend: `cost => cost.TotalTokens * 0.7 + cost.ElapsedMilliseconds * 0.3`
+
+**Tests:** ~300 LOC — convergence, step sizing, cost projection, categorical discretization.
+**Completion:** `dotnet test` passes with CostAwareSampler tests.
+
+#### Task 9B.4: Wire Cost Collection into MIPROv2 ❌
+
+**File:** `src/LMP.Optimizers/MIPROv2Optimizer.cs`
+
+In the trial evaluation loop:
+1. Wrap `Evaluator.EvaluateAsync` call with `Stopwatch`
+2. Accumulate token counts from the candidate module's `Trace`
+3. Build `TrialCost` from Stopwatch + Trace usage data
+4. Call `sampler.Update(config, score, cost)` instead of `sampler.Update(config, score)`
+
+**Tests:** MIPROv2 passes TrialCost when sampler supports it.
+**Completion:** `dotnet test` — 0 regressions in existing MIPROv2 tests.
+
+#### Task 9B.5: CostAwareSampler Tests + Sample ❌
+
+**Files:** `test/LMP.Optimizers.Tests/CostAwareSamplerTests.cs`, `samples/LMP.Samples.AdvancedOptimizers/Program.cs`
+
+Unit tests (~300 LOC):
+- Basic propose/update cycle
+- Cost projection customization
+- Convergence with varying costs
+- Backward compat: non-cost Update still works
+- Integration: MIPROv2 + CostAwareSampler
+
+AdvancedOptimizers sample update:
+- Add section showing CostAwareSampler with custom cost projection
+- Compare cost-aware vs cost-blind optimization results
+- Demonstrate dollar pricing, latency, and blended cost functions
+
+**Completion:** All tests pass. Sample builds and runs.

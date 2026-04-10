@@ -6,30 +6,28 @@ You are implementing LMP (Language Model Programs) — a .NET 10 / C# 14 library
 
 1. Read `AGENTS.md` for build/test commands and project conventions.
 
-2. Read `IMPLEMENTATION_PLAN.md` to find the next uncompleted task.
+2. Read `IMPLEMENTATION_PLAN.md` to find the next uncompleted task (marked ❌). Tasks marked ✅ are done — skip them.
 
-3. Read the relevant spec document in `docs/` for implementation details.
+3. For **doc spec tasks** (Phase 9A): Read the actual source code to understand the real API, then fix the spec doc to match. The SOURCE CODE is the ground truth, not the docs.
 
-4. Implement the task:
-   - Follow the API surface in `docs/02-specs/public-api.md`
-   - Follow the architecture in `docs/01-architecture/system-architecture.md`
-   - Write tests alongside implementation (TDD preferred)
-   - Use `dotnet build` and `dotnet test` to verify your work
+4. For **code tasks** (Phase 9B): Read the relevant spec and existing code, then implement. Write tests alongside implementation.
 
 5. After implementing:
-   - Run `dotnet build --no-restore` — must pass
-   - Run `dotnet test` — must pass
+   - Run `dotnet build --no-restore` — must pass with 0 errors, 0 warnings
+   - Run `dotnet test` — must pass with 0 failures
    - If tests fail, debug and fix before proceeding
 
 6. Update `IMPLEMENTATION_PLAN.md`:
-   - Mark the completed task as done
+   - Change the completed task's ❌ to ✅
    - Add any discovered subtasks
    - Note any blockers
 
 7. Commit your work:
    ```
    git add -A
-   git commit -m "feat: <descriptive message>"
+   git commit -m "feat: <descriptive message>
+
+   Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
    ```
 
 ## Rules
@@ -40,3 +38,6 @@ You are implementing LMP (Language Model Programs) — a .NET 10 / C# 14 library
 - Follow existing code style and conventions
 - One task per iteration. Do it well, then exit.
 - If stuck after reasonable effort, document what's blocking in IMPLEMENTATION_PLAN.md and move on.
+- The source code in `src/` is ALWAYS the ground truth. If a doc says one thing and the code says another, the code wins.
+- `TreatWarningsAsErrors` is enabled globally — 0 warnings required.
+- `IsAotCompatible` is enabled on Abstractions, Core, Optimizers — new code must not introduce AOT warnings.
