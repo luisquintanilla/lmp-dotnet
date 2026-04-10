@@ -66,7 +66,8 @@ internal sealed record ModuleModel(
     string Namespace,
     string TypeName,
     EquatableArray<PredictorFieldModel> PredictorFields,
-    EquatableArray<PredictMethodModel> PredictMethods)
+    EquatableArray<PredictMethodModel> PredictMethods,
+    bool HasAutoOptimize = false)
 {
     /// <summary>
     /// Initializes a <see cref="ModuleModel"/> with no <c>[Predict]</c> methods

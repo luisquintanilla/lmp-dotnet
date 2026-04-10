@@ -84,13 +84,18 @@ internal static class ModuleExtractor
             ? ""
             : typeSymbol.ContainingNamespace.ToDisplayString();
 
+        var hasAutoOptimize = typeSymbol.GetAttributes().Any(a =>
+            a.AttributeClass?.Name == "AutoOptimizeAttribute" &&
+            a.AttributeClass.ContainingNamespace?.ToDisplayString() == "LMP");
+
         return new ModuleModel(
             Namespace: ns,
             TypeName: typeSymbol.Name,
             PredictorFields: new EquatableArray<PredictorFieldModel>(
                 predictorFields.ToImmutableArray()),
             PredictMethods: new EquatableArray<PredictMethodModel>(
-                predictMethods.ToImmutableArray()));
+                predictMethods.ToImmutableArray()),
+            HasAutoOptimize: hasAutoOptimize);
     }
 
     private static void TryAddPredictor(
