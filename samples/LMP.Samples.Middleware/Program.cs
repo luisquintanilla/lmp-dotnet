@@ -1,29 +1,52 @@
 using System.Diagnostics;
+using Azure.AI.OpenAI;
+using Azure.Identity;
 using LMP;
 using LMP.Optimizers;
 using LMP.Samples.Middleware;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenTelemetry;
 using OpenTelemetry.Trace;
 
 // ──────────────────────────────────────────────────────────────
-// LMP Middleware Pipeline Demo
+// LMP Middleware Pipeline Demo (Azure OpenAI)
 //
-// Demonstrates M.E.AI middleware with LMP modules:
+// Demonstrates M.E.AI middleware wrapping Azure OpenAI:
 //   1. DistributedCache — cache identical LLM prompts
 //   2. OpenTelemetry    — trace every LLM call with latency
 //   3. ILogger          — structured logging for requests
 //
 // Shows the timing difference between uncached and cached runs.
+//
+// Configure via user secrets:
+//   dotnet user-secrets set "AzureOpenAI:Endpoint" "https://YOUR_RESOURCE.openai.azure.com/"
+//   dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-4.1-nano"
 // ──────────────────────────────────────────────────────────────
 
 Console.WriteLine("╔══════════════════════════════════════════════╗");
 Console.WriteLine("║   LMP — Middleware Pipeline Demo             ║");
+Console.WriteLine("║          (Azure OpenAI)                      ║");
 Console.WriteLine("╚══════════════════════════════════════════════╝");
+Console.WriteLine();
+
+// ── Configure Azure OpenAI via user secrets + managed identity ──
+var config = new ConfigurationBuilder()
+    .AddUserSecrets<Program>()
+    .Build();
+
+string endpoint = config["AzureOpenAI:Endpoint"]
+    ?? throw new InvalidOperationException(
+        "Set AzureOpenAI:Endpoint in user secrets: dotnet user-secrets set \"AzureOpenAI:Endpoint\" \"https://YOUR_RESOURCE.openai.azure.com/\"");
+string deployment = config["AzureOpenAI:Deployment"]
+    ?? throw new InvalidOperationException(
+        "Set AzureOpenAI:Deployment in user secrets: dotnet user-secrets set \"AzureOpenAI:Deployment\" \"gpt-4.1-nano\"");
+
+Console.WriteLine($"  Using: {deployment} @ {endpoint}");
 Console.WriteLine();
 
 // ── Set up OpenTelemetry ────────────────────────────────────
@@ -44,17 +67,19 @@ var cache = new MemoryDistributedCache(
 
 // ── Build the middleware pipeline ───────────────────────────
 //
-// The pipeline wraps any IChatClient (here a mock, but swap in
-// Azure OpenAI, OpenAI, or Ollama for production):
+// The pipeline wraps the Azure OpenAI client with middleware:
 //
-//   Inner client → Cache → OpenTelemetry → Logging → Outer
+//   Azure OpenAI → Cache → OpenTelemetry → Logging → Outer
 //
 // Order matters:
-//   - Cache is innermost: cache hits skip OTel + logging
+//   - Cache is innermost: cache hits skip OTel + logging overhead
 //   - OTel traces only actual LLM calls (cache misses)
 //   - Logging is outermost: logs all requests (cached or not)
 
-IChatClient innerClient = new MockChatClient();
+IChatClient innerClient = new AzureOpenAIClient(
+        new Uri(endpoint), new DefaultAzureCredential())
+    .GetChatClient(deployment)
+    .AsIChatClient();
 
 IChatClient client = new ChatClientBuilder(innerClient)
     .UseDistributedCache(cache)
@@ -63,7 +88,7 @@ IChatClient client = new ChatClientBuilder(innerClient)
     .UseLogging(loggerFactory)
     .Build();
 
-Console.WriteLine("Pipeline: MockChatClient → Cache → OpenTelemetry → Logging");
+Console.WriteLine("Pipeline: Azure OpenAI → Cache → OpenTelemetry → Logging");
 Console.WriteLine();
 
 // ── Step 1: Evaluate with cold cache ────────────────────────
@@ -134,8 +159,8 @@ Console.WriteLine("║                                              ║");
 Console.WriteLine("║   • Cache: identical prompts → instant       ║");
 Console.WriteLine("║   • OTel:  traces show latency per call      ║");
 Console.WriteLine("║   • Logs:  structured request/response logs   ║");
-Console.WriteLine("║   • Swap MockChatClient for Azure OpenAI     ║");
-Console.WriteLine("║     and the pipeline works identically        ║");
+Console.WriteLine("║   • Pipeline wraps Azure OpenAI seamlessly   ║");
+Console.WriteLine("║   • Optimization reuses cached LLM responses ║");
 Console.WriteLine("╚══════════════════════════════════════════════╝");
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -158,80 +183,4 @@ static string[] ExtractKeywords(string text)
         .Where(w => w.Length > 2 && !stopWords.Contains(w))
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
-}
-
-// ── Mock Chat Client ────────────────────────────────────────
-
-file sealed class MockChatClient : IChatClient
-{
-    public void Dispose() { }
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-    public Task<ChatResponse> GetResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        var messageList = messages.ToList();
-        var systemText = messageList.FirstOrDefault(m => m.Role == ChatRole.System)?.Text ?? "";
-        var userText = messageList.LastOrDefault(m => m.Role == ChatRole.User)?.Text ?? "";
-
-        bool isCoT = systemText.Contains("step by step", StringComparison.OrdinalIgnoreCase);
-        bool isDraft = userText.Contains("Category", StringComparison.Ordinal)
-                    || userText.Contains("category", StringComparison.Ordinal)
-                       && (userText.Contains("Urgency", StringComparison.Ordinal)
-                           || userText.Contains("urgency", StringComparison.Ordinal));
-
-        string json;
-        if (isDraft && !isCoT)
-        {
-            var replyText = DraftFromContext(userText);
-            json = $$$"""{"replyText":"{{{replyText}}}"}""";
-        }
-        else if (isCoT)
-        {
-            var (category, urgency) = ClassifyFromText(userText);
-            json = $$$"""{"reasoning":"Analyzing ticket.","result":{"category":"{{{category}}}","urgency":{{{urgency}}}}}""";
-        }
-        else
-        {
-            var (category, urgency) = ClassifyFromText(userText);
-            json = $$$"""{"category":"{{{category}}}","urgency":{{{urgency}}}}""";
-        }
-
-        return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, json)));
-    }
-
-    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-        => throw new NotSupportedException();
-
-    private static (string Category, int Urgency) ClassifyFromText(string text)
-    {
-        var lower = text.ToLowerInvariant();
-        if (lower.Contains("charg") || lower.Contains("invoice") || lower.Contains("bill")
-            || lower.Contains("payment") || lower.Contains("refund"))
-            return ("billing", lower.Contains("production") ? 5 : 3);
-        if (lower.Contains("vpn") || lower.Contains("api") || lower.Contains("error")
-            || lower.Contains("crash") || lower.Contains("503") || lower.Contains("slow"))
-            return ("technical", lower.Contains("production") ? 5 : 4);
-        if (lower.Contains("account") || lower.Contains("email") || lower.Contains("password")
-            || lower.Contains("login"))
-            return ("account", 2);
-        return ("general", 1);
-    }
-
-    private static string DraftFromContext(string text)
-    {
-        var lower = text.ToLowerInvariant();
-        if (lower.Contains("billing"))
-            return "Thank you for reaching out about your billing concern. We have reviewed your account and will process a correction. Please allow 3-5 business days for the adjustment to appear.";
-        if (lower.Contains("technical"))
-            return "Thank you for reporting this technical issue. Our engineering team is investigating and we will provide an update shortly.";
-        if (lower.Contains("account"))
-            return "Thank you for contacting us about your account. For security, please verify your identity through the link we have sent to your registered email.";
-        return "Thank you for contacting support. A team member will follow up within 24 hours.";
-    }
 }

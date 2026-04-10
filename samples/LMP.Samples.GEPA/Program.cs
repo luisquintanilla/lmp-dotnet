@@ -1,7 +1,10 @@
+using Azure.AI.OpenAI;
+using Azure.Identity;
 using LMP;
 using LMP.Optimizers;
 using LMP.Samples.GEPA;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 
 // ──────────────────────────────────────────────────────────────
 // LMP GEPA — Evolutionary Reflection-Driven Optimization
@@ -17,18 +20,42 @@ using Microsoft.Extensions.AI;
 //   • GEPA (Evolutionary): "Config scored 0.45. The classify predictor
 //     output 'urgent' for a routine ticket. Fix: be more conservative."
 //
-// With a mock client, the reflection loop returns canned instructions.
-// With a real LLM (see Azure sample), GEPA produces targeted fixes.
+// Uses Azure OpenAI with DefaultAzureCredential (managed identity).
+// Prerequisites:
+//   dotnet user-secrets set "AzureOpenAI:Endpoint" "https://YOUR_RESOURCE.openai.azure.com/"
+//   dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-4.1-nano"
+//   (Optional) dotnet user-secrets set "AzureOpenAI:ReflectionDeployment" "gpt-4.1-nano"
 // ──────────────────────────────────────────────────────────────
 
 Console.WriteLine("╔══════════════════════════════════════════════════════╗");
-Console.WriteLine("║   LMP — GEPA Evolutionary Optimizer                  ║");
+Console.WriteLine("║   LMP — GEPA Evolutionary Optimizer (Azure OpenAI)   ║");
 Console.WriteLine("║   Reflection-Driven Instruction Evolution             ║");
 Console.WriteLine("╚══════════════════════════════════════════════════════╝");
 Console.WriteLine();
 
-IChatClient taskClient = new MockTaskClient();
-IChatClient reflectionClient = new MockReflectionClient();
+// ── Azure OpenAI Setup ──────────────────────────────────────
+var config = new ConfigurationBuilder()
+    .AddUserSecrets<Program>()
+    .Build();
+
+string endpoint = config["AzureOpenAI:Endpoint"]
+    ?? throw new InvalidOperationException(
+        "Set AzureOpenAI:Endpoint in user secrets: dotnet user-secrets set \"AzureOpenAI:Endpoint\" \"https://YOUR_RESOURCE.openai.azure.com/\"");
+string deployment = config["AzureOpenAI:Deployment"]
+    ?? throw new InvalidOperationException(
+        "Set AzureOpenAI:Deployment in user secrets: dotnet user-secrets set \"AzureOpenAI:Deployment\" \"gpt-4.1-nano\"");
+
+// Use same deployment for both task and reflection by default.
+// Set AzureOpenAI:ReflectionDeployment for a separate (cheaper) model.
+string reflectionDeployment = config["AzureOpenAI:ReflectionDeployment"] ?? deployment;
+
+var azureClient = new AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential());
+IChatClient taskClient = azureClient.GetChatClient(deployment).AsIChatClient();
+IChatClient reflectionClient = azureClient.GetChatClient(reflectionDeployment).AsIChatClient();
+
+Console.WriteLine($"  Task model:       {deployment} @ {endpoint}");
+Console.WriteLine($"  Reflection model: {reflectionDeployment} @ {endpoint}");
+Console.WriteLine();
 
 var dataDir = Path.Combine(AppContext.BaseDirectory, "data");
 var trainSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
@@ -194,141 +221,3 @@ static string[] ExtractKeywords(string text)
         .ToArray();
 }
 
-// ── Mock Task Client ────────────────────────────────────────
-
-file sealed class MockTaskClient : IChatClient
-{
-    private int _instructionVariant;
-
-    public void Dispose() { }
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-    public Task<ChatResponse> GetResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        var messageList = messages.ToList();
-        var systemText = messageList.FirstOrDefault(m => m.Role == ChatRole.System)?.Text ?? "";
-        var userText = messageList.LastOrDefault(m => m.Role == ChatRole.User)?.Text ?? "";
-
-        // MIPROv2 instruction proposal
-        if (systemText.Contains("expert prompt engineer", StringComparison.OrdinalIgnoreCase))
-        {
-            var variant = Interlocked.Increment(ref _instructionVariant);
-            return Task.FromResult(new ChatResponse(
-                new ChatMessage(ChatRole.Assistant,
-                    $"Analyze the support ticket carefully and produce accurate results. Variant {variant}.")));
-        }
-
-        bool isCoT = systemText.Contains("step by step", StringComparison.OrdinalIgnoreCase);
-        bool isDraft = userText.Contains("Category", StringComparison.Ordinal)
-                    || userText.Contains("category", StringComparison.Ordinal)
-                       && (userText.Contains("Urgency", StringComparison.Ordinal)
-                           || userText.Contains("urgency", StringComparison.Ordinal));
-
-        string json;
-        if (isDraft && !isCoT)
-        {
-            var replyText = DraftFromContext(userText);
-            json = $$$"""{"replyText":"{{{replyText}}}"}""";
-        }
-        else if (isCoT)
-        {
-            var (category, urgency) = ClassifyFromText(userText);
-            json = $$$"""{"reasoning":"Analyzing the ticket.","result":{"category":"{{{category}}}","urgency":{{{urgency}}}}}""";
-        }
-        else
-        {
-            var (category, urgency) = ClassifyFromText(userText);
-            json = $$$"""{"category":"{{{category}}}","urgency":{{{urgency}}}}""";
-        }
-
-        return Task.FromResult(new ChatResponse(
-            new ChatMessage(ChatRole.Assistant, json)));
-    }
-
-    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-        => throw new NotSupportedException();
-
-    private static (string Category, int Urgency) ClassifyFromText(string text)
-    {
-        var lower = text.ToLowerInvariant();
-        if (lower.Contains("charg") || lower.Contains("invoice") || lower.Contains("bill")
-            || lower.Contains("payment") || lower.Contains("refund"))
-            return ("billing", 3);
-        if (lower.Contains("vpn") || lower.Contains("api") || lower.Contains("error")
-            || lower.Contains("crash") || lower.Contains("503") || lower.Contains("slow"))
-            return ("technical", 4);
-        if (lower.Contains("account") || lower.Contains("email") || lower.Contains("password")
-            || lower.Contains("login"))
-            return ("account", 2);
-        return ("general", 1);
-    }
-
-    private static string DraftFromContext(string text)
-    {
-        var lower = text.ToLowerInvariant();
-        if (lower.Contains("billing"))
-            return "Thank you for reaching out about your billing concern. We have reviewed your account and will process a correction.";
-        if (lower.Contains("technical"))
-            return "Thank you for reporting this technical issue. Our engineering team is investigating.";
-        if (lower.Contains("account"))
-            return "Thank you for contacting us about your account. We can help you with that change.";
-        return "Thank you for contacting support. We have received your request.";
-    }
-}
-
-// ── Mock Reflection Client ──────────────────────────────────
-// Simulates the reflection LLM that diagnoses failures and proposes
-// improved instructions. With a real LLM, this produces targeted fixes.
-
-file sealed class MockReflectionClient : IChatClient
-{
-    private int _callCount;
-
-    public void Dispose() { }
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-    public Task<ChatResponse> GetResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        var idx = Interlocked.Increment(ref _callCount);
-        var userText = messages.LastOrDefault(m => m.Role == ChatRole.User)?.Text ?? "";
-
-        // Simulate increasingly refined instructions based on failure analysis
-        string instruction;
-        if (userText.Contains("classify", StringComparison.OrdinalIgnoreCase))
-        {
-            instruction = idx switch
-            {
-                <= 3 => "Carefully read the support ticket. Identify the primary category (billing, technical, account, security, or general) based on keywords. Rate urgency 1-5 where 5 means service outage or data loss.",
-                <= 6 => "You are a senior support triage agent. Classify tickets by category and urgency. For urgency: 1=informational, 2=minor, 3=standard, 4=high-impact, 5=critical outage. Look for severity indicators.",
-                _ => "Expert ticket classifier. Categories: billing (charges, invoices, refunds), technical (errors, crashes, connectivity), account (login, profile, email), security (breaches, unauthorized access), general (other). Urgency: match to business impact."
-            };
-        }
-        else
-        {
-            instruction = idx switch
-            {
-                <= 3 => "Draft a professional, empathetic reply. Acknowledge the issue, state next steps clearly, and set timeline expectations. Start with a thank you.",
-                <= 6 => "Write a customer support reply that: 1) acknowledges their frustration, 2) confirms the issue category, 3) explains what we are doing about it, 4) provides a timeline. Keep it concise.",
-                _ => "Compose a warm, actionable support response. Reference the specific issue. Include concrete next steps and expected resolution time. End with reassurance."
-            };
-        }
-
-        return Task.FromResult(new ChatResponse(
-            new ChatMessage(ChatRole.Assistant, instruction)));
-    }
-
-    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-        => throw new NotSupportedException();
-}

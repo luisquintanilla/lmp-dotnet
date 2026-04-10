@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>LMP.Samples.MIPROv2</RootNamespace>
+    <UserSecretsId>d7e5a1c3-8f4b-4e9a-b2d1-6c3f8a9e0b7d</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
@@ -10,6 +11,13 @@
     <ProjectReference Include="..\..\src\LMP.SourceGen\LMP.SourceGen.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
   </ItemGroup>
 
   <ItemGroup>

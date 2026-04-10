@@ -1,7 +1,10 @@
+using Azure.AI.OpenAI;
+using Azure.Identity;
 using LMP;
 using LMP.Optimizers;
 using LMP.Samples.Rag;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 
 // ──────────────────────────────────────────────────────────────
 // LMP RAG (Retrieval-Augmented Generation) — End-to-End Sample
@@ -12,12 +15,14 @@ using Microsoft.Extensions.AI;
 //   3. Run a single question through the pipeline
 //   4. Evaluate accuracy on a dev set
 //
-// To run with a real LLM provider, replace the IChatClient below
-// with your configured OpenAI, Azure OpenAI, or Ollama client.
+// Uses Azure OpenAI with DefaultAzureCredential (managed identity).
+// Configure endpoint and deployment via user secrets:
+//   dotnet user-secrets set "AzureOpenAI:Endpoint" "https://YOUR_RESOURCE.openai.azure.com/"
+//   dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-4.1-nano"
 // ──────────────────────────────────────────────────────────────
 
 Console.WriteLine("╔══════════════════════════════════════════════╗");
-Console.WriteLine("║   LMP — RAG Pipeline Demo                   ║");
+Console.WriteLine("║   LMP — RAG Pipeline Demo (Azure OpenAI)    ║");
 Console.WriteLine("╚══════════════════════════════════════════════╝");
 Console.WriteLine();
 
@@ -37,8 +42,22 @@ var passages = new[]
     "NovaBridge logs can be exported to any OpenTelemetry-compatible backend. Built-in dashboards provide real-time latency, error rate, and throughput metrics.",
 };
 
-// ── Configure ────────────────────────────────────────────────
-IChatClient client = new MockChatClient();
+// ── Configure Azure OpenAI via user secrets + managed identity ──
+var config = new ConfigurationBuilder()
+    .AddUserSecrets<Program>()
+    .Build();
+
+string endpoint = config["AzureOpenAI:Endpoint"]
+    ?? throw new InvalidOperationException("Set AzureOpenAI:Endpoint in user secrets.");
+string deployment = config["AzureOpenAI:Deployment"]
+    ?? throw new InvalidOperationException("Set AzureOpenAI:Deployment in user secrets.");
+
+IChatClient client = new AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential())
+    .GetChatClient(deployment)
+    .AsIChatClient();
+
+Console.WriteLine($"  Using: {deployment} @ {endpoint}");
+Console.WriteLine();
 var retriever = new InMemoryRetriever(passages);
 
 // ── Step 1: Single question answering ────────────────────────
@@ -118,72 +137,5 @@ static string[] ExtractKeywords(string text)
         .ToArray();
 }
 
-// ── Mock Chat Client ────────────────────────────────────────
 
-/// <summary>
-/// A deterministic mock chat client that returns canned JSON responses
-/// based on keyword matching against the user prompt. Replace with a
-/// real <see cref="IChatClient"/> for production use.
-/// </summary>
-file sealed class MockChatClient : IChatClient
-{
-    public void Dispose() { }
 
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-    public Task<ChatResponse> GetResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        var userText = messages.LastOrDefault(m => m.Role == ChatRole.User)?.Text ?? "";
-        var lower = userText.ToLowerInvariant();
-
-        string json;
-        if (lower.Contains("encrypt") || lower.Contains("aes") || lower.Contains("tls"))
-        {
-            json = """{"answer":"NovaBridge encrypts all data at rest using AES-256 and in transit using TLS 1.3.","confidence":0.95}""";
-        }
-        else if (lower.Contains("sdk") || lower.Contains("language") || lower.Contains("programming"))
-        {
-            json = """{"answer":"NovaBridge provides official SDKs for Python, JavaScript, Go, and C#.","confidence":0.92}""";
-        }
-        else if (lower.Contains("user") || lower.Contains("concurrent") || lower.Contains("maximum"))
-        {
-            json = """{"answer":"NovaBridge supports up to 10,000 concurrent users on the Enterprise plan.","confidence":0.93}""";
-        }
-        else if (lower.Contains("uptime") || lower.Contains("sla") || lower.Contains("availability"))
-        {
-            json = """{"answer":"NovaBridge Enterprise offers a 99.99% uptime SLA with automatic failover.","confidence":0.94}""";
-        }
-        else if (lower.Contains("on-premises") || lower.Contains("hybrid") || lower.Contains("database") || lower.Contains("connector"))
-        {
-            json = """{"answer":"Yes, NovaBridge supports on-premises database integration through its Hybrid Connector feature.","confidence":0.88}""";
-        }
-        else if (lower.Contains("auth") || lower.Contains("oauth") || lower.Contains("saml"))
-        {
-            json = """{"answer":"NovaBridge supports OAuth 2.0, SAML, API keys, and mutual TLS for authentication.","confidence":0.91}""";
-        }
-        else if (lower.Contains("price") || lower.Contains("pricing") || lower.Contains("cost"))
-        {
-            json = """{"answer":"NovaBridge pricing starts at $49/month for Starter and $199/month for Professional.","confidence":0.87}""";
-        }
-        else if (lower.Contains("rate") || lower.Contains("limit") || lower.Contains("throttl"))
-        {
-            json = """{"answer":"NovaBridge rate limiting is configurable per route with a default of 1,000 requests per minute.","confidence":0.86}""";
-        }
-        else
-        {
-            json = """{"answer":"NovaBridge is a cloud-native API gateway and integration platform for enterprise workloads.","confidence":0.7}""";
-        }
-
-        var response = new ChatResponse(new ChatMessage(ChatRole.Assistant, json));
-        return Task.FromResult(response);
-    }
-
-    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-        IEnumerable<ChatMessage> messages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-        => throw new NotSupportedException("Streaming not supported in mock.");
-}
