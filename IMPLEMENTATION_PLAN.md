@@ -1143,7 +1143,7 @@ This is the most stale spec. Fix:
 
 **Completion:** All optimizer classes documented with correct APIs.
 
-#### Task 9A.4: Fix `phased-plan.md` ❌
+#### Task 9A.4: Fix `phased-plan.md` ✅
 
 **File:** `docs/01-architecture/phased-plan.md`
 

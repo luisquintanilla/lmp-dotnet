@@ -38,21 +38,22 @@ Phase 8: Advanced
 
 ## Phase 1: Abstractions
 
-Define the foundational types in `LMP.Abstractions`. No runtime, no code generation — just the type contracts that every later phase builds on.
+> **Status:** ✅ Complete
+
+Definethe foundational types in `LMP.Abstractions`. No runtime, no code generation — just the type contracts that every later phase builds on.
 
 ### Deliverables
 
 | Deliverable | Complexity | Description |
 |---|---|---|
 | `LmpSignatureAttribute` | Simple | `[LmpSignature("instructions")]` attribute placed on `partial record` output types |
-| `Predictor<TInput, TOutput>` interface | Medium | Core primitive that binds an input type to an output type; exposes `PredictAsync`, learnable `Demos`, `Instructions`, `Config` |
+| `Predictor<TInput, TOutput>` class | Medium | Core primitive that binds an input type to an output type; exposes `PredictAsync`, learnable `Demos`, `Instructions`, `ChatOptions Config` |
 | `LmpModule` base class | Medium | Abstract `ForwardAsync()`, source-gen-friendly `GetPredictors()` slot, `SaveAsync()` / `LoadAsync()` |
 | `Example<TInput, TLabel>` | Simple | Training data record with `WithInputs()` to extract the input portion |
 | `Trace` | Simple | Records `(predictor, inputs, outputs)` tuples during execution |
 | `IRetriever` | Simple | RAG interface: `RetrieveAsync(query, k) → string[]` |
 | `IOptimizer` | Simple | `OptimizeAsync<TModule>(module, trainSet, metric?)` returning the same module type with parameters filled |
 | `LmpAssert` / `LmpSuggest` | Simple | Runtime assertion (retry/backtrack) and soft assertion (warning, no retry) |
-| `PredictorConfig` | Simple | Temperature, max tokens, model override — standard options record |
 | Unit tests | Simple | Attribute construction, record equality, `with` expressions, interface contracts |
 
 ### Entry Criteria
@@ -80,9 +81,9 @@ public class Predictor<TInput, TOutput> { ... }
 // Composable module
 public abstract class LmpModule
 {
-    public abstract IEnumerable<object> GetPredictors();
-    public abstract Task SaveAsync(string path);
-    public abstract Task LoadAsync(string path);
+    public virtual IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => [];
+    public virtual Task SaveAsync(string path, CancellationToken cancellationToken = default);
+    public virtual Task LoadAsync(string path, CancellationToken cancellationToken = default);
 }
 
 // Training data
@@ -97,10 +98,11 @@ public interface IRetriever
 // Optimization contract
 public interface IOptimizer
 {
-    Task<TModule> OptimizeAsync<TModule>(
+    Task<TModule> CompileAsync<TModule>(
         TModule module,
-        IReadOnlyList<Example<TInput, TLabel>> trainSet,
-        Func<TLabel, TOutput, float>? metric = null)
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken = default)
         where TModule : LmpModule;
 }
 ```
@@ -109,7 +111,9 @@ public interface IOptimizer
 
 ## Phase 2: Source Generator + Core Predictor
 
-Wire the source generator to `[LmpSignature]` output types and make `Predictor<TInput, TOutput>` actually call an LM. This is the first phase where an LM call runs end-to-end.
+> **Status:** ✅ Complete
+
+Wirethe source generator to `[LmpSignature]` output types and make `Predictor<TInput, TOutput>` actually call an LM. This is the first phase where an LM call runs end-to-end.
 
 ### Deliverables
 
@@ -173,7 +177,9 @@ var result = await classifier.PredictAsync(new TicketInput("I was charged twice"
 
 ## Phase 3: Reasoning Modules
 
-Thin wrappers around `Predictor<TInput, TOutput>` in `LMP.Modules`. Each module is under 100 LOC — they augment the prediction strategy, not the core abstraction.
+> **Status:** ✅ Complete
+
+Thinwrappers around `Predictor<TInput, TOutput>` in `LMP.Modules`. Each module is under 100 LOC — they augment the prediction strategy, not the core abstraction.
 
 ### Deliverables
 
@@ -218,7 +224,9 @@ var result = await refiner.PredictAsync(input);
 
 ## Phase 4: Evaluation + BootstrapFewShot
 
-Add the `Evaluator` and the two foundational optimizers in `LMP.Optimizers`. This is the first phase where LMP can programmatically improve an LM program — DSPy's core insight.
+> **Status:** ✅ Complete
+
+Addthe `Evaluator` and the two foundational optimizers in `LMP.Optimizers`. This is the first phase where LMP can programmatically improve an LM program — DSPy's core insight.
 
 ### Deliverables
 
@@ -239,7 +247,7 @@ Add the `Evaluator` and the two foundational optimizers in `LMP.Optimizers`. Thi
 ### Exit Criteria
 
 - `Evaluator.EvaluateAsync(module, devSet, metric)` returns an aggregate score
-- `BootstrapFewShot.OptimizeAsync()` fills `predictor.Demos` from successful teacher traces
+- `BootstrapFewShot.CompileAsync()` fills `predictor.Demos` from successful teacher traces
 - `BootstrapRandomSearch` runs N parallel trials and returns the best module
 - Optimized module can be saved to JSON and loaded back with zero data loss
 - Integration test demonstrates measurable score improvement (even with mock LM)
@@ -255,13 +263,13 @@ var score = await Evaluator.EvaluateAsync(
 // score == 0.87
 
 // Bootstrap few-shot
-var optimizer = new BootstrapFewShot(metric, maxDemos: 4);
-var optimized = await optimizer.OptimizeAsync(module, trainSet);
+var optimizer = new BootstrapFewShot(maxDemos: 4);
+var optimized = await optimizer.CompileAsync(module, trainSet, metric);
 // optimized module now has few-shot demos filled in
 
 // Bootstrap random search
-var search = new BootstrapRandomSearch(metric, numTrials: 8);
-var best = await search.OptimizeAsync(module, trainSet, devSet);
+var search = new BootstrapRandomSearch(numTrials: 8);
+var best = await search.CompileAsync(module, trainSet, metric);
 
 // Save / Load
 await best.SaveAsync("triage-v1.json");
@@ -273,7 +281,9 @@ await production.LoadAsync("triage-v1.json");
 
 ## Phase 5: Agents + RAG
 
-Add `ReActAgent<TInput, TOutput>` and `IRetriever` implementations. These compose M.E.AI's existing tool-use infrastructure (`AIFunction`, `FunctionInvokingChatClient`) with LMP's predictor abstraction.
+> **Status:** ✅ Complete
+
+Add`ReActAgent<TInput, TOutput>` and `IRetriever` implementations. These compose M.E.AI's existing tool-use infrastructure (`AIFunction`, `FunctionInvokingChatClient`) with LMP's predictor abstraction.
 
 ### Deliverables
 
@@ -327,14 +337,16 @@ public class RagTriageModule : LmpModule
 
 ## Phase 6: Advanced Optimization
 
-Add `MIPROv2` — Bayesian optimization over both instructions and demos. This is the most sophisticated optimizer, requiring a search backend.
+> **Status:** ✅ Complete
+
+Add`MIPROv2` — Bayesian optimization over both instructions and demos. This is the most sophisticated optimizer, requiring a search backend.
 
 ### Deliverables
 
 | Deliverable | Complexity | Description |
 |---|---|---|
 | `MIPROv2` optimizer | Complex | Bayesian search over instruction variants + demo subsets; proposes candidates, evaluates, and converges |
-| Search backend integration | Complex | [ML.NET AutoML tuners](https://learn.microsoft.com/dotnet/machine-learning/how-to-guides/how-to-use-the-automl-api) as a TPE (Tree-structured Parzen Estimator) backend, or a custom Bayesian sampler |
+| Search backend integration | Complex | `ISampler` abstraction (Propose/Update pattern) with `CategoricalTpeSampler` (Tree-structured Parzen Estimator) and `SmacSampler` (random forest + Expected Improvement) backends |
 | Instruction proposal module | Medium | LM-generated instruction candidates based on dataset analysis and prior trial results |
 | Multi-objective scoring | Medium | Weighted objective aggregation — accuracy, latency, cost trade-offs |
 | Integration test: MIPROv2 end-to-end | Complex | Full Bayesian optimization loop on a sample program |
@@ -346,34 +358,35 @@ Add `MIPROv2` — Bayesian optimization over both instructions and demos. This i
 
 ### Exit Criteria
 
-- `MIPROv2.OptimizeAsync()` runs a Bayesian optimization loop over instructions + demos
+- `MIPROv2.CompileAsync()` runs a Bayesian optimization loop over instructions + demos
 - Trials converge toward higher scores across successive iterations (demonstrable on mock data)
 - ML.NET AutoML tuner backend (or equivalent) is wired and functional
 - Integration test shows `MIPROv2` outperforms `BootstrapRandomSearch` on a multi-dimensional search space (even if marginally, on mock data)
+
+> **Status:** ✅ Complete — ISampler abstraction with CategoricalTpeSampler and SmacSampler backends implemented. GEPA multi-objective optimizer also implemented.
 
 ### Key APIs
 
 ```csharp
 // MIPROv2 optimizer
 var mipro = new MIPROv2(
-    metric: (label, output) => label.Category == output.Category ? 1f : 0f,
+    proposalClient: client,
     numTrials: 50,
-    options: new MIPROv2Options
-    {
-        MaxDemos = 4,
-        MaxInstructionCandidates = 10,
-        // Optional: custom search backend
-        // SearchBackend = new MLNetAutoMLBackend()
-    });
+    maxDemos: 4,
+    numInstructionCandidates: 10,
+    // Optional: custom sampler backend
+    samplerFactory: dims => new CategoricalTpeSampler(dims));
 
-var optimized = await mipro.OptimizeAsync(module, trainSet, devSet);
+var optimized = await mipro.CompileAsync(module, trainSet, metric);
 ```
 
 ---
 
 ## Phase 7: Tooling
 
-Ship the CLI tool and Aspire integration. These are developer-experience layers — the core framework works without them, but they make optimization workflows accessible from CI/CD and the Aspire dashboard.
+> **Status:** ✅ Complete
+
+Shipthe CLI tool and Aspire integration. These are developer-experience layers — the core framework works without them, but they make optimization workflows accessible from CI/CD and the Aspire dashboard.
 
 ### Deliverables
 
@@ -430,7 +443,9 @@ builder.AddLmpOptimizer<TicketTriageModule>("triage-optimizer")
 
 ## Phase 8: Advanced
 
-Experimental features that push the .NET platform advantage further. These are individually scoped — each can ship independently.
+> **Status:** ✅ Complete
+
+Experimentalfeatures that push the .NET platform advantage further. These are individually scoped — each can ship independently.
 
 ### Deliverables
 
@@ -481,16 +496,16 @@ var result = await pot.PredictAsync(new MathInput("What is the 10th Fibonacci nu
 
 ## Summary Table
 
-| Phase | Name | Est. Complexity | Key Risk | Depends On |
+| Phase | Name | Status | Key Risk | Depends On |
 |---|---|---|---|---|
-| 1 | Abstractions | Simple | Over-engineering interfaces before usage patterns are clear | — |
-| 2 | Source Generator + Core Predictor | Complex | Generator debugging; `netstandard2.0` API constraints | 1 |
-| 3 | Reasoning Modules | Medium | Source gen extending `TOutput` for `ChainOfThought` | 2 |
-| 4 | Evaluation + BootstrapFewShot | Complex | Teacher trace collection reliability | 2 |
-| 5 | Agents + RAG | Medium | M.E.AI `FunctionInvokingChatClient` integration surface | 2 |
-| 6 | Advanced Optimization | Complex | Bayesian search backend complexity (ML.NET AutoML) | 4, 5 |
-| 7 | Tooling | Medium | CLI ergonomics; Aspire API surface stability | 4 |
-| 8 | Advanced | Complex | C# 14 interceptor API newness; Roslyn scripting sandboxing | 2 |
+| 1 | Abstractions | ✅ Complete | Over-engineering interfaces before usage patterns are clear | — |
+| 2 | Source Generator + Core Predictor | ✅ Complete | Generator debugging; `netstandard2.0` API constraints | 1 |
+| 3 | Reasoning Modules | ✅ Complete | Source gen extending `TOutput` for `ChainOfThought` | 2 |
+| 4 | Evaluation + BootstrapFewShot | ✅ Complete | Teacher trace collection reliability | 2 |
+| 5 | Agents + RAG | ✅ Complete | M.E.AI `FunctionInvokingChatClient` integration surface | 2 |
+| 6 | Advanced Optimization | ✅ Complete | ISampler abstraction complexity (CategoricalTpeSampler, SmacSampler) | 4, 5 |
+| 7 | Tooling | ✅ Complete | CLI ergonomics; Aspire API surface stability | 4 |
+| 8 | Advanced | ✅ Complete | C# 14 interceptor API newness; `[Predict]` partial method sugar | 2 |
 
 ---
 
