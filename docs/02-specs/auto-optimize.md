@@ -463,11 +463,24 @@ Real optimization takes 2–20 minutes and costs $1–10 in API calls depending 
 7. Diagnostics (LMP1001–LMP1006)
 8. End-to-end integration test
 
+### Phase 1.9: Zero-ceremony DI discovery (future)
+
+9. Adopt `HostFactoryResolver` from `dotnet/runtime` (~300 lines, MIT-licensed).
+   Uses `DiagnosticSource` events to intercept `IHost` creation and extract
+   `IServiceProvider` without actually starting the application.
+10. Wire host-based DI resolution into `ConventionRunner` discovery chain:
+    try `IServiceProvider.GetService<IChatClient>()` before falling back to
+    `static CreateClient()`. Enables zero-ceremony: user registers `IChatClient`
+    via `Host.CreateApplicationBuilder` + `AddChatClient()`, CLI discovers it
+    automatically.
+11. Update AutoOptimize sample to demonstrate the DI path (remove `CreateClient()`
+    convention, use `builder.Services.AddChatClient(...)` instead).
+
 ### Phase 2: Strategy automation (future)
 
-9. Level 2 strategy variant enumeration
-10. Multi-fidelity evaluation (Successive Halving)
+12. Level 2 strategy variant enumeration
+13. Multi-fidelity evaluation (Successive Halving)
 
 ### Phase 3: Structural search (future research)
 
-11. Pipeline graph representation + TPOT-style mutations
+14. Pipeline graph representation + TPOT-style mutations
