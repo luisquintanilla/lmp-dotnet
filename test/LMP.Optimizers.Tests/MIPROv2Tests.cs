@@ -33,11 +33,12 @@ public class MIPROv2Tests
         public List<(object Input, object Output)> TypedDemos { get; set; } = [];
         IList IPredictor.Demos => TypedDemos;
         public ChatOptions Config { get; set; } = new();
+        public UsageDetails? RecordUsage { get; set; }
 
         public object Predict(object input, Trace? trace)
         {
             var output = _predict(input);
-            trace?.Record(Name, input, output);
+            trace?.Record(Name, input, output, RecordUsage);
             return output;
         }
 
@@ -62,6 +63,7 @@ public class MIPROv2Tests
             {
                 Name = Name,
                 Instructions = Instructions,
+                RecordUsage = RecordUsage,
                 Config = new ChatOptions
                 {
                     Temperature = Config.Temperature,
@@ -637,6 +639,159 @@ public class MIPROv2Tests
         // Should still return a result (instruction optimization works without demos)
         Assert.NotNull(result);
         Assert.NotSame(module, result);
+    }
+
+    #endregion
+
+    #region Cost Collection Wiring
+
+    [Fact]
+    public async Task CompileAsync_PassesTrialCostToSampler()
+    {
+        var receivedCosts = new List<TrialCost>();
+        var (module, _) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 15)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            samplerFactory: cardinalities =>
+                new CostCapturingSampler(
+                    new CategoricalTpeSampler(cardinalities, seed: 42),
+                    receivedCosts),
+            numTrials: 3,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 2,
+            seed: 42);
+
+        await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        Assert.Equal(3, receivedCosts.Count);
+        foreach (var cost in receivedCosts)
+        {
+            Assert.True(cost.ElapsedMilliseconds >= 0, "ElapsedMilliseconds should be non-negative.");
+            Assert.True(cost.TotalTokens >= 0, "TotalTokens should be non-negative.");
+            Assert.True(cost.ApiCalls >= 0, "ApiCalls should be non-negative.");
+        }
+    }
+
+    [Fact]
+    public async Task CompileAsync_TrialHistoryIncludesCost()
+    {
+        var (module, _) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 15)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 3,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 2,
+            seed: 42);
+
+        await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        var history = optimizer.LastTrialHistory;
+        Assert.NotNull(history);
+        Assert.Equal(3, history.Count);
+
+        foreach (var trial in history)
+        {
+            Assert.NotNull(trial.Cost);
+            Assert.True(trial.Cost.ElapsedMilliseconds >= 0);
+        }
+    }
+
+    [Fact]
+    public async Task CompileAsync_CostAwareSampler_ReceivesCost()
+    {
+        var (module, _) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 15)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            samplerFactory: cardinalities =>
+                new CostAwareSampler(cardinalities, seed: 42),
+            numTrials: 3,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 2,
+            seed: 42);
+
+        var result = await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        Assert.NotNull(result);
+        Assert.NotSame(module, result);
+    }
+
+    [Fact]
+    public async Task CompileAsync_TracingModuleRecordsUsage_CostHasTokens()
+    {
+        var receivedCosts = new List<TrialCost>();
+        var usage = new UsageDetails { InputTokenCount = 50, OutputTokenCount = 30, TotalTokenCount = 80 };
+
+        var pred = new FakePredictor(x => x)
+        {
+            Name = "classify",
+            RecordUsage = usage
+        };
+        var module = new TestModule([pred]);
+
+        var trainSet = Enumerable.Range(0, 15)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            samplerFactory: cardinalities =>
+                new CostCapturingSampler(
+                    new CategoricalTpeSampler(cardinalities, seed: 42),
+                    receivedCosts),
+            numTrials: 2,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 2,
+            seed: 42);
+
+        await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        Assert.Equal(2, receivedCosts.Count);
+        // Predictors record usage during ForwardAsync, so tokens should be captured
+        foreach (var cost in receivedCosts)
+        {
+            Assert.True(cost.TotalTokens > 0, "TotalTokens should reflect trace usage.");
+            Assert.True(cost.InputTokens > 0, "InputTokens should reflect trace usage.");
+            Assert.True(cost.OutputTokens > 0, "OutputTokens should reflect trace usage.");
+            Assert.True(cost.ApiCalls > 0, "ApiCalls should reflect trace usage.");
+        }
+    }
+
+    /// <summary>
+    /// Wraps an ISampler and captures TrialCost data from the cost-aware Update overload.
+    /// </summary>
+    private sealed class CostCapturingSampler(ISampler inner, List<TrialCost> capturedCosts) : ISampler
+    {
+        public int TrialCount => inner.TrialCount;
+
+        public Dictionary<string, int> Propose() => inner.Propose();
+
+        public void Update(Dictionary<string, int> config, float score)
+            => inner.Update(config, score);
+
+        public void Update(Dictionary<string, int> config, float score, TrialCost cost)
+        {
+            capturedCosts.Add(cost);
+            inner.Update(config, score, cost);
+        }
     }
 
     #endregion

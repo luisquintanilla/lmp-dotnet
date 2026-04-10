@@ -8,7 +8,8 @@ namespace LMP.Optimizers;
 /// </summary>
 /// <param name="Config">The configuration that was evaluated (parameter name → category index).</param>
 /// <param name="Score">The evaluation score (higher is better).</param>
-public sealed record TrialResult(Dictionary<string, int> Config, float Score);
+/// <param name="Cost">Optional cost measurement for this trial. Present when MIPROv2 collects usage data.</param>
+public sealed record TrialResult(Dictionary<string, int> Config, float Score, TrialCost? Cost = null);
 
 /// <summary>
 /// Posterior statistics for a single parameter value.

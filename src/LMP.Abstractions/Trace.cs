@@ -48,6 +48,48 @@ public sealed class Trace
     }
 
     /// <summary>
+    /// Total input (prompt) token count across all trace entries (sum of each entry's
+    /// <see cref="UsageDetails.InputTokenCount"/>). Returns 0 when no usage data is present.
+    /// </summary>
+    public long InputTokens
+    {
+        get
+        {
+            lock (_lock)
+            {
+                long total = 0;
+                foreach (var entry in _entries)
+                {
+                    if (entry.Usage?.InputTokenCount is { } count)
+                        total += count;
+                }
+                return total;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Total output (completion) token count across all trace entries (sum of each entry's
+    /// <see cref="UsageDetails.OutputTokenCount"/>). Returns 0 when no usage data is present.
+    /// </summary>
+    public long OutputTokens
+    {
+        get
+        {
+            lock (_lock)
+            {
+                long total = 0;
+                foreach (var entry in _entries)
+                {
+                    if (entry.Usage?.OutputTokenCount is { } count)
+                        total += count;
+                }
+                return total;
+            }
+        }
+    }
+
+    /// <summary>
     /// Number of trace entries that represent LM API calls (i.e., entries with non-null
     /// <see cref="TraceEntry.Usage"/>).
     /// </summary>

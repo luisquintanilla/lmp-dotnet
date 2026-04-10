@@ -1259,7 +1259,7 @@ User-customizable cost projection examples:
 **Tests:** ~300 LOC — convergence, step sizing, cost projection, categorical discretization.
 **Completion:** `dotnet test` passes with CostAwareSampler tests.
 
-#### Task 9B.4: Wire Cost Collection into MIPROv2 ❌
+#### Task 9B.4: Wire Cost Collection into MIPROv2 ✅
 
 **File:** `src/LMP.Optimizers/MIPROv2Optimizer.cs`
 

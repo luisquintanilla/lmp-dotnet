@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
 
 namespace LMP.Optimizers;
@@ -195,12 +196,23 @@ public sealed class MIPROv2 : IOptimizer
                 }
             }
 
-            // Evaluate
+            // Evaluate with cost collection
+            candidate.Trace = new Trace();
+            var stopwatch = Stopwatch.StartNew();
             var result = await Evaluator.EvaluateAsync(
                 candidate, valSplit, metric, cancellationToken: cancellationToken);
+            stopwatch.Stop();
 
-            sampler.Update(config, result.AverageScore);
-            trialHistory.Add(new TrialResult(new Dictionary<string, int>(config), result.AverageScore));
+            var trace = candidate.Trace;
+            var trialCost = new TrialCost(
+                TotalTokens: trace.TotalTokens,
+                InputTokens: trace.InputTokens,
+                OutputTokens: trace.OutputTokens,
+                ElapsedMilliseconds: stopwatch.ElapsedMilliseconds,
+                ApiCalls: trace.TotalApiCalls);
+
+            sampler.Update(config, result.AverageScore, trialCost);
+            trialHistory.Add(new TrialResult(new Dictionary<string, int>(config), result.AverageScore, trialCost));
 
             if (result.AverageScore > bestScore)
             {
