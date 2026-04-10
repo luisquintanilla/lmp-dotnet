@@ -16,7 +16,7 @@ internal static class CSharpArtifactWriter
     /// Writes a <c>.g.cs</c> file for the specified module with the optimized state.
     /// </summary>
     /// <param name="module">The optimized module.</param>
-    /// <param name="projectDir">The project directory (for file placement).</param>
+    /// <param name="outputDir">The output directory for the generated file.</param>
     /// <param name="score">The optimization score (for header comment).</param>
     /// <param name="optimizerName">The optimizer used (for header comment).</param>
     /// <param name="trainPath">Path to training data (for staleness hash).</param>
@@ -24,7 +24,7 @@ internal static class CSharpArtifactWriter
     /// <returns>The path to the generated file.</returns>
     public static async Task<string> WriteAsync(
         LmpModule module,
-        string projectDir,
+        string outputDir,
         float score,
         string optimizerName,
         string trainPath,
@@ -96,11 +96,10 @@ internal static class CSharpArtifactWriter
         sb.AppendLine("    }");
         sb.AppendLine("}");
 
-        // Write to Generated/ directory
-        var generatedDir = Path.Combine(projectDir, "Generated");
-        Directory.CreateDirectory(generatedDir);
+        // Write to output directory
+        Directory.CreateDirectory(outputDir);
 
-        var outputPath = Path.Combine(generatedDir, $"{typeName}.Optimized.g.cs");
+        var outputPath = Path.Combine(outputDir, $"{typeName}.Optimized.g.cs");
 
         // Atomic write
         var tempPath = outputPath + ".tmp";

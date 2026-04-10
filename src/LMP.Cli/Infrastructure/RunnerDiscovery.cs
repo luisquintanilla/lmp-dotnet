@@ -17,6 +17,14 @@ internal static class RunnerDiscovery
     internal sealed record DiscoveryResult(ILmpRunner? Runner, string? Error);
 
     /// <summary>
+    /// Configuration discovered from <c>[AutoOptimize]</c> attributes on LmpModule subclasses.
+    /// </summary>
+    /// <param name="TrainSet">Relative path to training data (from attribute).</param>
+    /// <param name="DevSet">Relative path to dev data (from attribute, may be null).</param>
+    /// <param name="BudgetSeconds">Time budget from attribute.</param>
+    internal sealed record AutoOptimizeConfig(string? TrainSet, string? DevSet, int BudgetSeconds);
+
+    /// <summary>
     /// Loads the specified assembly and discovers the first <see cref="ILmpRunner"/> implementation.
     /// Instantiates it via parameterless constructor.
     /// </summary>
@@ -65,6 +73,43 @@ internal static class RunnerDiscovery
         catch (Exception ex)
         {
             return new DiscoveryResult(null, $"Failed to load assembly: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Scans the specified assembly for LmpModule subclasses with <c>[AutoOptimize]</c>
+    /// attributes and returns the configuration from the first match.
+    /// </summary>
+    public static AutoOptimizeConfig? DiscoverAutoOptimizeConfig(string assemblyPath)
+    {
+        if (!File.Exists(assemblyPath))
+            return null;
+
+        try
+        {
+            var context = new LmpAssemblyLoadContext(assemblyPath);
+            var assembly = context.LoadFromAssemblyPath(Path.GetFullPath(assemblyPath));
+
+            foreach (var type in assembly.GetTypes())
+            {
+                if (type.IsAbstract || type.IsInterface)
+                    continue;
+
+                var attr = type.GetCustomAttribute<AutoOptimizeAttribute>();
+                if (attr is not null)
+                {
+                    return new AutoOptimizeConfig(
+                        TrainSet: attr.TrainSet,
+                        DevSet: attr.DevSet,
+                        BudgetSeconds: attr.BudgetSeconds);
+                }
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
         }
     }
 

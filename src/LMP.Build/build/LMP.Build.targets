@@ -16,6 +16,7 @@
     <LmpGeneratedDir Condition="'$(LmpGeneratedDir)' == ''">$(MSBuildProjectDirectory)\Generated</LmpGeneratedDir>
     <LmpAutoOptimizeBudget Condition="'$(LmpAutoOptimizeBudget)' == ''"></LmpAutoOptimizeBudget>
     <LmpAutoOptimizeVerbose Condition="'$(LmpAutoOptimizeVerbose)' == ''">false</LmpAutoOptimizeVerbose>
+    <LmpModel Condition="'$(LmpModel)' == ''"></LmpModel>
   </PropertyGroup>
 
   <!--
@@ -42,6 +43,8 @@
       <_LmpForceArg Condition="'$(LmpAutoOptimizeForce)' != 'true'"></_LmpForceArg>
       <_LmpBudgetArg Condition="'$(LmpAutoOptimizeBudget)' != ''"> --budget $(LmpAutoOptimizeBudget)</_LmpBudgetArg>
       <_LmpBudgetArg Condition="'$(LmpAutoOptimizeBudget)' == ''"></_LmpBudgetArg>
+      <_LmpModelArg Condition="'$(LmpModel)' != ''"> --model $(LmpModel)</_LmpModelArg>
+      <_LmpModelArg Condition="'$(LmpModel)' == ''"></_LmpModelArg>
       <_LmpVerboseArg Condition="'$(LmpAutoOptimizeVerbose)' == 'true'"> --verbose</_LmpVerboseArg>
       <_LmpVerboseArg Condition="'$(LmpAutoOptimizeVerbose)' != 'true'"></_LmpVerboseArg>
     </PropertyGroup>
@@ -52,7 +55,7 @@
       Text="LMP: Running build-time auto-optimization..." />
 
     <Exec
-      Command="dotnet lmp auto-optimize --project &quot;$(MSBuildProjectFullPath)&quot; --output &quot;$(LmpGeneratedDir)&quot;$(_LmpForceArg)$(_LmpBudgetArg)$(_LmpVerboseArg)"
+      Command="dotnet lmp auto-optimize --project &quot;$(MSBuildProjectFullPath)&quot; --output &quot;$(LmpGeneratedDir)&quot;$(_LmpForceArg)$(_LmpModelArg)$(_LmpBudgetArg)$(_LmpVerboseArg)"
       ConsoleToMSBuild="true"
       StandardOutputImportance="normal"
       StandardErrorImportance="high"

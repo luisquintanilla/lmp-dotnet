@@ -16,6 +16,8 @@ internal static class AutoOptimizeCommand
         string? project = null;
         string? train = null;
         string? dev = null;
+        string? model = null;
+        string? output = null;
         string optimizer = "random";
         int numTrials = 8;
         int maxDemos = 4;
@@ -33,6 +35,12 @@ internal static class AutoOptimizeCommand
                     break;
                 case "--dev" when i + 1 < args.Length:
                     dev = args[++i];
+                    break;
+                case "--model" when i + 1 < args.Length:
+                    model = args[++i];
+                    break;
+                case "--output" when i + 1 < args.Length:
+                    output = args[++i];
                     break;
                 case "--optimizer" when i + 1 < args.Length:
                     optimizer = args[++i];
@@ -71,13 +79,6 @@ internal static class AutoOptimizeCommand
             return Program.ExitCodes.InvalidArguments;
         }
 
-        if (string.IsNullOrEmpty(train))
-        {
-            await Console.Error.WriteLineAsync("ERROR [args] Missing required option: --train <path>");
-            PrintHelp();
-            return Program.ExitCodes.InvalidArguments;
-        }
-
         var normalizedOptimizer = optimizer.ToLowerInvariant();
         if (normalizedOptimizer is not ("bootstrap" or "random"))
         {
@@ -87,14 +88,16 @@ internal static class AutoOptimizeCommand
         }
 
         return await RunAutoOptimizeAsync(
-            project, train, dev, normalizedOptimizer,
+            project, train, dev, model, output, normalizedOptimizer,
             numTrials, maxDemos, force, CancellationToken.None);
     }
 
     internal static async Task<int> RunAutoOptimizeAsync(
         string project,
-        string trainPath,
+        string? trainPath,
         string? devPath,
+        string? model,
+        string? outputDir,
         string optimizerName,
         int numTrials,
         int maxDemos,
@@ -115,7 +118,33 @@ internal static class AutoOptimizeCommand
 
         await Console.Error.WriteLineAsync($"Build succeeded: {buildResult.OutputAssembly}");
 
-        // Step 2: Discover ILmpRunner
+        // Step 2: Discover [AutoOptimize] attribute values (train/dev/budget)
+        var attrConfig = RunnerDiscovery.DiscoverAutoOptimizeConfig(buildResult.OutputAssembly);
+        if (attrConfig is not null)
+        {
+            // CLI args override attribute values
+            trainPath ??= attrConfig.TrainSet is not null
+                ? Path.Combine(projectDir, attrConfig.TrainSet)
+                : null;
+            devPath ??= attrConfig.DevSet is not null
+                ? Path.Combine(projectDir, attrConfig.DevSet)
+                : null;
+        }
+
+        if (string.IsNullOrEmpty(trainPath))
+        {
+            await Console.Error.WriteLineAsync(
+                "ERROR [args] No training data specified. Either:\n" +
+                "  - Set TrainSet in [AutoOptimize] attribute: [AutoOptimize(TrainSet = \"data/train.jsonl\")]\n" +
+                "  - Pass --train <path> on the command line");
+            return Program.ExitCodes.InvalidArguments;
+        }
+
+        // Step 3: Discover ILmpRunner
+        // Set LMP_MODEL env var if --model was specified, so runner can read it
+        if (!string.IsNullOrEmpty(model))
+            Environment.SetEnvironmentVariable("LMP_MODEL", model);
+
         var discovery = RunnerDiscovery.Discover(buildResult.OutputAssembly);
         if (discovery.Runner is null)
         {
@@ -123,9 +152,10 @@ internal static class AutoOptimizeCommand
             return Program.ExitCodes.ProjectNotFound;
         }
 
-        // Step 3: Check staleness (skip if up-to-date unless --force)
+        // Step 4: Check staleness (skip if up-to-date unless --force)
         var moduleName = discovery.Runner.CreateModule().GetType().Name;
-        var generatedPath = Path.Combine(projectDir, "Generated", $"{moduleName}.Optimized.g.cs");
+        var generatedDir = outputDir ?? Path.Combine(projectDir, "Generated");
+        var generatedPath = Path.Combine(generatedDir, $"{moduleName}.Optimized.g.cs");
 
         if (!force && await CSharpArtifactWriter.IsUpToDateAsync(generatedPath, trainPath, cancellationToken))
         {
@@ -206,7 +236,7 @@ internal static class AutoOptimizeCommand
         try
         {
             outputPath = await CSharpArtifactWriter.WriteAsync(
-                module, projectDir, bestScore, optimizerName, trainPath, cancellationToken);
+                module, generatedDir, bestScore, optimizerName, trainPath, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -269,19 +299,23 @@ internal static class AutoOptimizeCommand
     private static void PrintHelp()
     {
         Console.WriteLine("""
-            Usage: dotnet lmp auto-optimize --project <path> --train <path> [options]
+            Usage: dotnet lmp auto-optimize --project <path> [options]
 
-            Builds a project, discovers an ILmpRunner implementation, runs optimization,
-            and writes a Generated/{Module}.Optimized.g.cs file with the winning state.
+            Builds a project, discovers [AutoOptimize] modules and ILmpRunner, runs
+            optimization, and writes Generated/{Module}.Optimized.g.cs with the winning state.
 
-            The generated file is a C# partial class with a partial void ApplyOptimizedState()
-            method that embeds the optimized instructions, demos, and config. Commit it to
-            source control for deterministic builds.
+            Training data and budget are read from the [AutoOptimize] attribute by default.
+            CLI flags override attribute values when specified.
+
+            Typically invoked automatically by MSBuild via the LMP.Build package:
+              dotnet build -p:LmpAutoOptimize=true
 
             Options:
               --project <path>     Required. Path to the .csproj file.
-              --train <path>       Required. Path to training JSONL file.
-              --dev <path>         Optional. Path to dev/validation JSONL file.
+              --train <path>       Training JSONL file. Overrides [AutoOptimize(TrainSet)].
+              --dev <path>         Dev/validation JSONL file. Overrides [AutoOptimize(DevSet)].
+              --model <name>       LLM model/deployment override. Sets LMP_MODEL env var.
+              --output <dir>       Output directory for .g.cs files. Default: Generated/.
               --optimizer <name>   Optimizer: "random" (default) or "bootstrap".
               --num-trials <int>   Number of trials for random search. Default: 8.
               --max-demos <int>    Max demos per predictor. Default: 4.

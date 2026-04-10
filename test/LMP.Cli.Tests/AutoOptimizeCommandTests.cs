@@ -29,10 +29,12 @@ public class AutoOptimizeCommandTests
     }
 
     [Fact]
-    public async Task MissingTrain_ReturnsInvalidArguments()
+    public async Task MissingTrain_WithNonexistentProject_FailsOnBuild()
     {
+        // --train is optional (can come from [AutoOptimize] attribute).
+        // With nonexistent project, build fails before train is checked.
         var exitCode = await AutoOptimizeCommand.ExecuteAsync(["--project", "test.csproj"]);
-        Assert.Equal(Program.ExitCodes.InvalidArguments, exitCode);
+        Assert.Equal(Program.ExitCodes.ProjectNotFound, exitCode);
     }
 
     [Fact]
@@ -83,6 +85,22 @@ public class AutoOptimizeCommandTests
         Assert.Equal(Program.ExitCodes.ProjectNotFound, exitCode);
     }
 
+    [Fact]
+    public async Task ModelFlag_IsAccepted()
+    {
+        var exitCode = await AutoOptimizeCommand.ExecuteAsync(
+            ["--project", "nonexistent.csproj", "--train", "data.jsonl", "--model", "gpt-4o-mini"]);
+        Assert.Equal(Program.ExitCodes.ProjectNotFound, exitCode);
+    }
+
+    [Fact]
+    public async Task OutputFlag_IsAccepted()
+    {
+        var exitCode = await AutoOptimizeCommand.ExecuteAsync(
+            ["--project", "nonexistent.csproj", "--train", "data.jsonl", "--output", "MyGenerated"]);
+        Assert.Equal(Program.ExitCodes.ProjectNotFound, exitCode);
+    }
+
     #endregion
 
     #region Project Not Found
@@ -94,6 +112,8 @@ public class AutoOptimizeCommandTests
             project: "nonexistent.csproj",
             trainPath: "data.jsonl",
             devPath: null,
+            model: null,
+            outputDir: null,
             optimizerName: "random",
             numTrials: 4,
             maxDemos: 2,
