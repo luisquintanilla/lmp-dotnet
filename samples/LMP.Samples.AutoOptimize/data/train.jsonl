@@ -1,0 +1,8 @@
+{"input":{"question":"What is the capital of France?"},"label":{"answer":"Paris is the capital of France."}}
+{"input":{"question":"Who wrote Romeo and Juliet?"},"label":{"answer":"William Shakespeare wrote Romeo and Juliet."}}
+{"input":{"question":"What is photosynthesis?"},"label":{"answer":"Photosynthesis is the process by which plants convert sunlight, water, and carbon dioxide into glucose and oxygen."}}
+{"input":{"question":"What is the speed of light?"},"label":{"answer":"The speed of light in a vacuum is approximately 299,792,458 meters per second."}}
+{"input":{"question":"Who painted the Mona Lisa?"},"label":{"answer":"Leonardo da Vinci painted the Mona Lisa."}}
+{"input":{"question":"What is the largest planet in our solar system?"},"label":{"answer":"Jupiter is the largest planet in our solar system."}}
+{"input":{"question":"What is DNA?"},"label":{"answer":"DNA (deoxyribonucleic acid) is a molecule that carries the genetic instructions for life."}}
+{"input":{"question":"Who discovered penicillin?"},"label":{"answer":"Alexander Fleming discovered penicillin in 1928."}}

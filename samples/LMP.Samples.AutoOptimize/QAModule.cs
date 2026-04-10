@@ -8,7 +8,7 @@ namespace LMP.Samples.AutoOptimize;
 /// partial void ApplyOptimizedState() hook loads the optimized state
 /// (instructions + demos) into each predictor on first use.
 /// </summary>
-[AutoOptimize]
+[AutoOptimize(TrainSet = "data/train.jsonl", DevSet = "data/dev.jsonl")]
 public partial class QAModule : LmpModule<QAInput, QAOutput>
 {
     private readonly Predictor<QAInput, QAOutput> _qa;
