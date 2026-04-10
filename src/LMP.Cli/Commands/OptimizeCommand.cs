@@ -195,7 +195,7 @@ internal static class OptimizeCommand
 
         try
         {
-            await module.SaveAsync(outputPath, cancellationToken);
+            await module.SaveStateAsync(outputPath, cancellationToken);
         }
         catch (Exception ex)
         {

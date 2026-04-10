@@ -140,7 +140,7 @@ internal static class RunCommand
 
             try
             {
-                await module.LoadAsync(artifactPath, cancellationToken);
+                await module.ApplyStateAsync(artifactPath, cancellationToken);
                 await Console.Error.WriteLineAsync($"Using artifact: {artifactPath}");
             }
             catch (Exception ex)

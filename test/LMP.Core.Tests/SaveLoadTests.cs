@@ -36,7 +36,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         Assert.True(File.Exists(path));
         var json = await File.ReadAllTextAsync(path);
@@ -49,7 +49,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         Assert.True(doc.RootElement.TryGetProperty("version", out var version));
@@ -62,7 +62,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         Assert.True(doc.RootElement.TryGetProperty("module", out var moduleName));
@@ -75,7 +75,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         Assert.True(doc.RootElement.TryGetProperty("predictors", out var predictors));
@@ -90,7 +90,7 @@ public class SaveLoadTests : IDisposable
         module.Classify.Instructions = "Classify tickets by category";
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         var classify = doc.RootElement.GetProperty("predictors").GetProperty("Classify");
@@ -103,7 +103,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         var classify = doc.RootElement.GetProperty("predictors").GetProperty("Classify");
@@ -119,7 +119,7 @@ public class SaveLoadTests : IDisposable
         module.Classify.Demos.Add(("billing issue", new CategoryOutput { Category = "billing", Urgency = 3 }));
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         var demos = doc.RootElement.GetProperty("predictors").GetProperty("Classify").GetProperty("demos");
@@ -142,7 +142,7 @@ public class SaveLoadTests : IDisposable
         var module = new TwoPredictorModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         var predictors = doc.RootElement.GetProperty("predictors");
@@ -156,7 +156,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         Assert.True(File.Exists(path));
         Assert.False(File.Exists(path + ".tmp"));
@@ -169,10 +169,10 @@ public class SaveLoadTests : IDisposable
         var path = TempFile();
 
         module.Classify.Instructions = "first";
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         module.Classify.Instructions = "second";
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         var instructions = doc.RootElement
@@ -190,10 +190,10 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         module.Classify.Instructions = "Classify tickets by category";
         var path = TempFile();
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var fresh = new TestModule(_client);
-        await fresh.LoadAsync(path);
+        await fresh.ApplyStateAsync(path);
 
         Assert.Equal("Classify tickets by category", fresh.Classify.Instructions);
     }
@@ -205,10 +205,10 @@ public class SaveLoadTests : IDisposable
         module.Classify.Demos.Add(("billing issue", new CategoryOutput { Category = "billing", Urgency = 3 }));
         module.Classify.Demos.Add(("login problem", new CategoryOutput { Category = "account", Urgency = 4 }));
         var path = TempFile();
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var fresh = new TestModule(_client);
-        await fresh.LoadAsync(path);
+        await fresh.ApplyStateAsync(path);
 
         Assert.Equal(2, fresh.Classify.Demos.Count);
         Assert.Equal("billing issue", fresh.Classify.Demos[0].Input);
@@ -227,9 +227,9 @@ public class SaveLoadTests : IDisposable
 
         // Save with no demos
         var saveModule = new TestModule(_client);
-        await saveModule.SaveAsync(path);
+        await saveModule.SaveStateAsync(path);
 
-        await module.LoadAsync(path);
+        await module.ApplyStateAsync(path);
 
         Assert.Empty(module.Classify.Demos);
     }
@@ -242,7 +242,7 @@ public class SaveLoadTests : IDisposable
 
         var module = new TestModule(_client);
 
-        await Assert.ThrowsAnyAsync<JsonException>(() => module.LoadAsync(path));
+        await Assert.ThrowsAnyAsync<JsonException>(() => module.ApplyStateAsync(path));
     }
 
     [Fact]
@@ -251,7 +251,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
 
         await Assert.ThrowsAsync<FileNotFoundException>(
-            () => module.LoadAsync(TempFile("nonexistent.json")));
+            () => module.ApplyStateAsync(TempFile("nonexistent.json")));
     }
 
     [Fact]
@@ -262,11 +262,11 @@ public class SaveLoadTests : IDisposable
         twoPredictor.Classify.Instructions = "classify";
         twoPredictor.DraftReply.Instructions = "draft";
         var path = TempFile();
-        await twoPredictor.SaveAsync(path);
+        await twoPredictor.SaveStateAsync(path);
 
         // Load into a module that only has 1 predictor — "Classify" matches, "DraftReply" is ignored
         var singlePredictor = new TestModule(_client);
-        await singlePredictor.LoadAsync(path);
+        await singlePredictor.ApplyStateAsync(path);
 
         Assert.Equal("classify", singlePredictor.Classify.Instructions);
     }
@@ -278,12 +278,12 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         module.Classify.Instructions = "from file";
         var path = TempFile();
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         // Load into a module with 2 predictors — DraftReply not in file, should keep defaults
         var twoPredictor = new TwoPredictorModule(_client);
         twoPredictor.DraftReply.Instructions = "original draft instructions";
-        await twoPredictor.LoadAsync(path);
+        await twoPredictor.ApplyStateAsync(path);
 
         Assert.Equal("from file", twoPredictor.Classify.Instructions);
         Assert.Equal("original draft instructions", twoPredictor.DraftReply.Instructions);
@@ -306,10 +306,10 @@ public class SaveLoadTests : IDisposable
              new ReplyOutput { Reply = "I'm sorry about the double charge." }));
 
         var path = TempFile();
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var restored = new TwoPredictorModule(_client);
-        await restored.LoadAsync(path);
+        await restored.ApplyStateAsync(path);
 
         // Verify Classify predictor
         Assert.Equal("Classify support tickets", restored.Classify.Instructions);
@@ -333,10 +333,10 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var restored = new TestModule(_client);
-        await restored.LoadAsync(path);
+        await restored.ApplyStateAsync(path);
 
         Assert.Empty(restored.Classify.Demos);
         Assert.Equal(string.Empty, restored.Classify.Instructions);
@@ -349,14 +349,14 @@ public class SaveLoadTests : IDisposable
         var path = TempFile();
 
         module.Classify.Instructions = "version 1";
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         module.Classify.Instructions = "version 2";
         module.Classify.Demos.Add(("input", new CategoryOutput { Category = "cat", Urgency = 1 }));
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var restored = new TestModule(_client);
-        await restored.LoadAsync(path);
+        await restored.ApplyStateAsync(path);
 
         Assert.Equal("version 2", restored.Classify.Instructions);
         Assert.Single(restored.Classify.Demos);
@@ -390,7 +390,7 @@ public class SaveLoadTests : IDisposable
         await File.WriteAllTextAsync(path, json);
 
         var module = new TestModule(_client);
-        await module.LoadAsync(path);
+        await module.ApplyStateAsync(path);
 
         Assert.Equal("Classify things", module.Classify.Instructions);
     }
@@ -420,7 +420,7 @@ public class SaveLoadTests : IDisposable
         await File.WriteAllTextAsync(path, json);
 
         var module = new TestModule(_client);
-        await module.LoadAsync(path);
+        await module.ApplyStateAsync(path);
 
         Assert.Equal("Classify things", module.Classify.Instructions);
     }
@@ -446,7 +446,7 @@ public class SaveLoadTests : IDisposable
         await File.WriteAllTextAsync(path, json);
 
         var module = new TestModule(_client);
-        await module.LoadAsync(path);
+        await module.ApplyStateAsync(path);
 
         Assert.Equal("Classify", module.Classify.Instructions);
     }
@@ -471,7 +471,7 @@ public class SaveLoadTests : IDisposable
         await File.WriteAllTextAsync(path, json);
 
         var module = new TestModule(_client);
-        await module.LoadAsync(path);
+        await module.ApplyStateAsync(path);
 
         Assert.Equal("Classify", module.Classify.Instructions);
     }
@@ -488,7 +488,7 @@ public class SaveLoadTests : IDisposable
         module.Classify.Demos.Add(("input", new CategoryOutput { Category = "cat", Urgency = 1 }));
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var json = await File.ReadAllTextAsync(path);
 
@@ -508,7 +508,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var json = await File.ReadAllTextAsync(path);
         Assert.Contains("\n", json);
@@ -521,7 +521,7 @@ public class SaveLoadTests : IDisposable
         var module = new TestModule(_client);
         var path = TempFile();
 
-        await module.SaveAsync(path);
+        await module.SaveStateAsync(path);
 
         var doc = await ReadJsonDoc(path);
         var classify = doc.RootElement.GetProperty("predictors").GetProperty("Classify");

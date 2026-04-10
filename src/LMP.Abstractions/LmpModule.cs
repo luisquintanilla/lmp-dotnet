@@ -70,14 +70,10 @@ public abstract class LmpModule
             $"Ensure '{GetType().Name}' is declared as a partial class.");
 
     /// <summary>
-    /// Serializes all learnable parameters (demos, instructions, config) to a JSON file.
-    /// Uses atomic write (temp file → rename) for safety.
+    /// Returns the current state of all predictors as a <see cref="ModuleState"/>.
     /// </summary>
-    /// <param name="path">The file path to write the artifact to.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    public virtual async Task SaveAsync(string path, CancellationToken cancellationToken = default)
-    {
-        var state = new ModuleState
+    public ModuleState GetState()
+        => new()
         {
             Version = "1.0",
             Module = GetType().Name,
@@ -85,6 +81,29 @@ public abstract class LmpModule
                 p => p.Name,
                 p => p.Predictor.GetState())
         };
+
+    /// <summary>
+    /// Applies a previously captured <see cref="ModuleState"/> to this module.
+    /// Predictors not found in <paramref name="state"/> are left unchanged.
+    /// </summary>
+    public void ApplyState(ModuleState state)
+    {
+        foreach (var (name, predictor) in GetPredictors())
+        {
+            if (state.Predictors.TryGetValue(name, out var predictorState))
+            {
+                predictor.LoadState(predictorState);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Serializes all learnable parameters (demos, instructions, config) to a JSON file.
+    /// Uses atomic write (temp file → rename) for safety.
+    /// </summary>
+    public virtual async Task SaveStateAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var state = GetState();
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             state,
@@ -101,9 +120,7 @@ public abstract class LmpModule
     /// Predictors not found in the file are left unchanged.
     /// Unknown JSON properties are silently ignored for forward compatibility.
     /// </summary>
-    /// <param name="path">The file path to read the artifact from.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    public virtual async Task LoadAsync(string path, CancellationToken cancellationToken = default)
+    public virtual async Task ApplyStateAsync(string path, CancellationToken cancellationToken = default)
     {
         byte[] bytes = await File.ReadAllBytesAsync(path, cancellationToken);
 
@@ -113,12 +130,6 @@ public abstract class LmpModule
             ?? throw new InvalidOperationException(
                 $"Failed to deserialize module state from '{path}'.");
 
-        foreach (var (name, predictor) in GetPredictors())
-        {
-            if (state.Predictors.TryGetValue(name, out var predictorState))
-            {
-                predictor.LoadState(predictorState);
-            }
-        }
+        ApplyState(state);
     }
 }

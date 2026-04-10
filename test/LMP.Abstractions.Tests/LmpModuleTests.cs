@@ -251,7 +251,7 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             Assert.True(File.Exists(path));
             var content = await File.ReadAllTextAsync(path);
@@ -275,7 +275,7 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var json = await File.ReadAllTextAsync(path);
             using var doc = JsonDocument.Parse(json);
@@ -304,7 +304,7 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var json = await File.ReadAllTextAsync(path);
             using var doc = JsonDocument.Parse(json);
@@ -334,7 +334,7 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var json = await File.ReadAllTextAsync(path);
             using var doc = JsonDocument.Parse(json);
@@ -360,7 +360,7 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var json = await File.ReadAllTextAsync(path);
             using var doc = JsonDocument.Parse(json);
@@ -381,7 +381,7 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             Assert.True(File.Exists(path));
             Assert.False(File.Exists(path + ".tmp"),
@@ -401,7 +401,7 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var json = await File.ReadAllTextAsync(path);
             using var doc = JsonDocument.Parse(json);
@@ -429,12 +429,12 @@ public class LmpModuleTests
         {
             // Save with modified instructions
             pred.Instructions = "optimized instruction";
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             // Create fresh module and load
             var freshPred = new FakePredictor { Name = "classify", Instructions = "default" };
             var freshModule = new SaveLoadModule(freshPred);
-            await freshModule.LoadAsync(path);
+            await freshModule.ApplyStateAsync(path);
 
             Assert.Equal("optimized instruction", freshPred.Instructions);
         }
@@ -455,11 +455,11 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var freshPred = new FakePredictor { Name = "classify", Instructions = "" };
             var freshModule = new SaveLoadModule(freshPred);
-            await freshModule.LoadAsync(path);
+            await freshModule.ApplyStateAsync(path);
 
             Assert.Equal(2, freshPred.TypedDemos.Count);
         }
@@ -478,12 +478,12 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             // Load into module with different predictor name
             var otherPred = new FakePredictor { Name = "step2", Instructions = "original" };
             var otherModule = new SaveLoadModule(otherPred);
-            await otherModule.LoadAsync(path);
+            await otherModule.ApplyStateAsync(path);
 
             // step2 not in file, so it should remain unchanged
             Assert.Equal("original", otherPred.Instructions);
@@ -501,7 +501,7 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"nonexistent_{Guid.NewGuid()}.json");
 
         await Assert.ThrowsAsync<FileNotFoundException>(
-            () => module.LoadAsync(path));
+            () => module.ApplyStateAsync(path));
     }
 
     [Fact]
@@ -530,7 +530,7 @@ public class LmpModuleTests
 
             var pred = new FakePredictor { Name = "classify", Instructions = "default" };
             var module = new SaveLoadModule(pred);
-            await module.LoadAsync(path);
+            await module.ApplyStateAsync(path);
 
             Assert.Equal("test instruction", pred.Instructions);
         }
@@ -559,11 +559,11 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var freshPred = new FakePredictor { Name = "classify", Instructions = "" };
             var freshModule = new SaveLoadModule(freshPred);
-            await freshModule.LoadAsync(path);
+            await freshModule.ApplyStateAsync(path);
 
             Assert.Equal("Classify the ticket", freshPred.Instructions);
             Assert.Equal(2, freshPred.TypedDemos.Count);
@@ -586,12 +586,12 @@ public class LmpModuleTests
         var path = Path.Combine(Path.GetTempPath(), $"lmp_test_{Guid.NewGuid()}.json");
         try
         {
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var freshPred1 = new FakePredictor { Name = "step1", Instructions = "" };
             var freshPred2 = new FakePredictor { Name = "step2", Instructions = "" };
             var freshModule = new SaveLoadModule(freshPred1, freshPred2);
-            await freshModule.LoadAsync(path);
+            await freshModule.ApplyStateAsync(path);
 
             Assert.Equal("Do step 1", freshPred1.Instructions);
             Assert.Equal("Do step 2", freshPred2.Instructions);
@@ -614,15 +614,15 @@ public class LmpModuleTests
         try
         {
             // First save
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             // Update and save again
             pred.Instructions = "v2";
-            await module.SaveAsync(path);
+            await module.SaveStateAsync(path);
 
             var freshPred = new FakePredictor { Name = "p", Instructions = "" };
             var freshModule = new SaveLoadModule(freshPred);
-            await freshModule.LoadAsync(path);
+            await freshModule.ApplyStateAsync(path);
 
             Assert.Equal("v2", freshPred.Instructions);
         }
