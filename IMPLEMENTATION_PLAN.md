@@ -1229,7 +1229,7 @@ This is backward-compatible — CategoricalTpeSampler and SmacSampler don't need
 **Tests:** TrialCost record equality. ISampler default method ignores cost.
 **Completion:** `dotnet build && dotnet test` — 0 regressions.
 
-#### Task 9B.3: Implement CostAwareSampler ❌
+#### Task 9B.3: Implement CostAwareSampler ✅
 
 **Files:** `src/LMP.Optimizers/Samplers/CostAwareSampler.cs` (new), internal helpers
 
