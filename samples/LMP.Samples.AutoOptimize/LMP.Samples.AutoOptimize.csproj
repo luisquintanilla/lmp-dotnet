@@ -22,4 +22,7 @@
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
     <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
   </ItemGroup>
+
+  <!-- LMP Build-Time Optimization Reporting -->
+  <Import Project="..\..\src\LMP.Build\build\LMP.Build.targets" />
 </Project>
