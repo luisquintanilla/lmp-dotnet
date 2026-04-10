@@ -1127,7 +1127,7 @@ Fix these discrepancies between spec and actual code:
 
 **Completion:** Code examples in doc compile against actual API.
 
-#### Task 9A.3: Fix `compiler-optimizer.md` ❌
+#### Task 9A.3: Fix `compiler-optimizer.md` ✅
 
 **File:** `docs/02-specs/compiler-optimizer.md`
 **Reference code:** `src/LMP.Optimizers/`
