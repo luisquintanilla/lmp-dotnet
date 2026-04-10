@@ -1168,7 +1168,7 @@ This is the most stale spec. Fix:
 
 **Completion:** Architecture diagram matches actual project structure.
 
-#### Task 9A.6: Update `AGENTS.md` ❌
+#### Task 9A.6: Update `AGENTS.md` ✅
 
 **File:** `AGENTS.md`
 

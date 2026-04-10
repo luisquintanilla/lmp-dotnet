@@ -9,18 +9,24 @@ Repository: https://github.com/luisquintanilla/lmp-dotnet
 
 ```
 src/
-├── LMP.Abstractions/      # Interfaces, attributes, base types (no dependencies)
-├── LMP.Core/               # Predictor<TIn,TOut>, LmpModule, assertions
-├── LMP.SourceGen/          # Roslyn IIncrementalGenerator
-├── LMP.Modules/            # ChainOfThought, BestOfN, Refine, ReActAgent
-├── LMP.Optimizers/         # Evaluator, BootstrapFewShot, BootstrapRandomSearch, MIPROv2
-└── LMP.Cli/                # CLI tool (dotnet lmp): inspect, optimize, eval
+├── LMP.Abstractions/           # Interfaces, attributes, base types (no dependencies)
+├── LMP.Core/                    # Predictor<TIn,TOut>, LmpModule, assertions
+├── LMP.SourceGen/               # Roslyn IIncrementalGenerator (netstandard2.0)
+├── LMP.Modules/                 # ChainOfThought, BestOfN, Refine, ReActAgent, ProgramOfThought
+├── LMP.Optimizers/              # Evaluator, BootstrapFewShot, BootstrapRandomSearch, MIPROv2,
+│                                #   ISampler, CategoricalTpeSampler, SmacSampler, GEPA, TraceAnalyzer
+├── LMP.Extensions.Evaluation/   # M.E.AI Evaluation bridge (EvaluationBridge)
+├── LMP.Extensions.Z3/           # Z3 constraint optimization (Z3ConstrainedDemoSelector)
+├── LMP.Aspire.Hosting/          # Aspire integration (LmpOptimizerResource, LmpTelemetry)
+└── LMP.Cli/                     # CLI tool (dotnet lmp): inspect, optimize, eval, run
 test/
 ├── LMP.Abstractions.Tests/
 ├── LMP.Core.Tests/
 ├── LMP.SourceGen.Tests/
 ├── LMP.Modules.Tests/
 ├── LMP.Optimizers.Tests/
+├── LMP.Extensions.Z3.Tests/
+├── LMP.Aspire.Hosting.Tests/
 └── LMP.Cli.Tests/
 ```
 
@@ -35,8 +41,11 @@ dotnet build --no-restore   # fast rebuild
 ## Dependencies
 
 - `Microsoft.Extensions.AI` — IChatClient, GetResponseAsync<T>, AIFunction
-- `Microsoft.Extensions.AI.Evaluation` — built-in evaluators (post-Phase 4)
-- `Microsoft.CodeAnalysis` — source generator (LMP.SourceGen only)
+- `Microsoft.Extensions.AI.Evaluation` — built-in evaluators (LMP.Extensions.Evaluation)
+- `Microsoft.CodeAnalysis` — source generator (LMP.SourceGen only, netstandard2.0)
+- `Microsoft.Z3` — constraint solver (LMP.Extensions.Z3 only)
+- `Aspire.Hosting` — distributed app hosting (LMP.Aspire.Hosting only)
+- `System.Numerics.Tensors` — TensorPrimitives for vectorized math (built-in .NET 10 BCL)
 
 ## Conventions
 
