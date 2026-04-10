@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using LMP.Optimizers;
 using Microsoft.Extensions.AI;
 using Moq;
-
 namespace LMP.Tests;
 
 public class BootstrapFewShotTests
@@ -409,7 +408,7 @@ public class BootstrapFewShotTests
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            optimizer.CompileAsync(module, trainSet, (_, _) => 1.0f, cts.Token));
+            optimizer.CompileAsync(module, trainSet, (_, _) => 1.0f, options: CompileOptions.RuntimeOnly, cts.Token));
     }
 
     #endregion

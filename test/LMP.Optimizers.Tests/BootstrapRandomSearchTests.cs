@@ -1,6 +1,5 @@
 using System.Collections;
 using LMP.Optimizers;
-
 namespace LMP.Tests;
 
 public class BootstrapRandomSearchTests
@@ -379,7 +378,7 @@ public class BootstrapRandomSearchTests
         var optimizer = new BootstrapRandomSearch(numTrials: 3, seed: 42);
 
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            optimizer.CompileAsync(module, trainSet, ExactMatchMetric(), cts.Token));
+            optimizer.CompileAsync(module, trainSet, ExactMatchMetric(), options: CompileOptions.RuntimeOnly, cts.Token));
     }
 
     #endregion

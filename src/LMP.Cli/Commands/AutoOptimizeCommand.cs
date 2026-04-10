@@ -216,32 +216,26 @@ internal static class AutoOptimizeCommand
             """);
 
         float bestScore;
+        string outputPath;
         try
         {
-            module = await opt.CompileAsync(module, trainSet, metric, cancellationToken);
+            var compileOptions = new CompileOptions
+            {
+                OutputDir = generatedDir,
+                TrainDataPath = trainPath
+            };
+            module = await opt.CompileAsync(module, trainSet, metric, compileOptions, cancellationToken);
 
             // Evaluate on training set to get score
             var evalResult = await Evaluator.EvaluateAsync(
                 module, trainSet, metric, cancellationToken: cancellationToken);
             bestScore = evalResult.AverageScore;
+            outputPath = Path.Combine(generatedDir, $"{module.GetType().Name}.Optimized.g.cs");
         }
         catch (Exception ex)
         {
             await Console.Error.WriteLineAsync($"ERROR [compile] Optimization failed: {ex.Message}");
             return Program.ExitCodes.CompilationFailed;
-        }
-
-        // Step 8: Write C# artifact
-        string outputPath;
-        try
-        {
-            outputPath = await CSharpArtifactWriter.WriteAsync(
-                module, generatedDir, bestScore, optimizerName, trainPath, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            await Console.Error.WriteLineAsync($"ERROR [artifact] Failed to write C# artifact: {ex.Message}");
-            return Program.ExitCodes.ArtifactError;
         }
 
         // Step 9: Print summary

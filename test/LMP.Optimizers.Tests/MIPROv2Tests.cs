@@ -1,7 +1,6 @@
 using System.Collections;
 using LMP.Optimizers;
 using Microsoft.Extensions.AI;
-
 namespace LMP.Tests;
 
 public class MIPROv2Tests
@@ -531,7 +530,7 @@ public class MIPROv2Tests
         var optimizer = new MIPROv2(new FakeProposalClient(), numTrials: 5, seed: 42);
 
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            optimizer.CompileAsync(module, trainSet, ExactMatchMetric(), cts.Token));
+            optimizer.CompileAsync(module, trainSet, ExactMatchMetric(), options: CompileOptions.RuntimeOnly, cts.Token));
     }
 
     #endregion

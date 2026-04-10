@@ -180,7 +180,7 @@ internal static class OptimizeCommand
 
         try
         {
-            module = await opt.CompileAsync(module, trainSet, metric, cancellationToken);
+            module = await opt.CompileAsync(module, trainSet, metric, CompileOptions.RuntimeOnly, cancellationToken);
         }
         catch (Exception ex)
         {

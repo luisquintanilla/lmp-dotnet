@@ -8,6 +8,7 @@ public class IOptimizerTests
             TModule module,
             IReadOnlyList<Example> trainSet,
             Func<Example, object, float> metric,
+            CompileOptions? options = null,
             CancellationToken cancellationToken = default)
             where TModule : LmpModule
         {
@@ -72,6 +73,7 @@ public class IOptimizerTests
             TModule module,
             IReadOnlyList<Example> trainSet,
             Func<Example, object, float> metric,
+            CompileOptions? options = null,
             CancellationToken cancellationToken = default)
             where TModule : LmpModule
         {

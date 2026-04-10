@@ -67,6 +67,7 @@ public sealed class GEPA : IOptimizer
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
+        CompileOptions? options = null,
         CancellationToken cancellationToken = default)
         where TModule : LmpModule
     {
@@ -103,7 +104,20 @@ public sealed class GEPA : IOptimizer
             frontier.Add(candidate, scores);
         }
 
-        return frontier.Best;
+        var best = frontier.Best;
+
+        // Auto-emit .g.cs artifact
+        string? outputDir = options?.OutputDir;
+        if (outputDir is not null)
+        {
+            var evalResult = await Evaluator.EvaluateAsync(
+                best, trainSet, metric, cancellationToken: cancellationToken);
+            await CSharpArtifactWriter.WriteAsync(
+                best, outputDir, evalResult.AverageScore, nameof(GEPA),
+                options?.TrainDataPath, cancellationToken);
+        }
+
+        return best;
     }
 
     /// <summary>

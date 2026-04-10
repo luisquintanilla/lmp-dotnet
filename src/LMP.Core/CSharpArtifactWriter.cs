@@ -2,8 +2,9 @@ using System.Collections;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.AI;
 
-namespace LMP.Cli.Infrastructure;
+namespace LMP;
 
 /// <summary>
 /// Generates <c>Generated/{Module}.Optimized.g.cs</c> files from optimized module state.
@@ -11,19 +12,32 @@ namespace LMP.Cli.Infrastructure;
 /// that sets predictor state using direct C# property assignments and typed object
 /// initializers — no JSON, no deserialization, zero runtime overhead.
 /// </summary>
-internal static class CSharpArtifactWriter
+/// <remarks>
+/// This class uses reflection to inspect module fields, predictor types, and object
+/// properties at dev-time (not in production AOT paths). The generated <c>.g.cs</c>
+/// output is pure static C# with zero reflection at runtime.
+/// </remarks>
+#pragma warning disable IL2075, IL2070 // Reflection-based code generation is dev-time only; the output is static C#
+public static class CSharpArtifactWriter
 {
     /// <summary>
     /// Writes a <c>.g.cs</c> file for the specified module with the optimized state
     /// as pure C# (direct field access, typed demos, string literal instructions).
     /// </summary>
+    /// <param name="module">The optimized module to emit.</param>
+    /// <param name="outputDir">Directory to write the <c>.g.cs</c> file to.</param>
+    /// <param name="score">The best optimization score (for header comment).</param>
+    /// <param name="optimizerName">The optimizer strategy name (for header comment).</param>
+    /// <param name="trainDataPath">Optional training data file path for staleness hash.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The full path to the generated file.</returns>
     public static async Task<string> WriteAsync(
         LmpModule module,
         string outputDir,
         float score,
         string optimizerName,
-        string trainPath,
-        CancellationToken cancellationToken)
+        string? trainDataPath = null,
+        CancellationToken cancellationToken = default)
     {
         var moduleType = module.GetType();
         var typeName = moduleType.Name;
@@ -33,9 +47,9 @@ internal static class CSharpArtifactWriter
         var fieldMap = DiscoverPredictorFields(module);
 
         // Compute staleness hash
-        var trainHash = File.Exists(trainPath)
-            ? await ComputeFileHashAsync(trainPath, cancellationToken)
-            : "unknown";
+        var trainHash = trainDataPath is not null && File.Exists(trainDataPath)
+            ? await ComputeFileHashAsync(trainDataPath, cancellationToken)
+            : "none";
 
         // Generate the C# source
         var sb = new StringBuilder(4096);
@@ -127,6 +141,36 @@ internal static class CSharpArtifactWriter
     }
 
     /// <summary>
+    /// Checks if an existing generated file is still fresh based on dataset hash.
+    /// </summary>
+    public static async Task<bool> IsUpToDateAsync(
+        string generatedPath,
+        string trainPath,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(generatedPath) || !File.Exists(trainPath))
+            return false;
+
+        var currentHash = await ComputeFileHashAsync(trainPath, cancellationToken);
+
+        using var reader = new StreamReader(generatedPath);
+        for (int i = 0; i < 10; i++)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (line is null)
+                break;
+
+            if (line.StartsWith("// Dataset: sha256:"))
+            {
+                var existingHash = line["// Dataset: sha256:".Length..].Trim();
+                return existingHash == currentHash;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Discovers predictor field names by reflecting on the module type.
     /// Returns a map of predictor Name → field name (e.g., "qa" → "_qa").
     /// </summary>
@@ -149,14 +193,10 @@ internal static class CSharpArtifactWriter
         return map;
     }
 
-    /// <summary>
-    /// Emits a direct Instructions assignment using the appropriate string literal style.
-    /// </summary>
     private static void EmitInstructions(StringBuilder sb, string fieldName, string instructions)
     {
         if (instructions.Contains('\n') || instructions.Contains('\r'))
         {
-            // Multi-line → raw string literal
             sb.AppendLine($"        {fieldName}.Instructions = \"\"\"");
             foreach (var line in instructions.Split('\n'))
                 sb.Append("            ").AppendLine(line.TrimEnd());
@@ -164,14 +204,10 @@ internal static class CSharpArtifactWriter
         }
         else
         {
-            // Single-line → regular string literal
             sb.AppendLine($"        {fieldName}.Instructions = {EscapeString(instructions)};");
         }
     }
 
-    /// <summary>
-    /// Emits a typed AddDemo call with object initializers for input and output.
-    /// </summary>
     private static void EmitAddDemo(
         StringBuilder sb,
         string fieldName,
@@ -187,10 +223,7 @@ internal static class CSharpArtifactWriter
         sb.AppendLine($"            output: {outputInit});");
     }
 
-    /// <summary>
-    /// Emits Config assignment if any properties differ from defaults.
-    /// </summary>
-    private static void EmitConfig(StringBuilder sb, string fieldName, Microsoft.Extensions.AI.ChatOptions config)
+    private static void EmitConfig(StringBuilder sb, string fieldName, ChatOptions config)
     {
         var parts = new List<string>();
 
@@ -215,11 +248,6 @@ internal static class CSharpArtifactWriter
         }
     }
 
-    /// <summary>
-    /// Generates a C# object initializer expression from a live object via reflection.
-    /// Handles both object initializer syntax (parameterless ctor) and constructor
-    /// argument syntax (positional records).
-    /// </summary>
     private static string GenerateObjectInitializer(
         object obj, Type type, string indent, string moduleNamespace)
     {
@@ -231,12 +259,8 @@ internal static class CSharpArtifactWriter
         var hasParameterlessCtor = type.GetConstructor(Type.EmptyTypes) is not null;
 
         if (!hasParameterlessCtor)
-        {
-            // Positional record or type with required ctor params → constructor syntax
             return GenerateCtorCall(obj, type, typeName, props, indent, moduleNamespace);
-        }
 
-        // Object initializer syntax: new TypeName { Prop = value, ... }
         var settableProps = props.Where(p => p.CanWrite).ToArray();
         if (settableProps.Length == 0)
             return $"new {typeName}()";
@@ -259,7 +283,6 @@ internal static class CSharpArtifactWriter
         if (assignments.Count == 1)
             return $"new {typeName} {{ {assignments[0]} }}";
 
-        // Multi-property: one per line
         var sb = new StringBuilder();
         sb.AppendLine($"new {typeName}");
         sb.Append(indent).AppendLine("{");
@@ -275,10 +298,6 @@ internal static class CSharpArtifactWriter
         return sb.ToString();
     }
 
-    /// <summary>
-    /// Generates a constructor call for types without parameterless constructors
-    /// (e.g., positional records like <c>record QAInput(string Question)</c>).
-    /// </summary>
     private static string GenerateCtorCall(
         object obj, Type type, string typeName,
         PropertyInfo[] props, string indent, string moduleNamespace)
@@ -318,7 +337,6 @@ internal static class CSharpArtifactWriter
         if (args.Count <= 2)
             return $"new {typeName}({string.Join(", ", args)})";
 
-        // Multi-arg: one per line
         var sb = new StringBuilder();
         sb.AppendLine($"new {typeName}(");
         for (int i = 0; i < args.Count; i++)
@@ -332,13 +350,9 @@ internal static class CSharpArtifactWriter
         return sb.ToString();
     }
 
-    /// <summary>
-    /// Generates a C# literal for a value. Returns null if the value cannot be represented.
-    /// </summary>
     private static string? GenerateLiteral(
         object value, Type type, string indent, string moduleNamespace)
     {
-        // Unwrap Nullable<T>
         var underlying = Nullable.GetUnderlyingType(type);
         if (underlying is not null)
             type = underlying;
@@ -359,10 +373,6 @@ internal static class CSharpArtifactWriter
         };
     }
 
-    /// <summary>
-    /// Returns the shortest unambiguous type name.
-    /// Types in the same namespace as the module use short names; others use global::.
-    /// </summary>
     private static string ResolveTypeName(Type type, string moduleNamespace)
     {
         if (type.Namespace == moduleNamespace)
@@ -371,46 +381,12 @@ internal static class CSharpArtifactWriter
         return $"global::{type.FullName ?? type.Name}";
     }
 
-    /// <summary>
-    /// Escapes a string value as a C# string literal.
-    /// </summary>
     private static string EscapeString(string value)
     {
-        // Use verbatim string for strings with backslashes or many quotes
         if (value.Contains('\\') || value.Count(c => c == '"') > 2)
             return $"@\"{value.Replace("\"", "\"\"")}\"";
 
         return $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t")}\"";
-    }
-
-    /// <summary>
-    /// Checks if an existing generated file is still fresh based on dataset hash.
-    /// </summary>
-    public static async Task<bool> IsUpToDateAsync(
-        string generatedPath,
-        string trainPath,
-        CancellationToken cancellationToken)
-    {
-        if (!File.Exists(generatedPath) || !File.Exists(trainPath))
-            return false;
-
-        var currentHash = await ComputeFileHashAsync(trainPath, cancellationToken);
-
-        using var reader = new StreamReader(generatedPath);
-        for (int i = 0; i < 10; i++)
-        {
-            var line = await reader.ReadLineAsync(cancellationToken);
-            if (line is null)
-                break;
-
-            if (line.StartsWith("// Dataset: sha256:"))
-            {
-                var existingHash = line["// Dataset: sha256:".Length..].Trim();
-                return existingHash == currentHash;
-            }
-        }
-
-        return false;
     }
 
     private static async Task<string> ComputeFileHashAsync(
