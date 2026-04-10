@@ -17,7 +17,15 @@ internal static class ModuleJsonContextEmitter
 {
     /// <summary>
     /// Generates the full JsonContext source code for a module.
+    /// Emits a static helper class with <c>JsonSerializerOptions</c> configured
+    /// for camelCase naming, null-ignoring, and indented output. These options are
+    /// automatically wired to each predictor's <c>SerializerOptions</c> in the
+    /// generated <c>GetPredictors()</c> override.
     /// </summary>
+    /// <remarks>
+    /// For full AOT/trimming support, consumers should create their own
+    /// <c>[JsonSerializable]</c> context and set <c>Predictor.SerializerOptions</c>.
+    /// </remarks>
     internal static string GenerateSource(ModuleModel model)
     {
         var sb = new StringBuilder(512);

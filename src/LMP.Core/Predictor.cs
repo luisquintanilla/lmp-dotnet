@@ -1,5 +1,6 @@
 using System.Collections;
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
@@ -15,6 +16,13 @@ public class Predictor<TInput, TOutput> : IPredictor
     where TOutput : class
 {
     private readonly IChatClient _client;
+
+    /// <summary>
+    /// Optional JSON serializer options. When set by source-generated module code,
+    /// enables AOT-safe serialization via <c>JsonSerializerContext</c>.
+    /// When null (default), falls back to reflection-based serialization.
+    /// </summary>
+    public JsonSerializerOptions? SerializerOptions { get; set; }
 
     /// <summary>
     /// Creates a predictor bound to the given chat client.
@@ -143,6 +151,10 @@ public class Predictor<TInput, TOutput> : IPredictor
         return BuildDefaultMessages(input, lastError);
     }
 
+    [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
+        Justification = "SerializerOptions is set by source-generated module code with proper type info for AOT scenarios.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "SerializerOptions is set by source-generated module code with proper type info for AOT scenarios.")]
     private IList<ChatMessage> BuildDefaultMessages(TInput input, string? lastError)
     {
         var messages = new List<ChatMessage>();
@@ -154,7 +166,7 @@ public class Predictor<TInput, TOutput> : IPredictor
         foreach (var (demoInput, demoOutput) in Demos)
         {
             messages.Add(new ChatMessage(ChatRole.User, demoInput?.ToString() ?? ""));
-            messages.Add(new ChatMessage(ChatRole.Assistant, JsonSerializer.Serialize(demoOutput)));
+            messages.Add(new ChatMessage(ChatRole.Assistant, JsonSerializer.Serialize(demoOutput, SerializerOptions)));
         }
 
         // Current input with optional retry feedback
@@ -175,8 +187,8 @@ public class Predictor<TInput, TOutput> : IPredictor
         {
             demoEntries.Add(new DemoEntry
             {
-                Input = JsonElementFromObject(demoInput),
-                Output = JsonElementFromObject(demoOutput)
+                Input = JsonElementFromObject(demoInput, SerializerOptions),
+                Output = JsonElementFromObject(demoOutput, SerializerOptions)
             });
         }
 
@@ -197,8 +209,8 @@ public class Predictor<TInput, TOutput> : IPredictor
         Demos.Clear();
         foreach (var entry in state.Demos)
         {
-            var input = DeserializeFromDictionary<TInput>(entry.Input);
-            var output = DeserializeFromDictionary<TOutput>(entry.Output);
+            var input = DeserializeFromDictionary<TInput>(entry.Input, SerializerOptions);
+            var output = DeserializeFromDictionary<TOutput>(entry.Output, SerializerOptions);
             if (input is not null && output is not null)
                 Demos.Add((input, output));
         }
@@ -208,7 +220,11 @@ public class Predictor<TInput, TOutput> : IPredictor
     /// Deserializes a value from a <see cref="DemoEntry"/> dictionary, handling the
     /// "value" wrapper that <see cref="JsonElementFromObject{T}"/> creates for non-object types.
     /// </summary>
-    private static T? DeserializeFromDictionary<T>(Dictionary<string, JsonElement> dict)
+    [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
+        Justification = "SerializerOptions is set by source-generated module code with proper type info for AOT scenarios.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "SerializerOptions is set by source-generated module code with proper type info for AOT scenarios.")]
+    private static T? DeserializeFromDictionary<T>(Dictionary<string, JsonElement> dict, JsonSerializerOptions? options)
     {
         // GetState wraps non-object types (string, int, etc.) as { "value": <element> }.
         // Unwrap single "value" keys back to the original value.
@@ -216,7 +232,7 @@ public class Predictor<TInput, TOutput> : IPredictor
         {
             try
             {
-                return JsonSerializer.Deserialize<T>(valueElement.GetRawText());
+                return JsonSerializer.Deserialize<T>(valueElement.GetRawText(), options);
             }
             catch (JsonException)
             {
@@ -224,8 +240,8 @@ public class Predictor<TInput, TOutput> : IPredictor
             }
         }
 
-        var json = JsonSerializer.Serialize(dict);
-        return JsonSerializer.Deserialize<T>(json);
+        var json = JsonSerializer.Serialize(dict, options);
+        return JsonSerializer.Deserialize<T>(json, options);
     }
 
     /// <inheritdoc />
@@ -259,9 +275,13 @@ public class Predictor<TInput, TOutput> : IPredictor
         return clone;
     }
 
-    private static Dictionary<string, JsonElement> JsonElementFromObject<T>(T value)
+    [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
+        Justification = "SerializerOptions is set by source-generated module code with proper type info for AOT scenarios.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "SerializerOptions is set by source-generated module code with proper type info for AOT scenarios.")]
+    private static Dictionary<string, JsonElement> JsonElementFromObject<T>(T value, JsonSerializerOptions? options)
     {
-        var json = JsonSerializer.Serialize(value);
+        var json = JsonSerializer.Serialize(value, options);
         using var doc = JsonDocument.Parse(json);
 
         if (doc.RootElement.ValueKind == JsonValueKind.Object)

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 
 namespace LMP;
@@ -46,6 +47,10 @@ public abstract record Example
     /// <exception cref="ArgumentNullException"><paramref name="path"/> is <c>null</c>.</exception>
     /// <exception cref="FileNotFoundException">The file at <paramref name="path"/> does not exist.</exception>
     /// <exception cref="FormatException">A line is not a valid JSON object, or is missing required properties.</exception>
+    [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
+        Justification = "Callers can pass a source-gen JsonSerializerContext via options for AOT-safe deserialization.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Callers can pass a source-gen JsonSerializerContext via options for AOT-safe deserialization.")]
     public static IReadOnlyList<Example<TInput, TLabel>> LoadFromJsonl<TInput, TLabel>(
         string path,
         JsonSerializerOptions? options = null)

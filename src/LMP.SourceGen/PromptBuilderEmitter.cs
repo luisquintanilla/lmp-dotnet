@@ -205,6 +205,10 @@ internal static class PromptBuilderEmitter
 
     private static void EmitFormatOutput(StringBuilder sb, PromptBuilderModel model)
     {
+        sb.AppendLine("    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(\"AOT\", \"IL2026:RequiresUnreferencedCode\",");
+        sb.AppendLine("        Justification = \"Demo formatting uses JsonSerializer for prompt assembly; callers can provide SerializerOptions for AOT.\")]");
+        sb.AppendLine("    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(\"AOT\", \"IL3050:RequiresDynamicCode\",");
+        sb.AppendLine("        Justification = \"Demo formatting uses JsonSerializer for prompt assembly; callers can provide SerializerOptions for AOT.\")]");
         sb.Append("    private static string FormatOutput(").Append(model.OutputTypeName).AppendLine(" output)");
         sb.AppendLine("        => System.Text.Json.JsonSerializer.Serialize(output);");
     }

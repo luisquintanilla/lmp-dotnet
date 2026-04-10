@@ -88,6 +88,20 @@ internal static class ModuleEmitter
               .AppendLine(">(Client ?? throw new global::System.InvalidOperationException(\"Set Client before calling GetPredictors().\"));");
         }
 
+        // Wire SerializerOptions from the generated JsonOptions helper
+        var jsonOptionsName = model.TypeName + "JsonOptions";
+        foreach (var field in model.PredictorFields)
+        {
+            sb.Append("        ").Append(field.FieldName)
+              .Append(".SerializerOptions ??= ").Append(jsonOptionsName).AppendLine(".Instance;");
+        }
+        foreach (var pm in model.PredictMethods)
+        {
+            var backingField = PredictBackingFieldName(pm.MethodName);
+            sb.Append("        ").Append(backingField)
+              .Append(".SerializerOptions ??= ").Append(jsonOptionsName).AppendLine(".Instance;");
+        }
+
         sb.AppendLine("        return");
         sb.AppendLine("        [");
 

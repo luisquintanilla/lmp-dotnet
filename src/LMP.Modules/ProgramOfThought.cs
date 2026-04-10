@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
@@ -24,7 +25,14 @@ namespace LMP;
 /// <c>System</c>, <c>System.Linq</c>, <c>System.Collections.Generic</c>,
 /// <c>System.Text</c>, <c>System.Text.Json</c>.
 /// </para>
+/// <para>
+/// <b>AOT compatibility:</b> This type uses Roslyn scripting which requires runtime compilation
+/// and is inherently incompatible with Native AOT. Use standard <see cref="Predictor{TInput, TOutput}"/>
+/// for AOT-compatible scenarios.
+/// </para>
 /// </remarks>
+[RequiresUnreferencedCode("ProgramOfThought uses Roslyn scripting which requires runtime compilation and reflection.")]
+[RequiresDynamicCode("ProgramOfThought uses Roslyn scripting which requires JIT compilation.")]
 public class ProgramOfThought<TInput, TOutput> : Predictor<TInput, TOutput>
     where TOutput : class
 {
