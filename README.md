@@ -6,7 +6,7 @@
 
 [DSPy](https://dspy.ai/) proved that language model programs should be **optimized programmatically**, not hand-tuned with prompt strings. Instead of tweaking instructions by hand, you define typed signatures and let an optimizer search over few-shot examples and instructions to maximize your metric.
 
-LMP brings this insight to .NET — and takes it further. C# source generators **validate your signatures at build time**, emit typed prompt builders, and produce zero-reflection serialization. The result: LM programs that are checked by the compiler, discoverable by tooling, and deployable with Native AOT.
+LMP brings this insight to .NET — and takes it further. C# source generators **validate your signatures at build time**, emit typed prompt builders, and enable zero-reflection predictor discovery. The result: LM programs that are checked by the compiler, discoverable by tooling, and compatible with Native AOT deployment.
 
 Built on .NET 10 / C# 14. The only LM dependency is [`IChatClient`](https://learn.microsoft.com/dotnet/api/microsoft.extensions.ai.ichatclient) from `Microsoft.Extensions.AI` — works with OpenAI, Anthropic, Ollama, or any provider.
 
@@ -59,7 +59,7 @@ When you hit **Build**, the Roslyn source generator reads your `[LmpSignature]` 
 | 1 | **Compile-time signature validation** | Catch errors at `dotnet build`, not at runtime after an API call |
 | 2 | **Zero-reflection predictor discovery** | Optimizers enumerate all predictors without reflection or decorators |
 | 3 | **Source-generated prompt builders** | Typed, inspectable prompt assembly — no string formatting at runtime |
-| 4 | **AOT-deployable LM programs** | ~50 ms cold start — no JIT, no reflection, no interpreter |
+| 4 | **Native AOT compatible** | Publish as a single native binary — no .NET runtime required, smaller containers, faster cold start |
 | 5 | **True parallelism in optimization** | `Task.WhenAll` across real threads for concurrent trial evaluation |
 
 ## Module Catalog
@@ -217,6 +217,29 @@ IChatClient client = new OllamaChatClient(new Uri("http://localhost:11434"), "ll
 ```
 
 All LMP modules, predictors, and optimizers work identically regardless of which provider you use — they only depend on `IChatClient`.
+
+## Native AOT
+
+LMP is compatible with [Native AOT deployment](https://learn.microsoft.com/dotnet/core/deploying/native-aot/). The core libraries (`LMP.Abstractions`, `LMP.Core`, `LMP.Optimizers`) are annotated with `IsAotCompatible`, and the source generator emits zero-reflection code for predictor discovery, prompt building, and cloning.
+
+```bash
+# Publish as a single native binary (no .NET runtime needed)
+dotnet publish -c Release -r linux-x64 /p:PublishAot=true
+```
+
+**What works out of the box:**
+- Source-generated `GetPredictors()`, `CloneCore()`, `PromptBuilder` — all zero-reflection
+- Generated `JsonSerializerOptions` auto-wired to each predictor via `SerializerOptions`
+- C# 14 interceptors (opt-in) inline `PredictAsync` dispatch without virtual calls
+
+**What to know:**
+- `ProgramOfThought<TIn, TOut>` uses Roslyn scripting and is **not** AOT-compatible (annotated with `[RequiresDynamicCode]`). Use `Predictor<TIn, TOut>` or other modules for AOT scenarios.
+- For full AOT without any trim warnings in your app, provide a [`JsonSerializerContext`](https://learn.microsoft.com/dotnet/standard/serialization/system-text-json/source-generation) for your input/output types and set `predictor.SerializerOptions`.
+- The CLI tool (`dotnet lmp`) is a dev-time tool and is not intended for AOT publish.
+
+**Verified:** The TicketTriage sample publishes as a **5.8 MB** native binary on win-x64.
+
+> **Why AOT for an LLM library?** LMP is an orchestration layer — the LLM API call (500–5000 ms) dominates per-request latency by orders of magnitude. AOT won't make LLM calls faster. The real value is **library hygiene** (LMP doesn't break your app's AOT compatibility), **smaller containers**, and **faster cold start** in serverless scale-to-zero scenarios.
 
 ## Diagnostics
 
