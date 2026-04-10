@@ -1099,7 +1099,7 @@ Phase 4 recommends Phase 3 but does not require it. Phase 6 requires both Phase 
 
 ### Phase 9A: Doc Spec Freshness
 
-#### Task 9A.1: Fix `public-api.md` ❌
+#### Task 9A.1: Fix `public-api.md` ✅
 
 **File:** `docs/02-specs/public-api.md`
 **Reference code:** `src/LMP.Abstractions/`, `src/LMP.Core/Predictor.cs`, `src/LMP.Optimizers/`
