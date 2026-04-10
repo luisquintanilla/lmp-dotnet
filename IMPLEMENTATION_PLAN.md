@@ -1115,7 +1115,7 @@ Fix these discrepancies between spec and actual code:
 
 **Completion:** `dotnet build` passes. Spec matches actual public API surface.
 
-#### Task 9A.2: Fix `runtime-execution.md` ❌
+#### Task 9A.2: Fix `runtime-execution.md` ✅
 
 **File:** `docs/02-specs/runtime-execution.md`
 **Reference code:** `src/LMP.Core/Predictor.cs`

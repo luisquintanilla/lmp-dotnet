@@ -1,6 +1,6 @@
 # Runtime Execution Specification
 
-> **Status:** v2 — rewritten to match system-architecture.md  
+> **Status:** v3 — updated to match actual implementation (Phase 9A.2)  
 > **Target:** .NET 10 / C# 14  
 > **Dependency:** `Microsoft.Extensions.AI` (`IChatClient`)  
 > **Audience:** Implementer — a junior developer should be able to build the runtime from this document alone.
@@ -32,44 +32,52 @@ Concretely, the runtime:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `Instructions` | `string` | System-level instructions (from `[LmpSignature]`, overridable by optimizers) |
-| `Demos` | `List<Example<TInput, TOutput>>` | Few-shot examples — filled by optimizers, serialized by `SaveAsync` |
+| `Instructions` | `string` | System-level instructions (defaults to empty; set by optimizers or `[LmpSignature]`) |
+| `Demos` | `List<(TInput Input, TOutput Output)>` | Few-shot examples — filled by optimizers, serialized by `SaveAsync` |
 | `Config` | `ChatOptions` | M.E.AI chat options: temperature, max tokens, stop sequences, etc. |
 | `Client` | `IChatClient` | The LM provider — injected via constructor, never learnable |
+| `Name` | `string` | Predictor identity for traces and diagnostics |
+| `SerializerOptions` | `JsonSerializerOptions?` | Optional source-gen `JsonSerializerContext`-based options for AOT-safe serialization |
 
 ```csharp
-public class Predictor<TInput, TOutput>
+public class Predictor<TInput, TOutput> : IPredictor
+    where TOutput : class
 {
     private readonly IChatClient _client;
 
-    public string Instructions { get; set; }
-    public List<Example<TInput, TOutput>> Demos { get; set; } = [];
+    public IChatClient Client => _client;
+    public string Name { get; set; }
+    public string Instructions { get; set; } = string.Empty;
+    public List<(TInput Input, TOutput Output)> Demos { get; set; } = [];
     public ChatOptions Config { get; set; } = new();
+    public JsonSerializerOptions? SerializerOptions { get; set; }
 
     public Predictor(IChatClient client)
     {
-        _client = client;
-        // Source generator emits a static method that returns the default
-        // instructions from [LmpSignature] on TOutput.
-        Instructions = PromptBuilder<TInput, TOutput>.DefaultInstructions;
+        _client = client ?? throw new ArgumentNullException(nameof(client));
+        Name = $"{typeof(TInput).Name}→{typeof(TOutput).Name}";
     }
 }
 ```
 
+**`where TOutput : class`:** Required by `GetResponseAsync<TOutput>()` in M.E.AI's structured output API.
+
 ### 2.2 PredictAsync Flow
 
-`PredictAsync` is the single execution path. No graph dispatch, no step executors — just prompt → call → parse.
+`PredictAsync` is the single execution path. No graph dispatch, no step executors — just prompt → call → parse → optional validate/retry.
 
 ```
  TInput
    │
    ▼
  ┌──────────────────────────────────────────────┐
- │ Source-gen PromptBuilder<TInput, TOutput>     │
+ │ MessageBuilder delegate (source-gen) or      │
+ │ BuildDefaultMessages fallback                │
  │  • System msg: Instructions + field schemas  │
  │  • Demo pairs: Demos → (User, Assistant)×N   │
- │  • Current: TInput fields → User msg         │
- │  Result: ChatMessage[]                       │
+ │  • Current: TInput → User msg               │
+ │  • If retry: append error feedback           │
+ │  Result: IList<ChatMessage>                  │
  └──────────────────┬───────────────────────────┘
                     ▼
  ┌──────────────────────────────────────────────┐
@@ -79,38 +87,114 @@ public class Predictor<TInput, TOutput>
  └──────────────────┬───────────────────────────┘
                     ▼
                  TOutput
+                    │
+            ┌───────┴───────┐
+            │  validate?    │
+            │  (if set)     │
+            └───────┬───────┘
+              pass? │ fail → retry with error feedback
+                    ▼
+               Return TOutput
 ```
 
 ```csharp
-public async Task<TOutput> PredictAsync(
+public virtual async Task<TOutput> PredictAsync(
     TInput input,
     Trace? trace = null,
+    Action<TOutput>? validate = null,
+    int maxRetries = 3,
     CancellationToken cancellationToken = default)
 {
-    // 1. Build prompt — source-generated, no reflection
-    var messages = PromptBuilder<TInput, TOutput>.Build(
-        Instructions, Demos, input);
+    string? lastError = null;
 
-    // 2. Call the model — M.E.AI handles structured output
-    var result = await _client.GetResponseAsync<TOutput>(
-        messages, Config, cancellationToken);
+    for (int attempt = 0; attempt <= maxRetries; attempt++)
+    {
+        var messages = BuildMessages(input, lastError);
 
-    // 3. Record trace entry (if tracing is active)
-    trace?.Record(Name, input, result);
+        var response = await _client.GetResponseAsync<TOutput>(
+            messages, Config, cancellationToken: cancellationToken);
 
-    return result;
+        var result = response.Result
+            ?? throw new InvalidOperationException(
+                $"Predictor '{Name}': structured output returned null.");
+
+        trace?.Record(Name, input!, result);
+
+        if (validate is null)
+            return result;
+
+        try
+        {
+            validate(result);
+            return result;
+        }
+        catch (LmpAssertionException ex)
+        {
+            lastError = ex.Message;
+        }
+    }
+
+    throw new LmpMaxRetriesExceededException(Name, maxRetries);
 }
 ```
 
 **Key decisions:**
 
 - **`GetResponseAsync<TOutput>()`** — not `GetResponseAsync()` + manual JSON parse. M.E.AI negotiates JSON schema with the provider (tool-use for Anthropic, `response_format` for OpenAI). No `OutputParser`, no `ExtractJson`, no regex fence stripping.
-- **`PromptBuilder<TInput, TOutput>`** — emitted by the source generator. Field names, types, and descriptions are baked in as string constants. No runtime reflection.
+- **`MessageBuilder` delegate** — set by source-generated interceptor code via `SetPromptBuilder()`. Field names, types, and descriptions are baked in as string constants. No runtime reflection. When `null`, falls back to `BuildDefaultMessages` which uses `ToString()` on inputs and `JsonSerializer` for demo outputs.
+- **`validate` parameter** — optional `Action<TOutput>` that throws `LmpAssertionException` on validation failure. The retry loop is built into `PredictAsync` — no external retry pattern needed.
 - **`ChatOptions`** — M.E.AI's native options type. No custom `PredictorConfig` wrapper.
+
+### 2.2.1 SetPromptBuilder / MessageBuilder — Source Gen Integration
+
+The source generator emits interceptor code that calls `SetPromptBuilder()` once per predictor, wiring a type-specific prompt formatting delegate:
+
+```csharp
+// Source-generated interceptor code (simplified):
+predictor.SetPromptBuilder((instructions, input, demos, lastError) =>
+{
+    var messages = new List<ChatMessage>();
+    // System message with instructions + field schemas
+    if (!string.IsNullOrEmpty(instructions))
+        messages.Add(new ChatMessage(ChatRole.System, instructions + "\n\n" + fieldSchemas));
+    // Demo pairs
+    foreach (var (demoInput, demoOutput) in demos ?? [])
+        // ... format input/output with field-level detail
+    // Current input with optional error feedback
+    return messages;
+});
+```
+
+**`SetPromptBuilder` API:**
+
+```csharp
+[EditorBrowsable(EditorBrowsableState.Never)]
+public void SetPromptBuilder(
+    Func<string, TInput, IReadOnlyList<(TInput Input, TOutput Output)>?,
+         string?, IList<ChatMessage>> builder)
+{
+    MessageBuilder ??= builder;  // Only sets if not already set
+}
+```
+
+The `??=` guard ensures the first call wins — if an optimizer or user sets a custom builder before the interceptor runs, it is preserved.
+
+When `MessageBuilder` is `null` (no source-gen), `BuildDefaultMessages` provides a simple fallback:
+
+```csharp
+protected virtual IList<ChatMessage> BuildMessages(TInput input, string? lastError)
+{
+    if (MessageBuilder is not null)
+        return MessageBuilder(Instructions, input, Demos, lastError);
+    return BuildDefaultMessages(input, lastError);
+}
+```
+
+The fallback uses `ToString()` for inputs and `JsonSerializer.Serialize(demoOutput, SerializerOptions)` for demo outputs — functional but less detailed than the source-generated version.
 
 ### 2.3 Prompt Format
 
-The source-generated `PromptBuilder<TInput, TOutput>` creates `ChatMessage[]` with this structure:
+The `MessageBuilder` delegate (source-generated) or `BuildDefaultMessages` fallback creates `IList<ChatMessage>` with this structure:
 
 ```
 System message:
@@ -130,22 +214,31 @@ Current input:
 
 ### 2.4 Trace Recording
 
-During execution, a `Trace` object captures every predictor invocation. Optimizers use these traces to select few-shot demos.
+During execution, a `Trace` object captures every predictor invocation. Optimizers use these traces to select few-shot demos. The trace is thread-safe: concurrent predictor calls (e.g., `BestOfN`) can record simultaneously.
 
 ```csharp
 public sealed class Trace
 {
     private readonly List<TraceEntry> _entries = [];
+    private readonly object _lock = new();
 
-    public IReadOnlyList<TraceEntry> Entries => _entries;
-
-    public void Record<TInput, TOutput>(
-        string predictorName, TInput input, TOutput output)
+    public IReadOnlyList<TraceEntry> Entries
     {
-        _entries.Add(new TraceEntry(
-            PredictorName: predictorName,
-            Input: input!,
-            Output: output!));
+        get
+        {
+            lock (_lock)
+            {
+                return _entries.ToList();
+            }
+        }
+    }
+
+    public void Record(string predictorName, object input, object output)
+    {
+        lock (_lock)
+        {
+            _entries.Add(new TraceEntry(predictorName, input, output));
+        }
     }
 }
 
@@ -155,18 +248,22 @@ public sealed record TraceEntry(
     object Output);
 ```
 
+- `Record` is non-generic — both `input` and `output` are boxed as `object`.
 - A `Trace` is created per top-level `ForwardAsync` call.
 - Each `PredictAsync` call appends one `TraceEntry`.
-- The optimizer collects traces from successful training examples and fills `predictor.Demos`.
+- The optimizer collects traces from successful training examples and fills `predictor.Demos` via `AddDemo(object input, object output)`.
 
 ### 2.5 Retry on LmpAssert Failure
 
-When `LmpAssert.That()` fails, the predictor re-invokes the LM with the assertion error message appended to the prompt. This is **backtracking** — the predictor retries itself, not an external repair step.
+When `LmpAssert.That()` fails inside a `validate` delegate, the predictor re-invokes the LM with the assertion error message appended to the prompt. This is **backtracking** — the predictor retries itself, not an external repair step.
+
+The retry loop is built into `PredictAsync` via the `validate` parameter:
 
 ```csharp
-public async Task<TOutput> PredictAsync(
+public virtual async Task<TOutput> PredictAsync(
     TInput input,
     Trace? trace = null,
+    Action<TOutput>? validate = null,
     int maxRetries = 3,
     CancellationToken cancellationToken = default)
 {
@@ -174,19 +271,23 @@ public async Task<TOutput> PredictAsync(
 
     for (int attempt = 0; attempt <= maxRetries; attempt++)
     {
-        var messages = PromptBuilder<TInput, TOutput>.Build(
-            Instructions, Demos, input, lastError);
+        var messages = BuildMessages(input, lastError);
 
-        var result = await _client.GetResponseAsync<TOutput>(
-            messages, Config, cancellationToken);
+        var response = await _client.GetResponseAsync<TOutput>(
+            messages, Config, cancellationToken: cancellationToken);
 
-        trace?.Record(Name, input, result);
+        var result = response.Result
+            ?? throw new InvalidOperationException(
+                $"Predictor '{Name}': structured output returned null.");
+
+        trace?.Record(Name, input!, result);
+
+        if (validate is null)
+            return result;
 
         try
         {
-            // LmpAssert.That() calls are in the caller's code (ForwardAsync),
-            // but PredictAsync itself handles the retry loop when called via
-            // the assertion-aware overload. See §6 for assertion mechanics.
+            validate(result);
             return result;
         }
         catch (LmpAssertionException ex)
@@ -200,7 +301,28 @@ public async Task<TOutput> PredictAsync(
 }
 ```
 
-> **How `lastError` reaches the prompt:** `PromptBuilder.Build()` accepts an optional `lastError` parameter. When non-null, it appends a feedback section to the final user message: `"Previous attempt failed: {lastError}. Try again."` This gives the LM context to self-correct.
+> **How `lastError` reaches the prompt:** `BuildMessages()` passes `lastError` to the `MessageBuilder` delegate (or `BuildDefaultMessages`). When non-null, it appends a feedback section to the final user message: `"Previous attempt failed: {lastError}. Try again."` This gives the LM context to self-correct.
+
+**Usage in `ForwardAsync`:**
+
+```csharp
+public override async Task<DraftReply> ForwardAsync(
+    TicketInput input, CancellationToken cancellationToken = default)
+{
+    var classification = await _classify.PredictAsync(
+        input, Trace,
+        validate: c => LmpAssert.That(c,
+            x => x.Urgency >= 1 && x.Urgency <= 5,
+            "Urgency must be between 1 and 5"),
+        maxRetries: 3,
+        cancellationToken: cancellationToken);
+
+    return await _draft.PredictAsync(
+        classification, Trace, cancellationToken: cancellationToken);
+}
+```
+
+When the `validate` delegate is `null`, no retry loop runs — `PredictAsync` returns the first result. When `validate` is provided and throws `LmpAssertionException`, the predictor retries with the error message in context. After `maxRetries` failures, `LmpMaxRetriesExceededException` is thrown.
 
 ### 2.6 Predictor Name
 
@@ -224,48 +346,53 @@ For standalone predictors (not inside a module), the name defaults to `$"{typeof
 
 The developer overrides `ForwardAsync()` with plain C# that chains predictors. There is no graph, no step registration, no edge declaration — just method calls.
 
+LMP provides two base classes:
+
+- **`LmpModule`** — untyped base with `ForwardAsync(object, CancellationToken)`
+- **`LmpModule<TInput, TOutput>`** — typed base with `ForwardAsync(TInput, CancellationToken)` that bridges to the untyped version automatically
+
 ```csharp
-public class TicketTriageModule : LmpModule
+public partial class TicketTriageModule : LmpModule<TicketInput, DraftReply>
 {
-    private readonly Predictor<TicketInput, ClassifyTicket> _classify;
-    private readonly Predictor<ClassifyTicket, DraftReply> _draft;
+    public TicketTriageModule(IChatClient client) { Client = client; }
 
-    public TicketTriageModule(IChatClient client)
-    {
-        _classify = new Predictor<TicketInput, ClassifyTicket>(client);
-        _draft = new Predictor<ClassifyTicket, DraftReply>(client);
-    }
+    [Predict]
+    public partial Task<ClassifyTicket> ClassifyAsync(TicketInput input);
 
-    public async Task<DraftReply> ForwardAsync(
+    [Predict]
+    public partial Task<DraftReply> DraftAsync(ClassifyTicket classification);
+
+    public override async Task<DraftReply> ForwardAsync(
         TicketInput input,
         CancellationToken cancellationToken = default)
     {
-        var classification = await _classify.PredictAsync(
-            input, Trace, cancellationToken: cancellationToken);
+        var classification = await ClassifyAsync(input);
 
         LmpAssert.That(classification,
             c => c.Urgency >= 1 && c.Urgency <= 5,
             "Urgency must be between 1 and 5");
 
-        return await _draft.PredictAsync(
-            classification, Trace, cancellationToken: cancellationToken);
+        return await DraftAsync(classification);
     }
 }
 ```
+
+> **`[Predict]` attribute:** Marks partial methods for source-generated predictor wiring. The generator emits backing `Predictor<TInput, TOutput>` fields that are lazily initialized from `LmpModule.Client`. No manual predictor construction needed. The containing class must be `partial`.
 
 **Execution model:** `ForwardAsync()` is plain `async/await`. Parallelism is `Task.WhenAll`. Branching is `if/else`. Loops are `for/while`. The C# compiler handles control flow — LMP does not reimplement it.
 
 ### 3.2 GetPredictors() — Source-Generator Emitted
 
-The source generator emits `GetPredictors()` to enumerate all `Predictor` fields. Optimizers call this to discover learnable parameters without reflection.
+The source generator emits `GetPredictors()` to enumerate all `Predictor` fields. Optimizers call this to discover learnable parameters without reflection. Returns a list of `(string Name, IPredictor Predictor)` tuples.
 
 ```csharp
 // Source-generated — emitted as a partial method on TicketTriageModule
-public override IReadOnlyList<IPredictor> GetPredictors()
+public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()
 {
-    _classify.Name = "classify";
-    _draft.Name = "draft";
-    return [_classify, _draft];
+    return [
+        ("ClassifyAsync", __predict_ClassifyAsync),
+        ("DraftAsync", __predict_DraftAsync)
+    ];
 }
 ```
 
@@ -278,62 +405,84 @@ public interface IPredictor
     string Instructions { get; set; }
     IList Demos { get; }
     ChatOptions Config { get; set; }
+
+    PredictorState GetState();
+    void LoadState(PredictorState state);
+    void AddDemo(object input, object output);
+    IPredictor Clone();
 }
 ```
 
-The non-generic `IPredictor` interface lets optimizers iterate over predictors without knowing `TInput`/`TOutput` at compile time. `Demos` is typed as `IList` — the concrete `List<Example<TInput, TOutput>>` satisfies this.
+The non-generic `IPredictor` interface lets optimizers iterate over predictors without knowing `TInput`/`TOutput` at compile time. `Demos` is typed as `IList` — the concrete `List<(TInput Input, TOutput Output)>` satisfies this. `AddDemo(object, object)` provides type-erased demo addition used by optimizers working with `Trace` entries. `Clone()` creates an independent copy with separate learnable state.
 
 ### 3.3 SaveAsync / LoadAsync — JSON State Persistence
 
-State persistence serializes each predictor's learnable parameters (instructions + demos) to JSON. The source generator emits a `JsonSerializerContext` so serialization is AOT-safe and reflection-free.
+State persistence serializes each predictor's learnable parameters (instructions + demos) to JSON. Uses `ModuleStateSerializerContext` (source-generated `JsonSerializerContext`) for AOT-safe, reflection-free serialization.
+
+**State types:**
 
 ```csharp
-// Source-generated JsonSerializerContext for the module
-[JsonSerializable(typeof(ModuleState<TicketTriageModule>))]
-[JsonSerializable(typeof(PredictorState<TicketInput, ClassifyTicket>))]
-[JsonSerializable(typeof(PredictorState<ClassifyTicket, DraftReply>))]
-internal partial class TicketTriageModuleJsonContext : JsonSerializerContext;
+public sealed record ModuleState
+{
+    public required string Version { get; init; }       // "1.0"
+    public required string Module { get; init; }        // Type name
+    public required Dictionary<string, PredictorState> Predictors { get; init; }
+}
+
+public sealed record PredictorState
+{
+    public required string Instructions { get; init; }
+    public required List<DemoEntry> Demos { get; init; }
+    public Dictionary<string, JsonElement>? Config { get; init; }
+}
+
+public sealed record DemoEntry
+{
+    public required Dictionary<string, JsonElement> Input { get; init; }
+    public required Dictionary<string, JsonElement> Output { get; init; }
+}
 ```
 
-**SaveAsync:**
+**SaveAsync (atomic write: temp file → rename):**
 
 ```csharp
-public async Task SaveAsync(string path, CancellationToken cancellationToken = default)
+public virtual async Task SaveAsync(string path, CancellationToken cancellationToken = default)
 {
     var state = new ModuleState
     {
+        Version = "1.0",
+        Module = GetType().Name,
         Predictors = GetPredictors().ToDictionary(
             p => p.Name,
-            p => new PredictorState
-            {
-                Instructions = p.Instructions,
-                Demos = p.Demos
-            })
+            p => p.Predictor.GetState())
     };
 
-    await using var stream = File.Create(path);
-    await JsonSerializer.SerializeAsync(stream, state,
-        GeneratedJsonContext.Default.ModuleState, cancellationToken);
+    byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+        state, ModuleStateSerializerContext.Default.ModuleState);
+
+    string tempPath = path + ".tmp";
+    await File.WriteAllBytesAsync(tempPath, json, cancellationToken);
+    File.Move(tempPath, path, overwrite: true);
 }
 ```
 
 **LoadAsync:**
 
 ```csharp
-public async Task LoadAsync(string path, CancellationToken cancellationToken = default)
+public virtual async Task LoadAsync(string path, CancellationToken cancellationToken = default)
 {
-    await using var stream = File.OpenRead(path);
-    var state = await JsonSerializer.DeserializeAsync(stream,
-        GeneratedJsonContext.Default.ModuleState, cancellationToken)
-        ?? throw new InvalidOperationException("Deserialized null state.");
+    byte[] bytes = await File.ReadAllBytesAsync(path, cancellationToken);
 
-    foreach (var predictor in GetPredictors())
+    var state = JsonSerializer.Deserialize(
+        bytes, ModuleStateSerializerContext.Default.ModuleState)
+        ?? throw new InvalidOperationException(
+            $"Failed to deserialize module state from '{path}'.");
+
+    foreach (var (name, predictor) in GetPredictors())
     {
-        if (state.Predictors.TryGetValue(predictor.Name, out var ps))
+        if (state.Predictors.TryGetValue(name, out var predictorState))
         {
-            predictor.Instructions = ps.Instructions;
-            // Demos are set via reflection-free source-gen helper
-            predictor.LoadDemos(ps.Demos);
+            predictor.LoadState(predictorState);
         }
     }
 }
@@ -343,19 +492,23 @@ public async Task LoadAsync(string path, CancellationToken cancellationToken = d
 
 ```json
 {
-  "predictors": {
-    "classify": {
-      "instructions": "Classify a support ticket by category and urgency",
-      "demos": [
+  "Version": "1.0",
+  "Module": "TicketTriageModule",
+  "Predictors": {
+    "ClassifyAsync": {
+      "Instructions": "Classify a support ticket by category and urgency",
+      "Demos": [
         {
-          "input": { "ticketText": "I was charged twice" },
-          "output": { "category": "billing", "urgency": 4 }
+          "Input": { "ticketText": "I was charged twice" },
+          "Output": { "category": "billing", "urgency": 4 }
         }
-      ]
+      ],
+      "Config": null
     },
-    "draft": {
-      "instructions": "Draft a helpful reply to the customer",
-      "demos": []
+    "DraftAsync": {
+      "Instructions": "Draft a helpful reply to the customer",
+      "Demos": [],
+      "Config": null
     }
   }
 }
@@ -368,9 +521,28 @@ public async Task LoadAsync(string path, CancellationToken cancellationToken = d
 ```csharp
 public abstract class LmpModule
 {
+    protected IChatClient? Client { get; set; }
     public Trace? Trace { get; set; }
 
-    public abstract IReadOnlyList<IPredictor> GetPredictors();
+    public abstract Task<object> ForwardAsync(
+        object input, CancellationToken cancellationToken = default);
+
+    public virtual IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => [];
+
+    public TModule Clone<TModule>() where TModule : LmpModule;
+    public virtual Task SaveAsync(string path, CancellationToken ct = default);
+    public virtual Task LoadAsync(string path, CancellationToken ct = default);
+}
+
+public abstract class LmpModule<TInput, TOutput> : LmpModule
+{
+    public abstract Task<TOutput> ForwardAsync(
+        TInput input, CancellationToken cancellationToken = default);
+
+    // Sealed bridge: routes untyped ForwardAsync to the typed overload
+    public sealed override async Task<object> ForwardAsync(
+        object input, CancellationToken cancellationToken = default)
+        => (object)(await ForwardAsync((TInput)input, cancellationToken))!;
 }
 ```
 
@@ -382,97 +554,118 @@ Reasoning strategies are thin wrappers around `Predictor<TInput, TOutput>`. Each
 
 ### 4.1 ChainOfThought\<TInput, TOutput\>
 
-Asks the LM to produce step-by-step reasoning before the final answer.
+Asks the LM to produce step-by-step reasoning before the final answer. Extends `Predictor<TInput, TOutput>` and overrides `PredictAsync` to call the LM with a `ChainOfThoughtResult<TOutput>` wrapper type.
 
-**Mechanism:** The source generator creates an **extended output type** at build time that prepends a `Reasoning` field to `TOutput`:
+**Mechanism:** The generic `ChainOfThoughtResult<TOutput>` wrapper prepends a `Reasoning` field:
 
 ```csharp
-// Source-generated at build time
-internal record ChainOfThoughtOutput<TOutput>(
-    [property: Description("Step-by-step reasoning")]
-    string Reasoning,
-    TOutput Result);
+public sealed class ChainOfThoughtResult<TOutput> where TOutput : class
+{
+    [Description("Think step by step to work toward the answer")]
+    [JsonPropertyOrder(-1)]
+    public required string Reasoning { get; init; }
+
+    public required TOutput Result { get; init; }
+}
 ```
 
-At runtime, `ChainOfThought` wraps an inner predictor that targets the extended type:
+At runtime, `ChainOfThought` inherits from `Predictor<TInput, TOutput>` and overrides `PredictAsync`:
 
 ```csharp
-public class ChainOfThought<TInput, TOutput>
+public class ChainOfThought<TInput, TOutput> : Predictor<TInput, TOutput>
+    where TOutput : class
 {
-    private readonly Predictor<TInput, ChainOfThoughtOutput<TOutput>> _inner;
+    private readonly IChatClient _chatClient;
 
-    public ChainOfThought(IChatClient client)
+    public ChainOfThought(IChatClient client) : base(client)
     {
-        _inner = new Predictor<TInput, ChainOfThoughtOutput<TOutput>>(client);
+        _chatClient = client;
     }
 
-    public async Task<TOutput> PredictAsync(
+    public override async Task<TOutput> PredictAsync(
         TInput input,
         Trace? trace = null,
+        Action<TOutput>? validate = null,
+        int maxRetries = 3,
         CancellationToken cancellationToken = default)
     {
-        var extended = await _inner.PredictAsync(
-            input, trace, cancellationToken: cancellationToken);
+        string? lastError = null;
 
-        // Reasoning is captured in the trace via the inner predictor.
-        // Only the final TOutput is returned to the caller.
-        return extended.Result;
-    }
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
+        {
+            var messages = BuildCoTMessages(input, lastError);
 
-    // Delegate learnable state to inner predictor
-    public string Instructions
-    {
-        get => _inner.Instructions;
-        set => _inner.Instructions = value;
-    }
+            var response = await _chatClient
+                .GetResponseAsync<ChainOfThoughtResult<TOutput>>(
+                    messages, Config, cancellationToken: cancellationToken);
 
-    public List<Example<TInput, ChainOfThoughtOutput<TOutput>>> Demos
-    {
-        get => _inner.Demos;
-        set => _inner.Demos = value;
+            var extended = response.Result ?? throw new InvalidOperationException(
+                $"ChainOfThought '{Name}': structured output returned null.");
+            var result = extended.Result ?? throw new InvalidOperationException(
+                $"ChainOfThought '{Name}': Result field was null.");
+
+            // Record unwrapped TOutput (not wrapper) — avoids InvalidCastException
+            // when optimizers call AddDemo(input, output) casting to TOutput.
+            trace?.Record(Name, input!, result);
+
+            if (validate is null) return result;
+
+            try { validate(result); return result; }
+            catch (LmpAssertionException ex) { lastError = ex.Message; }
+        }
+
+        throw new LmpMaxRetriesExceededException(Name, maxRetries);
     }
 }
 ```
 
-**Key detail:** The caller gets `TOutput`. The reasoning is captured in the trace (via the inner predictor's `Record` call) and available to optimizers, but it does not leak into the caller's type system.
+**Key detail:** The caller gets `TOutput`. The reasoning is captured in the LM call but only the unwrapped `TOutput` is recorded in the trace. This is critical for optimizer compatibility — `AddDemo` casts to `TOutput`, not `ChainOfThoughtResult<TOutput>`.
+
+**CoT instruction injection:** `BuildCoTMessages` calls the base `BuildMessages`, then appends `"Let's think step by step."` to the system message.
 
 ### 4.2 BestOfN\<TInput, TOutput\>
 
-Runs N parallel predictions and returns the one that scores highest on a reward function.
+Runs N parallel predictions and returns the one that scores highest on a reward function. Inherits from `Predictor<TInput, TOutput>` — all N predictions share the same learnable state (Instructions, Demos, Config).
 
 ```csharp
-public class BestOfN<TInput, TOutput>
+public class BestOfN<TInput, TOutput> : Predictor<TInput, TOutput>
+    where TOutput : class
 {
-    private readonly Predictor<TInput, TOutput> _predictor;
     private readonly int _n;
     private readonly Func<TInput, TOutput, float> _reward;
 
-    public BestOfN(
-        IChatClient client,
-        int n,
-        Func<TInput, TOutput, float> reward)
+    public BestOfN(IChatClient client, int n, Func<TInput, TOutput, float> reward)
+        : base(client)
     {
-        _predictor = new Predictor<TInput, TOutput>(client);
+        ArgumentOutOfRangeException.ThrowIfLessThan(n, 1);
+        ArgumentNullException.ThrowIfNull(reward);
         _n = n;
         _reward = reward;
     }
 
-    public async Task<TOutput> PredictAsync(
+    public int N => _n;
+
+    public override async Task<TOutput> PredictAsync(
         TInput input,
         Trace? trace = null,
+        Action<TOutput>? validate = null,
+        int maxRetries = 3,
         CancellationToken cancellationToken = default)
     {
         // True parallelism — no GIL. Each prediction runs concurrently.
         var tasks = Enumerable.Range(0, _n)
-            .Select(_ => _predictor.PredictAsync(
+            .Select(_ => base.PredictAsync(
                 input, trace, cancellationToken: cancellationToken));
 
         var candidates = await Task.WhenAll(tasks);
 
         // Score each candidate and return the best
-        return candidates
+        var best = candidates
             .OrderByDescending(c => _reward(input, c))
             .First();
+
+        validate?.Invoke(best);
+        return best;
     }
 }
 ```
@@ -481,33 +674,37 @@ public class BestOfN<TInput, TOutput>
 
 ### 4.3 Refine\<TInput, TOutput\>
 
-Iterative improvement loop: predict → LM-generated critique → predict again with critique context.
+Iterative improvement loop: predict → send to refiner with original input and previous output → repeat. Inherits from `Predictor<TInput, TOutput>` — the initial prediction uses the base predictor's state.
 
 ```csharp
-public class Refine<TInput, TOutput>
+public class Refine<TInput, TOutput> : Predictor<TInput, TOutput>
+    where TOutput : class
 {
-    private readonly Predictor<TInput, TOutput> _predictor;
     private readonly Predictor<RefineCritiqueInput<TOutput>, TOutput> _refiner;
     private readonly int _maxIterations;
 
-    public Refine(IChatClient client, int maxIterations = 2)
+    public Refine(IChatClient client, int maxIterations = 2) : base(client)
     {
-        _predictor = new Predictor<TInput, TOutput>(client);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxIterations, 1);
+        _maxIterations = maxIterations;
         _refiner = new Predictor<RefineCritiqueInput<TOutput>, TOutput>(client)
         {
             Instructions = "Given the original input, a previous attempt, " +
                            "and a critique, produce an improved output."
         };
-        _maxIterations = maxIterations;
     }
 
-    public async Task<TOutput> PredictAsync(
+    public int MaxIterations => _maxIterations;
+
+    public override async Task<TOutput> PredictAsync(
         TInput input,
         Trace? trace = null,
+        Action<TOutput>? validate = null,
+        int maxRetries = 3,
         CancellationToken cancellationToken = default)
     {
-        // Initial prediction
-        var current = await _predictor.PredictAsync(
+        // Initial prediction using the base predictor
+        var current = await base.PredictAsync(
             input, trace, cancellationToken: cancellationToken);
 
         for (int i = 0; i < _maxIterations; i++)
@@ -520,13 +717,14 @@ public class Refine<TInput, TOutput>
                 critiqueInput, trace, cancellationToken: cancellationToken);
         }
 
+        validate?.Invoke(current);
         return current;
     }
 }
 
 public record RefineCritiqueInput<TOutput>(
-    [Description("The original input")] object OriginalInput,
-    [Description("The previous attempt to improve upon")] TOutput PreviousOutput);
+    [property: Description("The original input")] object OriginalInput,
+    [property: Description("The previous attempt to improve upon")] TOutput PreviousOutput);
 ```
 
 **Design:** Each refinement iteration is a separate `PredictAsync` call recorded in the trace. The optimizer can see the full refinement chain and learn which critique patterns improve output quality.
@@ -555,68 +753,80 @@ public record RefineCritiqueInput<TOutput>(
 
 ### 5.2 Implementation
 
+`ReActAgent<TInput, TOutput>` inherits from `Predictor<TInput, TOutput>` and wraps the provided `IChatClient` with `FunctionInvokingChatClient` for automatic tool dispatch:
+
 ```csharp
-public class ReActAgent<TInput, TOutput>
+public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
+    where TOutput : class
 {
-    private readonly IChatClient _client;
-    private readonly IList<AIFunction> _tools;
+    private readonly IChatClient _wrappedClient;
+    private readonly IReadOnlyList<AIFunction> _tools;
     private readonly int _maxSteps;
-    private readonly ChatOptions _config;
-    private readonly string _instructions;
 
     public ReActAgent(
         IChatClient client,
-        IList<AIFunction> tools,
-        int maxSteps = 10)
+        IEnumerable<AIFunction> tools,
+        int maxSteps = 5) : base(client)
     {
-        // Wrap with FunctionInvokingChatClient for automatic tool dispatch
-        _client = new ChatClientBuilder(client)
-            .UseFunctionInvocation()
-            .Build();
-        _tools = tools;
+        ArgumentNullException.ThrowIfNull(tools);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxSteps, 1);
+
+        _tools = tools.ToList();
         _maxSteps = maxSteps;
-        _instructions = PromptBuilder<TInput, TOutput>.DefaultInstructions;
-        _config = new ChatOptions();
+        _wrappedClient = new FunctionInvokingChatClient(client)
+        {
+            MaximumIterationsPerRequest = maxSteps
+        };
     }
 
-    public string Instructions
-    {
-        get => _instructions;
-        init => _instructions = value;
-    }
+    public int MaxSteps => _maxSteps;
+    public IReadOnlyList<AIFunction> Tools => _tools;
 
-    public async Task<TOutput> PredictAsync(
+    public override async Task<TOutput> PredictAsync(
         TInput input,
         Trace? trace = null,
+        Action<TOutput>? validate = null,
+        int maxRetries = 3,
         CancellationToken cancellationToken = default)
     {
-        var messages = new List<ChatMessage>
+        string? lastError = null;
+
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
-            new(ChatRole.System, _instructions),
-            new(ChatRole.User,
-                PromptBuilder<TInput, TOutput>.FormatInput(input))
-        };
+            var messages = BuildAgentMessages(input, lastError);
 
-        var options = new ChatOptions
-        {
-            Tools = [.. _tools],
-            Temperature = _config.Temperature,
-            MaxOutputTokens = _config.MaxOutputTokens
-        };
+            var options = new ChatOptions
+            {
+                Tools = [.. _tools],
+                Temperature = Config.Temperature,
+                MaxOutputTokens = Config.MaxOutputTokens,
+                TopP = Config.TopP,
+                FrequencyPenalty = Config.FrequencyPenalty,
+                PresencePenalty = Config.PresencePenalty,
+                ModelId = Config.ModelId,
+            };
 
-        // The agent loop — FunctionInvokingChatClient handles
-        // Think → Act → Observe internally. Each call to
-        // GetResponseAsync may trigger multiple tool invocations
-        // before the LM produces a final text response.
-        var response = await _client.GetResponseAsync<TOutput>(
-            messages, options, cancellationToken);
+            var response = await _wrappedClient.GetResponseAsync<TOutput>(
+                messages, options, cancellationToken: cancellationToken);
 
-        trace?.Record("react-agent", input, response);
+            var result = response.Result
+                ?? throw new InvalidOperationException(
+                    $"ReActAgent '{Name}': structured output returned null.");
 
-        return response;
+            trace?.Record(Name, input!, result);
+
+            if (validate is null) return result;
+
+            try { validate(result); return result; }
+            catch (LmpAssertionException ex) { lastError = ex.Message; }
+        }
+
+        throw new LmpMaxRetriesExceededException(Name, maxRetries);
     }
 }
 ```
+
+**Key design:** `FunctionInvokingChatClient` wraps the chat client with `MaximumIterationsPerRequest` set to `maxSteps`. The middleware handles the Think → Act → Observe loop internally. `BuildAgentMessages` appends a ReAct instruction to the system message built by the base class.
 
 ### 5.3 Tool Registration
 
@@ -664,11 +874,12 @@ public static class LmpAssert
     public static void That<T>(
         T result,
         Func<T, bool> predicate,
-        string message)
+        string? message = null)
     {
         if (!predicate(result))
         {
-            throw new LmpAssertionException(message, result);
+            throw new LmpAssertionException(
+                message ?? "LMP assertion failed.", result);
         }
     }
 }
@@ -683,83 +894,65 @@ public class LmpAssertionException : Exception
         FailedResult = failedResult;
     }
 }
+
+public class LmpMaxRetriesExceededException : Exception
+{
+    public string PredictorName { get; }
+    public int MaxRetries { get; }
+
+    public LmpMaxRetriesExceededException(string predictorName, int maxRetries)
+        : base($"Predictor '{predictorName}' exceeded {maxRetries} retries.")
+    {
+        PredictorName = predictorName;
+        MaxRetries = maxRetries;
+    }
+}
 ```
 
-**Retry mechanism:** The caller wraps the predict + assert in a retry loop:
+**Retry mechanism:** The retry loop is built into `PredictAsync` via the `validate` parameter — not an external loop. The developer passes assertions as a delegate:
 
 ```csharp
-public async Task<DraftReply> ForwardAsync(TicketInput input,
-    CancellationToken cancellationToken = default)
+public override async Task<DraftReply> ForwardAsync(
+    TicketInput input, CancellationToken cancellationToken = default)
 {
     var classification = await _classify.PredictAsync(
-        input, Trace, cancellationToken: cancellationToken);
-
-    // If this fails, the exception propagates. The developer can
-    // wrap in a retry loop, or use the assertion-aware PredictAsync overload.
-    LmpAssert.That(classification,
-        c => c.Urgency >= 1 && c.Urgency <= 5,
-        "Urgency must be between 1 and 5");
+        input, Trace,
+        validate: c => LmpAssert.That(c,
+            x => x.Urgency >= 1 && x.Urgency <= 5,
+            "Urgency must be between 1 and 5"),
+        cancellationToken: cancellationToken);
 
     return await _draft.PredictAsync(
         classification, Trace, cancellationToken: cancellationToken);
 }
 ```
 
-For automatic retry, the developer uses the retry-aware pattern:
+Alternatively, assertions can be placed after `PredictAsync` for cases where you want the exception to propagate to the caller:
 
 ```csharp
-public async Task<DraftReply> ForwardAsync(TicketInput input,
-    CancellationToken cancellationToken = default)
-{
-    ClassifyTicket classification = default!;
-    string? lastError = null;
+var classification = await _classify.PredictAsync(input, Trace,
+    cancellationToken: cancellationToken);
 
-    for (int attempt = 0; attempt < 3; attempt++)
-    {
-        classification = await _classify.PredictAsync(
-            input, Trace, lastError: lastError,
-            cancellationToken: cancellationToken);
+// Throws LmpAssertionException if the check fails — does NOT retry
+LmpAssert.That(classification,
+    c => c.Urgency >= 1 && c.Urgency <= 5,
+    "Urgency must be between 1 and 5");
 
-        try
-        {
-            LmpAssert.That(classification,
-                c => c.Urgency >= 1 && c.Urgency <= 5,
-                "Urgency must be between 1 and 5");
-            break; // Assertion passed
-        }
-        catch (LmpAssertionException ex)
-        {
-            lastError = ex.Message;
-        }
-    }
-
-    return await _draft.PredictAsync(
-        classification, Trace, cancellationToken: cancellationToken);
-}
+return await _draft.PredictAsync(classification, Trace,
+    cancellationToken: cancellationToken);
 ```
 
-**Why explicit loops, not magic?** The retry loop is visible C# code. The developer controls retry count, which predictors are retried, and whether to backtrack to an earlier predictor. No hidden `with_assertions()` decorator — the control flow is in `ForwardAsync` where the developer can see and debug it.
-
-### 6.2 LmpSuggest — Fail → Log Warning, Continue
+### 6.2 LmpSuggest — Fail → Return False, Continue
 
 ```csharp
 public static class LmpSuggest
 {
-    private static readonly ILogger Logger =
-        LoggerFactory.Create(b => b.AddConsole())
-            .CreateLogger(nameof(LmpSuggest));
-
-    public static void That<T>(
+    public static bool That<T>(
         T result,
         Func<T, bool> predicate,
-        string message)
+        string? message = null)
     {
-        if (!predicate(result))
-        {
-            Logger.LogWarning(
-                "LmpSuggest failed: {Message}. Result: {Result}",
-                message, result);
-        }
+        return predicate(result);
     }
 }
 ```
@@ -769,22 +962,22 @@ public static class LmpSuggest
 ```csharp
 var classification = await _classify.PredictAsync(input, Trace);
 
-// Soft check — logs warning if category is "unknown", but continues
-LmpSuggest.That(classification,
+// Soft check — returns false if category is "unknown", but continues
+bool categoryOk = LmpSuggest.That(classification,
     c => c.Category != "unknown",
     "Category should not be 'unknown'");
 
 return await _draft.PredictAsync(classification, Trace);
 ```
 
-**Design:** `LmpSuggest` never throws. It logs a structured warning via `ILogger`. During optimization, the optimizer can read these warnings from the logging pipeline and use them as soft signals for candidate ranking.
+**Design:** `LmpSuggest` never throws. It returns a `bool` indicating whether the predicate passed. The caller can inspect the result or ignore it. During optimization, the optimizer can check suggest outcomes as soft signals for candidate ranking.
 
 ### 6.3 Assertion Summary
 
 | Type | On Failure | Use Case |
 |---|---|---|
-| `LmpAssert.That()` | Throws `LmpAssertionException` → retry with feedback | Hard constraints: valid ranges, required formats |
-| `LmpSuggest.That()` | Logs warning via `ILogger`, continues | Soft preferences: style guidelines, optional fields |
+| `LmpAssert.That()` | Throws `LmpAssertionException` → retry with feedback (when used via `validate` param) | Hard constraints: valid ranges, required formats |
+| `LmpSuggest.That()` | Returns `false`, continues | Soft preferences: style guidelines, optional fields |
 
 ---
 
@@ -917,10 +1110,19 @@ Retry, circuit breaker, and rate limiting are middleware concerns — not runtim
 
 public abstract class LmpModule
 {
+    protected IChatClient? Client { get; set; }
     public Trace? Trace { get; set; }
-    public abstract IReadOnlyList<IPredictor> GetPredictors();
-    public abstract Task SaveAsync(string path, CancellationToken ct = default);
-    public abstract Task LoadAsync(string path, CancellationToken ct = default);
+    public virtual IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => [];
+    public abstract Task<object> ForwardAsync(object input, CancellationToken ct = default);
+    public TModule Clone<TModule>() where TModule : LmpModule;
+    public virtual Task SaveAsync(string path, CancellationToken ct = default);
+    public virtual Task LoadAsync(string path, CancellationToken ct = default);
+}
+
+public abstract class LmpModule<TInput, TOutput> : LmpModule
+{
+    public abstract Task<TOutput> ForwardAsync(TInput input, CancellationToken ct = default);
+    // Sealed bridge to untyped ForwardAsync
 }
 
 public interface IPredictor
@@ -929,12 +1131,35 @@ public interface IPredictor
     string Instructions { get; set; }
     IList Demos { get; }
     ChatOptions Config { get; set; }
+    PredictorState GetState();
+    void LoadState(PredictorState state);
+    void AddDemo(object input, object output);
+    IPredictor Clone();
+}
+
+public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+{
+    public IChatClient Client { get; }
+    public string Name { get; set; }
+    public string Instructions { get; set; }
+    public List<(TInput Input, TOutput Output)> Demos { get; set; }
+    public ChatOptions Config { get; set; }
+    public JsonSerializerOptions? SerializerOptions { get; set; }
+
+    public virtual Task<TOutput> PredictAsync(
+        TInput input, Trace? trace = null,
+        Action<TOutput>? validate = null, int maxRetries = 3,
+        CancellationToken cancellationToken = default);
+
+    public void SetPromptBuilder(
+        Func<string, TInput, IReadOnlyList<(TInput, TOutput)>?,
+             string?, IList<ChatMessage>> builder);
 }
 
 public sealed class Trace
 {
     public IReadOnlyList<TraceEntry> Entries { get; }
-    public void Record<TInput, TOutput>(string name, TInput input, TOutput output);
+    public void Record(string name, object input, object output);
 }
 
 public sealed record TraceEntry(
@@ -942,9 +1167,17 @@ public sealed record TraceEntry(
     object Input,
     object Output);
 
-public sealed record Example<TInput, TOutput>(
-    TInput Input,
-    TOutput Output);
+// === Examples (training/validation data) ===
+
+public abstract record Example
+{
+    public abstract object WithInputs();
+    public abstract object GetLabel();
+    public static IReadOnlyList<Example<TInput, TLabel>>
+        LoadFromJsonl<TInput, TLabel>(string path, JsonSerializerOptions? options = null);
+}
+
+public sealed record Example<TInput, TLabel>(TInput Input, TLabel Label) : Example;
 
 // === Retrieval ===
 
@@ -958,12 +1191,12 @@ public interface IRetriever
 
 public static class LmpAssert
 {
-    public static void That<T>(T result, Func<T, bool> predicate, string message);
+    public static void That<T>(T result, Func<T, bool> predicate, string? message = null);
 }
 
 public static class LmpSuggest
 {
-    public static void That<T>(T result, Func<T, bool> predicate, string message);
+    public static bool That<T>(T result, Func<T, bool> predicate, string? message = null);
 }
 
 public class LmpAssertionException(string message, object? failedResult)
@@ -973,18 +1206,72 @@ public class LmpAssertionException(string message, object? failedResult)
 }
 
 public class LmpMaxRetriesExceededException(string predictorName, int maxRetries)
-    : Exception($"Predictor '{predictorName}' failed after {maxRetries} retries.");
+    : Exception($"Predictor '{predictorName}' exceeded {maxRetries} retries.")
+{
+    public string PredictorName { get; } = predictorName;
+    public int MaxRetries { get; } = maxRetries;
+}
 
 // === State persistence ===
 
-public record ModuleState
+public sealed record ModuleState
 {
-    public Dictionary<string, PredictorState> Predictors { get; init; } = new();
+    public required string Version { get; init; }
+    public required string Module { get; init; }
+    public required Dictionary<string, PredictorState> Predictors { get; init; }
 }
 
-public record PredictorState
+public sealed record PredictorState
 {
-    public string Instructions { get; init; } = "";
-    public IList Demos { get; init; } = new List<object>();
+    public required string Instructions { get; init; }
+    public required List<DemoEntry> Demos { get; init; }
+    public Dictionary<string, JsonElement>? Config { get; init; }
 }
+
+public sealed record DemoEntry
+{
+    public required Dictionary<string, JsonElement> Input { get; init; }
+    public required Dictionary<string, JsonElement> Output { get; init; }
+}
+
+// === Evaluation ===
+
+public static class Evaluator
+{
+    // Untyped (base)
+    public static Task<EvaluationResult> EvaluateAsync<TModule>(
+        TModule module, IReadOnlyList<Example> devSet,
+        Func<Example, object, float> metric,
+        int maxConcurrency = 4, CancellationToken ct = default)
+        where TModule : LmpModule;
+
+    // Typed (float metric)
+    public static Task<EvaluationResult> EvaluateAsync<TInput, TPredicted, TExpected>(
+        LmpModule<TInput, TPredicted> module,
+        IReadOnlyList<Example<TInput, TExpected>> devSet,
+        Func<TPredicted, TExpected, float> metric,
+        int maxConcurrency = 4, CancellationToken ct = default);
+
+    // Typed (bool metric → 0/1)
+    public static Task<EvaluationResult> EvaluateAsync<TInput, TPredicted, TExpected>(
+        LmpModule<TInput, TPredicted> module,
+        IReadOnlyList<Example<TInput, TExpected>> devSet,
+        Func<TPredicted, TExpected, bool> metric,
+        int maxConcurrency = 4, CancellationToken ct = default);
+
+    // Async overloads for LLM-as-judge metrics
+    public static Task<EvaluationResult> EvaluateAsync<TModule>(
+        TModule module, IReadOnlyList<Example> devSet,
+        Func<Example, object, Task<float>> metric,
+        int maxConcurrency = 4, CancellationToken ct = default)
+        where TModule : LmpModule;
+}
+
+// Uses System.Numerics.Tensors.TensorPrimitives for Average/Min/Max aggregation.
+
+public sealed record EvaluationResult(
+    IReadOnlyList<ExampleResult> PerExample,
+    float AverageScore, float MinScore, float MaxScore, int Count);
+
+public sealed record ExampleResult(Example Example, object Output, float Score);
 ```
