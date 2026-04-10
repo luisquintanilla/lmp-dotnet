@@ -1,9 +1,6 @@
-using Azure.AI.OpenAI;
-using Azure.Identity;
 using LMP;
 using LMP.Samples.AutoOptimize;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
 
 // ──────────────────────────────────────────────────────────────
 // LMP Auto-Optimize — End-to-End Sample
@@ -16,29 +13,15 @@ using Microsoft.Extensions.Configuration;
 //   5. Predictor has instructions + demos without explicit LoadState call
 //
 // To optimize:
-//   dotnet lmp auto-optimize --project samples/LMP.Samples.AutoOptimize/LMP.Samples.AutoOptimize.csproj
+//   dotnet build -p:LmpAutoOptimize=true
 //
 // Setup (one-time):
 //   dotnet user-secrets set "AzureOpenAI:Endpoint" "https://YOUR.openai.azure.com/"
 //   dotnet user-secrets set "AzureOpenAI:Deployment" "gpt-4o-mini"
 // ──────────────────────────────────────────────────────────────
 
-var config = new ConfigurationBuilder()
-    .AddUserSecrets<QAModule>()
-    .Build();
-
-string endpoint = config["AzureOpenAI:Endpoint"]
-    ?? throw new InvalidOperationException(
-        "Set AzureOpenAI:Endpoint: dotnet user-secrets set \"AzureOpenAI:Endpoint\" \"https://YOUR.openai.azure.com/\"");
-
-string deployment = config["AzureOpenAI:Deployment"]
-    ?? throw new InvalidOperationException(
-        "Set AzureOpenAI:Deployment: dotnet user-secrets set \"AzureOpenAI:Deployment\" \"gpt-4o-mini\"");
-
-IChatClient client = new AzureOpenAIClient(
-        new Uri(endpoint), new DefaultAzureCredential())
-    .GetChatClient(deployment)
-    .AsIChatClient();
+// Same factory the CLI uses — DRY, one definition in QAModule.CreateClient()
+IChatClient client = QAModule.CreateClient();
 
 Console.WriteLine("╔══════════════════════════════════════════════╗");
 Console.WriteLine("║   LMP Auto-Optimize E2E Sample              ║");

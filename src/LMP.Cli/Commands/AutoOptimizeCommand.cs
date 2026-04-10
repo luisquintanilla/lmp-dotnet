@@ -153,15 +153,15 @@ internal static class AutoOptimizeCommand
         }
         else
         {
-            // No ILmpRunner found — try auto-wiring from [AutoOptimize] + user secrets
-            await Console.Error.WriteLineAsync("No ILmpRunner found. Auto-wiring from [AutoOptimize] + user secrets...");
-            var (autoRunner, autoError) = AutoWireRunner.TryCreate(buildResult.OutputAssembly, project);
-            if (autoRunner is null)
+            // No ILmpRunner found — try convention-based discovery (static CreateClient())
+            await Console.Error.WriteLineAsync("No ILmpRunner found. Discovering via conventions (static CreateClient())...");
+            var (conventionRunner, conventionError) = ConventionRunner.TryCreate(buildResult.OutputAssembly);
+            if (conventionRunner is null)
             {
-                await Console.Error.WriteLineAsync($"ERROR [discovery] {autoError}");
+                await Console.Error.WriteLineAsync($"ERROR [discovery] {conventionError}");
                 return Program.ExitCodes.ProjectNotFound;
             }
-            runner = autoRunner;
+            runner = conventionRunner;
         }
 
         // Step 4: Check staleness (skip if up-to-date unless --force)

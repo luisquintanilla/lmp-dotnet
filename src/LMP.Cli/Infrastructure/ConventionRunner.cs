@@ -1,61 +1,59 @@
 using System.Reflection;
 using System.Text.Json;
-using Azure.AI.OpenAI;
-using Azure.Identity;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
 
 namespace LMP.Cli.Infrastructure;
 
 /// <summary>
-/// A reflection-based <see cref="ILmpRunner"/> that eliminates the need for a
-/// hand-written CliRunner in the user's project. When no explicit <c>ILmpRunner</c>
-/// is found, the CLI falls back to this auto-wired runner.
+/// Convention-based <see cref="ILmpRunner"/> that discovers client and metric
+/// from static methods on the <c>[AutoOptimize]</c> module type.
 /// </summary>
 /// <remarks>
-/// Auto-wiring discovers:
+/// <para>
+/// Modeled after EF Core's <c>IDesignTimeDbContextFactory&lt;T&gt;</c> pattern:
+/// the user provides a well-known factory method and the tooling discovers it
+/// via reflection. The CLI remains provider-agnostic — no Azure, Ollama, or
+/// other provider packages required.
+/// </para>
+/// <para>Discovery conventions:</para>
 /// <list type="bullet">
-///   <item><b>Module:</b> The first <see cref="LmpModule"/> subclass with <c>[AutoOptimize]</c>.
-///   Its constructor must accept <see cref="IChatClient"/>.</item>
-///   <item><b>Client:</b> Created from user secrets (<c>AzureOpenAI:Endpoint</c>,
-///   <c>AzureOpenAI:Deployment</c>) using <see cref="DefaultAzureCredential"/>.
-///   <c>LMP_MODEL</c> env var overrides deployment name.</item>
-///   <item><b>Metric:</b> Discovered via: (1) static <c>Score(TOutput, TOutput) → float</c>
-///   on the module type, (2) default keyword overlap metric on string properties.</item>
+///   <item><b>Client:</b> <c>public static IChatClient CreateClient()</c> on the module type.
+///   The user owns all provider packages and config. CLI calls this via reflection.</item>
+///   <item><b>Metric:</b> <c>public static float Score(TOutput predicted, TOutput expected)</c>
+///   on the module type. Optional — falls back to keyword overlap on string properties.</item>
 ///   <item><b>Dataset:</b> Loaded via <see cref="Example.LoadFromJsonl{TInput,TLabel}"/>
 ///   with types discovered from <see cref="LmpModule{TInput,TOutput}"/> generic args.</item>
 /// </list>
 /// </remarks>
-internal sealed class AutoWireRunner : ILmpRunner
+internal sealed class ConventionRunner : ILmpRunner
 {
     private readonly Type _moduleType;
-    private readonly IChatClient _client;
+    private readonly MethodInfo _createClient;
     private readonly Type _inputType;
     private readonly Type _outputType;
     private readonly MethodInfo _loadFromJsonl;
 
-    private AutoWireRunner(
+    private ConventionRunner(
         Type moduleType,
-        IChatClient client,
+        MethodInfo createClient,
         Type inputType,
         Type outputType,
         MethodInfo loadFromJsonl)
     {
         _moduleType = moduleType;
-        _client = client;
+        _createClient = createClient;
         _inputType = inputType;
         _outputType = outputType;
         _loadFromJsonl = loadFromJsonl;
     }
 
     /// <summary>
-    /// Attempts to create an auto-wired runner from the built assembly and project file.
-    /// Returns null with an error message if auto-wiring is not possible.
+    /// Attempts to create a convention-based runner from the built assembly.
+    /// Returns null with a descriptive error if conventions are not met.
     /// </summary>
-    public static (AutoWireRunner? Runner, string? Error) TryCreate(
-        string assemblyPath, string projectPath)
+    public static (ConventionRunner? Runner, string? Error) TryCreate(string assemblyPath)
     {
-        // Step 1: Find the [AutoOptimize] module type
+        // Step 1: Load assembly and find [AutoOptimize] module
         var context = new RunnerDiscovery.LmpAssemblyLoadContext(assemblyPath);
         var assembly = context.LoadFromAssemblyPath(Path.GetFullPath(assemblyPath));
 
@@ -85,10 +83,29 @@ internal sealed class AutoWireRunner : ILmpRunner
         if (ctor is null)
             return (null, $"'{moduleType.Name}' must have a constructor that accepts IChatClient.");
 
-        // Step 4: Create IChatClient from user secrets
-        var (client, clientError) = CreateClient(projectPath);
-        if (client is null)
-            return (null, clientError);
+        // Step 4: Find static CreateClient() convention
+        var createClient = moduleType.GetMethod("CreateClient",
+            BindingFlags.Public | BindingFlags.Static, Type.EmptyTypes);
+
+        if (createClient is null || !typeof(IChatClient).IsAssignableFrom(createClient.ReturnType))
+        {
+            return (null,
+                $"'{moduleType.Name}' needs a static factory method for CLI tooling.\n\n" +
+                "Add this to your module (like EF Core's IDesignTimeDbContextFactory):\n\n" +
+                $"    public static IChatClient CreateClient()\n" +
+                "    {\n" +
+                "        var config = new ConfigurationBuilder()\n" +
+                $"            .AddUserSecrets<{moduleType.Name}>()\n" +
+                "            .Build();\n" +
+                "        return new AzureOpenAIClient(\n" +
+                "                new Uri(config[\"AzureOpenAI:Endpoint\"]!),\n" +
+                "                new DefaultAzureCredential())\n" +
+                "            .GetChatClient(config[\"AzureOpenAI:Deployment\"]!)\n" +
+                "            .AsIChatClient();\n" +
+                "    }\n\n" +
+                "Or register IChatClient in DI with builder.Services.AddChatClient(...).\n" +
+                "Or implement ILmpRunner for full control.");
+        }
 
         // Step 5: Resolve Example.LoadFromJsonl<TInput,TOutput>
         var loadMethod = typeof(Example)
@@ -98,17 +115,18 @@ internal sealed class AutoWireRunner : ILmpRunner
         if (loadMethod is null)
             return (null, "Could not resolve Example.LoadFromJsonl<TInput,TOutput>.");
 
-        return (new AutoWireRunner(moduleType, client, inputType, outputType, loadMethod), null);
+        return (new ConventionRunner(moduleType, createClient, inputType, outputType, loadMethod), null);
     }
 
     public LmpModule CreateModule()
     {
-        return (LmpModule)Activator.CreateInstance(_moduleType, _client)!;
+        var client = (IChatClient)_createClient.Invoke(null, null)!;
+        return (LmpModule)Activator.CreateInstance(_moduleType, client)!;
     }
 
     public Func<Example, object, float> CreateMetric()
     {
-        // Try: static float Score(TOutput, TOutput) on module type
+        // Convention: static float Score(TOutput predicted, TOutput expected)
         var scoreMethod = _moduleType.GetMethod("Score",
             BindingFlags.Public | BindingFlags.Static,
             [_outputType, _outputType]);
@@ -122,13 +140,12 @@ internal sealed class AutoWireRunner : ILmpRunner
             };
         }
 
-        // Default: keyword overlap metric on string properties of the output type
         return CreateDefaultKeywordOverlapMetric();
     }
 
     public IReadOnlyList<Example> LoadDataset(string path)
     {
-        return (IReadOnlyList<Example>)_loadFromJsonl.Invoke(null, [path])!;
+        return (IReadOnlyList<Example>)_loadFromJsonl.Invoke(null, [path, null])!;
     }
 
     public object DeserializeInput(string json)
@@ -137,70 +154,8 @@ internal sealed class AutoWireRunner : ILmpRunner
             ?? throw new JsonException($"Failed to deserialize input as {_inputType.Name}.");
     }
 
-    private static (IChatClient? Client, string? Error) CreateClient(string projectPath)
-    {
-        // Read UserSecretsId from csproj
-        string? userSecretsId = null;
-        try
-        {
-            var csprojContent = File.ReadAllText(projectPath);
-            var match = System.Text.RegularExpressions.Regex.Match(
-                csprojContent, @"<UserSecretsId>([^<]+)</UserSecretsId>");
-            if (match.Success)
-                userSecretsId = match.Groups[1].Value;
-        }
-        catch (Exception ex)
-        {
-            return (null, $"Failed to read project file: {ex.Message}");
-        }
-
-        if (string.IsNullOrEmpty(userSecretsId))
-        {
-            return (null, "No UserSecretsId found in project file. Run:\n" +
-                          "  dotnet user-secrets init\n" +
-                          "  dotnet user-secrets set \"AzureOpenAI:Endpoint\" \"https://YOUR.openai.azure.com/\"\n" +
-                          "  dotnet user-secrets set \"AzureOpenAI:Deployment\" \"gpt-4o-mini\"");
-        }
-
-        var config = new ConfigurationBuilder()
-            .AddUserSecrets(userSecretsId)
-            .Build();
-
-        string? endpoint = config["AzureOpenAI:Endpoint"];
-        if (string.IsNullOrEmpty(endpoint))
-        {
-            return (null, "AzureOpenAI:Endpoint not found in user secrets. Run:\n" +
-                          $"  dotnet user-secrets --id {userSecretsId} set \"AzureOpenAI:Endpoint\" \"https://YOUR.openai.azure.com/\"");
-        }
-
-        // LMP_MODEL env var overrides user secrets deployment
-        string? deployment = Environment.GetEnvironmentVariable("LMP_MODEL")
-            ?? config["AzureOpenAI:Deployment"];
-
-        if (string.IsNullOrEmpty(deployment))
-        {
-            return (null, "AzureOpenAI:Deployment not found in user secrets. Run:\n" +
-                          $"  dotnet user-secrets --id {userSecretsId} set \"AzureOpenAI:Deployment\" \"gpt-4o-mini\"");
-        }
-
-        try
-        {
-            IChatClient client = new AzureOpenAIClient(
-                    new Uri(endpoint), new DefaultAzureCredential())
-                .GetChatClient(deployment)
-                .AsIChatClient();
-
-            return (client, null);
-        }
-        catch (Exception ex)
-        {
-            return (null, $"Failed to create Azure OpenAI client: {ex.Message}");
-        }
-    }
-
     private static (Type? Input, Type? Output) DiscoverGenericArgs(Type moduleType)
     {
-        // Walk up the type hierarchy looking for LmpModule<TInput,TOutput>
         var current = moduleType;
         while (current is not null)
         {
@@ -215,26 +170,20 @@ internal sealed class AutoWireRunner : ILmpRunner
         return (null, null);
     }
 
-    /// <summary>
-    /// Extracts the Label property from a typed Example via the known generic type.
-    /// </summary>
     private static object? GetLabel(Example example)
     {
-        // Example<TInput,TLabel>.Label
         var labelProp = example.GetType().GetProperty("Label");
         return labelProp?.GetValue(example);
     }
 
     private Func<Example, object, float> CreateDefaultKeywordOverlapMetric()
     {
-        // Find the best string property on the output type for comparison
         var stringProps = _outputType.GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(p => p.PropertyType == typeof(string))
             .ToArray();
 
         if (stringProps.Length == 0)
         {
-            // No string properties — fall back to ToString() comparison
             return (example, predicted) =>
                 string.Equals(predicted?.ToString(), GetLabel(example)?.ToString(),
                     StringComparison.OrdinalIgnoreCase) ? 1f : 0f;
