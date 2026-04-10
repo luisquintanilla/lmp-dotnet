@@ -1,0 +1,114 @@
+<Project>
+  <!--
+    LMP Build-Time Auto-Optimize Targets
+    =====================================
+    Hooks into MSBuild to run LMP optimization before compilation.
+    
+    Usage: dotnet build -p:LmpAutoOptimize=true
+    
+    Pattern: Same as gRPC (protoc → .cs → compile) and EF Core (migrations → .cs → compile)
+  -->
+
+  <!-- Defaults -->
+  <PropertyGroup>
+    <LmpAutoOptimize Condition="'$(LmpAutoOptimize)' == ''">false</LmpAutoOptimize>
+    <LmpAutoOptimizeForce Condition="'$(LmpAutoOptimizeForce)' == ''">false</LmpAutoOptimizeForce>
+    <LmpGeneratedDir Condition="'$(LmpGeneratedDir)' == ''">$(MSBuildProjectDirectory)\Generated</LmpGeneratedDir>
+    <LmpAutoOptimizeBudget Condition="'$(LmpAutoOptimizeBudget)' == ''"></LmpAutoOptimizeBudget>
+    <LmpAutoOptimizeVerbose Condition="'$(LmpAutoOptimizeVerbose)' == ''">false</LmpAutoOptimizeVerbose>
+  </PropertyGroup>
+
+  <!--
+    Target: LmpAutoOptimize
+    =======================
+    Runs BEFORE CoreCompile so the generated .g.cs files are available to the compiler.
+    
+    Conditions:
+    1. LmpAutoOptimize must be 'true' (opt-in via -p:LmpAutoOptimize=true)
+    2. DesignTimeBuild must NOT be true (VS IntelliSense background builds skip this)
+    3. BuildingInsideVisualStudio in design-time mode is skipped
+  -->
+  <Target
+    Name="LmpAutoOptimize"
+    BeforeTargets="CoreCompile"
+    Condition="'$(LmpAutoOptimize)' == 'true' AND '$(DesignTimeBuild)' != 'true'">
+
+    <!-- Ensure Generated directory exists -->
+    <MakeDir Directories="$(LmpGeneratedDir)" Condition="!Exists('$(LmpGeneratedDir)')" />
+
+    <!-- Build the force flag -->
+    <PropertyGroup>
+      <_LmpForceArg Condition="'$(LmpAutoOptimizeForce)' == 'true'"> --force</_LmpForceArg>
+      <_LmpForceArg Condition="'$(LmpAutoOptimizeForce)' != 'true'"></_LmpForceArg>
+      <_LmpBudgetArg Condition="'$(LmpAutoOptimizeBudget)' != ''"> --budget $(LmpAutoOptimizeBudget)</_LmpBudgetArg>
+      <_LmpBudgetArg Condition="'$(LmpAutoOptimizeBudget)' == ''"></_LmpBudgetArg>
+      <_LmpVerboseArg Condition="'$(LmpAutoOptimizeVerbose)' == 'true'"> --verbose</_LmpVerboseArg>
+      <_LmpVerboseArg Condition="'$(LmpAutoOptimizeVerbose)' != 'true'"></_LmpVerboseArg>
+    </PropertyGroup>
+
+    <!-- Run the LMP auto-optimize CLI -->
+    <Message
+      Importance="high"
+      Text="LMP: Running build-time auto-optimization..." />
+
+    <Exec
+      Command="dotnet lmp auto-optimize --project &quot;$(MSBuildProjectFullPath)&quot; --output &quot;$(LmpGeneratedDir)&quot;$(_LmpForceArg)$(_LmpBudgetArg)$(_LmpVerboseArg)"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="normal"
+      StandardErrorImportance="high"
+      IgnoreExitCode="false">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_LmpAutoOptimizeOutput" />
+    </Exec>
+
+    <Message
+      Importance="high"
+      Text="LMP: Auto-optimization complete." />
+  </Target>
+
+  <!--
+    Include generated .g.cs files in compilation.
+    This runs unconditionally — if the files exist (from a prior optimization run),
+    they are compiled. This is the key insight: commit the .g.cs files to source
+    control, and every subsequent build includes them without re-running the optimizer.
+  -->
+  <ItemGroup>
+    <Compile Include="$(LmpGeneratedDir)\**\*.g.cs"
+             Condition="Exists('$(LmpGeneratedDir)')" />
+  </ItemGroup>
+
+  <!--
+    Diagnostic targets for staleness warnings (Phase 1 diagnostics)
+  -->
+  <Target
+    Name="LmpAutoOptimizeStaleCheck"
+    BeforeTargets="CoreCompile"
+    Condition="'$(LmpAutoOptimize)' != 'true' AND Exists('$(LmpGeneratedDir)')">
+
+    <!-- LMP1004: Inform that optimization files exist but auto-optimize is not enabled -->
+    <Message
+      Importance="normal"
+      Text="LMP1004: Generated optimization files found in $(LmpGeneratedDir). Run with -p:LmpAutoOptimize=true to refresh." />
+  </Target>
+
+  <!--
+    Target: LmpAutoOptimizeClean
+    ============================
+    Removes generated optimization files on 'dotnet clean'.
+    Does NOT remove the Generated directory itself (user may have other files there).
+  -->
+  <Target
+    Name="LmpAutoOptimizeClean"
+    AfterTargets="Clean">
+
+    <ItemGroup>
+      <_LmpGeneratedFiles Include="$(LmpGeneratedDir)\*.Optimized.g.cs" />
+    </ItemGroup>
+
+    <Delete Files="@(_LmpGeneratedFiles)" Condition="'@(_LmpGeneratedFiles)' != ''" />
+
+    <Message
+      Importance="normal"
+      Text="LMP: Cleaned generated optimization files."
+      Condition="'@(_LmpGeneratedFiles)' != ''" />
+  </Target>
+</Project>

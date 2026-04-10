@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/LMP.Abstractions/LMP.Abstractions.csproj" />
     <Project Path="src/LMP.Aspire.Hosting/LMP.Aspire.Hosting.csproj" />
+    <Project Path="src/LMP.Build/LMP.Build.csproj" />
     <Project Path="src/LMP.Cli/LMP.Cli.csproj" />
     <Project Path="src/LMP.Core/LMP.Core.csproj" />
     <Project Path="src/LMP.Extensions.Evaluation/LMP.Extensions.Evaluation.csproj" />
