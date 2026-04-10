@@ -22,6 +22,7 @@
     <Project Path="test/LMP.SourceGen.Tests/LMP.SourceGen.Tests.csproj" />
   </Folder>
   <Folder Name="/samples/">
+    <Project Path="samples/LMP.Samples.AutoOptimize/LMP.Samples.AutoOptimize.csproj" />
     <Project Path="samples/LMP.Samples.Evaluation/LMP.Samples.Evaluation.csproj" />
     <Project Path="samples/LMP.Samples.GEPA/LMP.Samples.GEPA.csproj" />
     <Project Path="samples/LMP.Samples.Middleware/LMP.Samples.Middleware.csproj" />
