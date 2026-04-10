@@ -17,6 +17,9 @@
     <LmpAutoOptimizeBudget Condition="'$(LmpAutoOptimizeBudget)' == ''"></LmpAutoOptimizeBudget>
     <LmpAutoOptimizeVerbose Condition="'$(LmpAutoOptimizeVerbose)' == ''">false</LmpAutoOptimizeVerbose>
     <LmpModel Condition="'$(LmpModel)' == ''"></LmpModel>
+    <!-- CLI command: defaults to 'dotnet lmp'. Override for local dev:
+         dotnet build -p:LmpCliCommand="dotnet run ..project path/to/LMP.Cli.csproj .." -->
+    <LmpCliCommand Condition="'$(LmpCliCommand)' == ''">dotnet lmp</LmpCliCommand>
   </PropertyGroup>
 
   <!--
@@ -55,7 +58,7 @@
       Text="LMP: Running build-time auto-optimization..." />
 
     <Exec
-      Command="dotnet lmp auto-optimize --project &quot;$(MSBuildProjectFullPath)&quot; --output &quot;$(LmpGeneratedDir)&quot;$(_LmpForceArg)$(_LmpModelArg)$(_LmpBudgetArg)$(_LmpVerboseArg)"
+      Command="$(LmpCliCommand) auto-optimize --project &quot;$(MSBuildProjectFullPath)&quot; --output &quot;$(LmpGeneratedDir)&quot;$(_LmpForceArg)$(_LmpModelArg)$(_LmpBudgetArg)$(_LmpVerboseArg)"
       ConsoleToMSBuild="true"
       StandardOutputImportance="normal"
       StandardErrorImportance="high"

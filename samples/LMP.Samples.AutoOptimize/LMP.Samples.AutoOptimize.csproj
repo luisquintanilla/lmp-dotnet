@@ -24,5 +24,9 @@
   </ItemGroup>
 
   <!-- LMP Build-Time Optimization Reporting -->
+  <!-- For local dev: use dotnet run instead of installed 'dotnet lmp' tool -->
+  <PropertyGroup>
+    <LmpCliCommand>dotnet run --project $(MSBuildThisFileDirectory)..\..\src\LMP.Cli\LMP.Cli.csproj --</LmpCliCommand>
+  </PropertyGroup>
   <Import Project="..\..\src\LMP.Build\build\LMP.Build.targets" />
 </Project>
