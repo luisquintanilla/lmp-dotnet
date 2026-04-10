@@ -33,4 +33,16 @@ public interface ISampler
     /// <param name="config">The configuration that was evaluated.</param>
     /// <param name="score">The evaluation score (higher is better).</param>
     void Update(Dictionary<string, int> config, float score);
+
+    /// <summary>
+    /// Reports the result of evaluating a proposed configuration, including cost data.
+    /// Cost-aware samplers override this to incorporate cost into their acquisition function.
+    /// The default implementation delegates to <see cref="Update(Dictionary{string, int}, float)"/>,
+    /// so existing samplers remain backward-compatible without changes.
+    /// </summary>
+    /// <param name="config">The configuration that was evaluated.</param>
+    /// <param name="score">The evaluation score (higher is better).</param>
+    /// <param name="cost">The cost measurement for this trial.</param>
+    void Update(Dictionary<string, int> config, float score, TrialCost cost)
+        => Update(config, score);
 }

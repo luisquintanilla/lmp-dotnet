@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 9 in progress — Doc spec freshness audit + CostAwareSampler. 964 tests passing.
+> **Status:** Phase 9 in progress — Doc spec freshness audit + CostAwareSampler. 991 tests passing.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-10
@@ -1204,7 +1204,7 @@ Currently `Predictor.PredictAsync` calls `GetResponseAsync<TOutput>` and only us
 **Tests:** TraceEntry records Usage. Trace.TotalTokens aggregates correctly.
 **Completion:** `dotnet test` passes. Usage data flows through traces.
 
-#### Task 9B.2: Create TrialCost + Extend ISampler ❌
+#### Task 9B.2: Create TrialCost + Extend ISampler ✅
 
 **Files:** `src/LMP.Abstractions/TrialCost.cs` (new), `src/LMP.Abstractions/ISampler.cs`
 
