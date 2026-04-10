@@ -14,7 +14,6 @@ using Microsoft.Extensions.Configuration;
 //   2. Analyze trial history with TraceAnalyzer — posteriors, interactions
 //   3. Re-optimize with SmacSampler (SMAC/RF) — different search strategy
 //   4. Warm-start a new optimization from prior posteriors
-<<<<<<< HEAD
 //   5. CostAwareSampler — cost-frugal optimization with custom cost functions
 //   6. Compare all strategies side-by-side
 //
