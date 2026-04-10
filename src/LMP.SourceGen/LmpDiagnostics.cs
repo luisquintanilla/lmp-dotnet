@@ -42,4 +42,17 @@ internal static class LmpDiagnostics
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
         helpLinkUri: "https://github.com/lmp-dotnet/lmp/blob/main/docs/diagnostics.md#lmp003");
+
+    /// <summary>
+    /// LMP004: Warning — <c>[AutoOptimize]</c> on a module with no predictor fields.
+    /// The attribute will have no effect because there are no predictors to optimize.
+    /// </summary>
+    public static readonly DiagnosticDescriptor AutoOptimizeNoPredictors = new(
+        id: "LMP004",
+        title: "[AutoOptimize] on module with no predictors",
+        messageFormat: "[AutoOptimize] on '{0}' has no effect — the module has no Predictor<,> fields or [Predict] methods",
+        category: "LMP.AutoOptimize",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/lmp-dotnet/lmp/blob/main/docs/diagnostics.md#lmp004");
 }

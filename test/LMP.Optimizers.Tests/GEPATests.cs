@@ -1,7 +1,6 @@
 using System.Collections;
 using LMP.Optimizers;
 using Microsoft.Extensions.AI;
-
 namespace LMP.Tests;
 
 public sealed class GEPATests
@@ -196,7 +195,7 @@ public sealed class GEPATests
         cts.Cancel();
 
         await Assert.ThrowsAsync<OperationCanceledException>(
-            () => gepa.CompileAsync(module, trainSet, (_, _) => 0.5f, cts.Token));
+            () => gepa.CompileAsync(module, trainSet, (_, _) => 0.5f, options: CompileOptions.RuntimeOnly, cts.Token));
     }
 }
 

@@ -54,6 +54,7 @@ public sealed class BootstrapRandomSearch : IOptimizer
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
+        CompileOptions? options = null,
         CancellationToken cancellationToken = default)
         where TModule : LmpModule
     {
@@ -80,7 +81,7 @@ public sealed class BootstrapRandomSearch : IOptimizer
             var shuffled = trainSplit.OrderBy(_ => rng.Next()).ToList();
             var bootstrap = new BootstrapFewShot(_maxDemos, metricThreshold: _metricThreshold);
             var candidate = await bootstrap.CompileAsync(
-                module.Clone<TModule>(), shuffled, metric, cancellationToken);
+                module.Clone<TModule>(), shuffled, metric, CompileOptions.RuntimeOnly, cancellationToken);
             candidates.Add(candidate);
         }
 
@@ -98,7 +99,18 @@ public sealed class BootstrapRandomSearch : IOptimizer
                 bestIndex = i;
         }
 
-        return candidates[bestIndex];
+        var best = candidates[bestIndex];
+
+        // Auto-emit .g.cs artifact
+        string? outputDir = options?.OutputDir;
+        if (outputDir is not null)
+        {
+            await CSharpArtifactWriter.WriteAsync(
+                best, outputDir, results[bestIndex].AverageScore, nameof(BootstrapRandomSearch),
+                options?.TrainDataPath, cancellationToken);
+        }
+
+        return best;
     }
 
     /// <summary>

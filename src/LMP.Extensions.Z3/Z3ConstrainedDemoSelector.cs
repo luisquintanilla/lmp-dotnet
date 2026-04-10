@@ -1,3 +1,4 @@
+using LMP.Optimizers;
 using Microsoft.Z3;
 
 namespace LMP.Extensions.Z3;
@@ -51,6 +52,7 @@ public sealed class Z3ConstrainedDemoSelector : IOptimizer
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
+        CompileOptions? options = null,
         CancellationToken cancellationToken = default)
         where TModule : LmpModule
     {
@@ -77,6 +79,17 @@ public sealed class Z3ConstrainedDemoSelector : IOptimizer
             {
                 predictor.AddDemo(input, output);
             }
+        }
+
+        // Auto-emit .g.cs artifact
+        string? outputDir = options?.OutputDir;
+        if (outputDir is not null)
+        {
+            var evalResult = await Evaluator.EvaluateAsync(
+                module, trainSet, metric, cancellationToken: cancellationToken);
+            await CSharpArtifactWriter.WriteAsync(
+                module, outputDir, evalResult.AverageScore, nameof(Z3ConstrainedDemoSelector),
+                options?.TrainDataPath, cancellationToken);
         }
 
         return module;

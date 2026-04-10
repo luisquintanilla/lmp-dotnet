@@ -140,7 +140,7 @@ internal static class EvalCommand
 
             try
             {
-                await module.LoadAsync(artifactPath, cancellationToken);
+                await module.ApplyStateAsync(artifactPath, cancellationToken);
                 await Console.Error.WriteLineAsync($"Loaded artifact: {artifactPath}");
             }
             catch (Exception ex)

@@ -1,0 +1,213 @@
+<Project>
+  <!--
+    LMP Build-Time Auto-Optimize Targets
+    =====================================
+    Hooks into MSBuild to run LMP optimization before compilation.
+    
+    Usage: dotnet build -p:LmpAutoOptimize=true
+    
+    Pattern: Same as gRPC (protoc → .cs → compile) and EF Core (migrations → .cs → compile)
+  -->
+
+  <!-- Defaults -->
+  <PropertyGroup>
+    <LmpAutoOptimize Condition="'$(LmpAutoOptimize)' == ''">false</LmpAutoOptimize>
+    <LmpAutoOptimizeForce Condition="'$(LmpAutoOptimizeForce)' == ''">false</LmpAutoOptimizeForce>
+    <LmpGeneratedDir Condition="'$(LmpGeneratedDir)' == ''">$(MSBuildProjectDirectory)\Generated</LmpGeneratedDir>
+    <LmpAutoOptimizeBudget Condition="'$(LmpAutoOptimizeBudget)' == ''"></LmpAutoOptimizeBudget>
+    <LmpAutoOptimizeVerbose Condition="'$(LmpAutoOptimizeVerbose)' == ''">false</LmpAutoOptimizeVerbose>
+    <LmpModel Condition="'$(LmpModel)' == ''"></LmpModel>
+    <!-- CLI command: defaults to 'dotnet lmp'. Override for local dev:
+         dotnet build -p:LmpCliCommand="dotnet run ..project path/to/LMP.Cli.csproj .." -->
+    <LmpCliCommand Condition="'$(LmpCliCommand)' == ''">dotnet lmp</LmpCliCommand>
+  </PropertyGroup>
+
+  <!--
+    Target: LmpAutoOptimize
+    =======================
+    Runs BEFORE CoreCompile so the generated .g.cs files are available to the compiler.
+    
+    Conditions:
+    1. LmpAutoOptimize must be 'true' (opt-in via -p:LmpAutoOptimize=true)
+    2. DesignTimeBuild must NOT be true (VS IntelliSense background builds skip this)
+    3. BuildingInsideVisualStudio in design-time mode is skipped
+  -->
+  <Target
+    Name="LmpAutoOptimize"
+    BeforeTargets="CoreCompile"
+    Condition="'$(LmpAutoOptimize)' == 'true' AND '$(DesignTimeBuild)' != 'true'">
+
+    <!-- Ensure Generated directory exists -->
+    <MakeDir Directories="$(LmpGeneratedDir)" Condition="!Exists('$(LmpGeneratedDir)')" />
+
+    <!-- Build the force flag -->
+    <PropertyGroup>
+      <_LmpForceArg Condition="'$(LmpAutoOptimizeForce)' == 'true'"> --force</_LmpForceArg>
+      <_LmpForceArg Condition="'$(LmpAutoOptimizeForce)' != 'true'"></_LmpForceArg>
+      <_LmpBudgetArg Condition="'$(LmpAutoOptimizeBudget)' != ''"> --budget $(LmpAutoOptimizeBudget)</_LmpBudgetArg>
+      <_LmpBudgetArg Condition="'$(LmpAutoOptimizeBudget)' == ''"></_LmpBudgetArg>
+      <_LmpModelArg Condition="'$(LmpModel)' != ''"> --model $(LmpModel)</_LmpModelArg>
+      <_LmpModelArg Condition="'$(LmpModel)' == ''"></_LmpModelArg>
+      <_LmpVerboseArg Condition="'$(LmpAutoOptimizeVerbose)' == 'true'"> --verbose</_LmpVerboseArg>
+      <_LmpVerboseArg Condition="'$(LmpAutoOptimizeVerbose)' != 'true'"></_LmpVerboseArg>
+    </PropertyGroup>
+
+    <!-- Run the LMP auto-optimize CLI -->
+    <Message
+      Importance="high"
+      Text="LMP: Running build-time auto-optimization..." />
+
+    <Exec
+      Command="$(LmpCliCommand) auto-optimize --project &quot;$(MSBuildProjectFullPath)&quot; --output &quot;$(LmpGeneratedDir)&quot;$(_LmpForceArg)$(_LmpModelArg)$(_LmpBudgetArg)$(_LmpVerboseArg)"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="normal"
+      StandardErrorImportance="high"
+      IgnoreExitCode="false">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_LmpAutoOptimizeOutput" />
+    </Exec>
+
+    <Message
+      Importance="high"
+      Text="LMP: Auto-optimization complete." />
+  </Target>
+
+  <!--
+    Include generated .g.cs files in compilation ONLY if they're outside the project directory.
+    Files inside the project directory are auto-included by the SDK's default Compile glob.
+    When LmpGeneratedDir is overridden to an external path, this ensures they're still compiled.
+  -->
+  <ItemGroup Condition="!$([System.String]::new('$(LmpGeneratedDir)').StartsWith('$(MSBuildProjectDirectory)'))">
+    <Compile Include="$(LmpGeneratedDir)\**\*.g.cs"
+             Condition="Exists('$(LmpGeneratedDir)')" />
+  </ItemGroup>
+
+  <!--
+    Inline task: Reads optimization metadata from .g.cs header comments.
+    Parses: Score, Strategy, Demos, Timestamp from:
+      // LMP Auto-Optimize | Score: 0.7320 | Strategy: BootstrapFewShot | Demos: 1
+      // Generated: 2026-04-10T19:30:33.8800139Z
+  -->
+  <UsingTask TaskName="_LmpReadOptimizationMetadata"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <FilePath ParameterType="System.String" Required="true" />
+      <ModuleName ParameterType="System.String" Output="true" />
+      <Score ParameterType="System.String" Output="true" />
+      <Strategy ParameterType="System.String" Output="true" />
+      <DemoCount ParameterType="System.String" Output="true" />
+      <GeneratedDate ParameterType="System.String" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        // Derive module name from filename: QAModule.Optimized.g.cs → QAModule
+        ModuleName = System.IO.Path.GetFileName(FilePath);
+        int dotIdx = ModuleName.IndexOf('.');
+        if (dotIdx > 0) ModuleName = ModuleName.Substring(0, dotIdx);
+
+        Score = "?"; Strategy = "?"; DemoCount = "?"; GeneratedDate = "?";
+        int linesRead = 0;
+        foreach (var line in System.IO.File.ReadLines(FilePath))
+        {
+            if (++linesRead > 6) break;
+
+            // Parse: // LMP Auto-Optimize | Score: 0.7320 | Strategy: BootstrapFewShot | Demos: 1
+            if (line.Contains("LMP Auto-Optimize"))
+            {
+                var parts = line.Split('|');
+                foreach (var part in parts)
+                {
+                    var trimmed = part.Trim().TrimStart('/').Trim();
+                    if (trimmed.StartsWith("Score:")) Score = trimmed.Substring(6).Trim();
+                    else if (trimmed.StartsWith("Strategy:")) Strategy = trimmed.Substring(9).Trim();
+                    else if (trimmed.StartsWith("Demos:")) DemoCount = trimmed.Substring(6).Trim();
+                }
+            }
+            // Parse: // Generated: 2026-04-10T19:30:33.8800139Z
+            else if (line.Contains("Generated:"))
+            {
+                var idx = line.IndexOf("Generated:");
+                if (idx >= 0)
+                {
+                    var ts = line.Substring(idx + 10).Trim();
+                    // Show just the date portion
+                    if (ts.Length >= 10) GeneratedDate = ts.Substring(0, 10);
+                }
+            }
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <!--
+    Target: _LmpReportOptimization
+    ==============================
+    Reports optimization status during every build. Shows:
+    - Which modules have optimized state compiled in
+    - Metadata: score, strategy, demo count, generation date
+    Runs before CoreCompile so the info appears early in build output.
+  -->
+  <Target
+    Name="_LmpReportOptimization"
+    BeforeTargets="CoreCompile">
+
+    <ItemGroup>
+      <_LmpOptimizedFiles Include="$(LmpGeneratedDir)\*.Optimized.g.cs"
+                          Condition="Exists('$(LmpGeneratedDir)')" />
+    </ItemGroup>
+
+    <!-- Parse metadata from each optimized artifact -->
+    <_LmpReadOptimizationMetadata
+      FilePath="%(_LmpOptimizedFiles.Identity)"
+      Condition="'@(_LmpOptimizedFiles)' != ''">
+      <Output TaskParameter="ModuleName" PropertyName="_LmpModName" />
+      <Output TaskParameter="Score" PropertyName="_LmpScore" />
+      <Output TaskParameter="Strategy" PropertyName="_LmpStrategy" />
+      <Output TaskParameter="DemoCount" PropertyName="_LmpDemos" />
+      <Output TaskParameter="GeneratedDate" PropertyName="_LmpDate" />
+    </_LmpReadOptimizationMetadata>
+
+    <!--
+      Use Warning with code LMP1000 so the terminal logger always displays it.
+      Users can suppress with <NoWarn>LMP1000</NoWarn> if desired.
+    -->
+    <Warning
+      Code="LMP1000"
+      Text="$(_LmpModName) optimized — Score: $(_LmpScore) | Strategy: $(_LmpStrategy) | Demos: $(_LmpDemos) | $(_LmpDate)"
+      Condition="'@(_LmpOptimizedFiles)' != ''" />
+
+    <!-- Also emit as Message for log files / classic logger -->
+    <Message
+      Importance="high"
+      Text="LMP: $(_LmpModName) optimized — Score: $(_LmpScore) | Strategy: $(_LmpStrategy) | Demos: $(_LmpDemos) | $(_LmpDate)"
+      Condition="'@(_LmpOptimizedFiles)' != ''" />
+
+    <!-- When no optimized files exist -->
+    <Warning
+      Code="LMP1001"
+      Text="No optimized modules found. Run 'dotnet lmp auto-optimize --project $(MSBuildProjectFullPath)' to optimize."
+      Condition="'@(_LmpOptimizedFiles)' == '' AND '$(LmpAutoOptimize)' != 'true'" />
+  </Target>
+
+  <!--
+    Target: LmpAutoOptimizeClean
+    ============================
+    Removes generated optimization files on 'dotnet clean'.
+    Does NOT remove the Generated directory itself (user may have other files there).
+  -->
+  <Target
+    Name="LmpAutoOptimizeClean"
+    AfterTargets="Clean">
+
+    <ItemGroup>
+      <_LmpGeneratedFiles Include="$(LmpGeneratedDir)\*.Optimized.g.cs" />
+    </ItemGroup>
+
+    <Delete Files="@(_LmpGeneratedFiles)" Condition="'@(_LmpGeneratedFiles)' != ''" />
+
+    <Message
+      Importance="normal"
+      Text="LMP: Cleaned generated optimization files."
+      Condition="'@(_LmpGeneratedFiles)' != ''" />
+  </Target>
+</Project>

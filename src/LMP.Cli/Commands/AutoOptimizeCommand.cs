@@ -4,21 +4,24 @@ using LMP.Optimizers;
 namespace LMP.Cli.Commands;
 
 /// <summary>
-/// Implements the <c>dotnet lmp optimize</c> command.
+/// Implements the <c>dotnet lmp auto-optimize</c> command.
 /// Builds a user project, discovers an <see cref="ILmpRunner"/>,
-/// runs optimization, and saves the optimized module state.
+/// runs optimization, and writes a <c>Generated/{Module}.Optimized.g.cs</c> file
+/// with the winning state as C# string literals.
 /// </summary>
-internal static class OptimizeCommand
+internal static class AutoOptimizeCommand
 {
     public static async Task<int> ExecuteAsync(string[] args)
     {
         string? project = null;
         string? train = null;
         string? dev = null;
+        string? model = null;
         string? output = null;
         string optimizer = "random";
         int numTrials = 8;
         int maxDemos = 4;
+        bool force = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -32,6 +35,9 @@ internal static class OptimizeCommand
                     break;
                 case "--dev" when i + 1 < args.Length:
                     dev = args[++i];
+                    break;
+                case "--model" when i + 1 < args.Length:
+                    model = args[++i];
                     break;
                 case "--output" when i + 1 < args.Length:
                     output = args[++i];
@@ -53,6 +59,9 @@ internal static class OptimizeCommand
                         return Program.ExitCodes.InvalidArguments;
                     }
                     break;
+                case "--force":
+                    force = true;
+                    break;
                 case "--help" or "-h":
                     PrintHelp();
                     return Program.ExitCodes.Success;
@@ -70,13 +79,6 @@ internal static class OptimizeCommand
             return Program.ExitCodes.InvalidArguments;
         }
 
-        if (string.IsNullOrEmpty(train))
-        {
-            await Console.Error.WriteLineAsync("ERROR [args] Missing required option: --train <path>");
-            PrintHelp();
-            return Program.ExitCodes.InvalidArguments;
-        }
-
         var normalizedOptimizer = optimizer.ToLowerInvariant();
         if (normalizedOptimizer is not ("bootstrap" or "random"))
         {
@@ -85,21 +87,25 @@ internal static class OptimizeCommand
             return Program.ExitCodes.InvalidArguments;
         }
 
-        output ??= Path.Combine(Path.GetDirectoryName(project) ?? ".", "lmp-output", "module-state.json");
-
-        return await RunOptimizeAsync(project, train, dev, output, normalizedOptimizer, numTrials, maxDemos, CancellationToken.None);
+        return await RunAutoOptimizeAsync(
+            project, train, dev, model, output, normalizedOptimizer,
+            numTrials, maxDemos, force, CancellationToken.None);
     }
 
-    internal static async Task<int> RunOptimizeAsync(
+    internal static async Task<int> RunAutoOptimizeAsync(
         string project,
-        string trainPath,
+        string? trainPath,
         string? devPath,
-        string outputPath,
+        string? model,
+        string? outputDir,
         string optimizerName,
         int numTrials,
         int maxDemos,
+        bool force,
         CancellationToken cancellationToken)
     {
+        var projectDir = Path.GetDirectoryName(Path.GetFullPath(project)) ?? ".";
+
         // Step 1: Build the project
         await Console.Error.WriteLineAsync($"Building project: {project}");
         var buildResult = await ProjectBuilder.BuildAsync(project, cancellationToken);
@@ -112,15 +118,65 @@ internal static class OptimizeCommand
 
         await Console.Error.WriteLineAsync($"Build succeeded: {buildResult.OutputAssembly}");
 
-        // Step 2: Discover ILmpRunner
-        var discovery = RunnerDiscovery.Discover(buildResult.OutputAssembly);
-        if (discovery.Runner is null)
+        // Step 2: Discover [AutoOptimize] attribute values (train/dev/budget)
+        var attrConfig = RunnerDiscovery.DiscoverAutoOptimizeConfig(buildResult.OutputAssembly);
+        if (attrConfig is not null)
         {
-            await Console.Error.WriteLineAsync($"ERROR [discovery] {discovery.Error}");
-            return Program.ExitCodes.ProjectNotFound;
+            // CLI args override attribute values
+            trainPath ??= attrConfig.TrainSet is not null
+                ? Path.Combine(projectDir, attrConfig.TrainSet)
+                : null;
+            devPath ??= attrConfig.DevSet is not null
+                ? Path.Combine(projectDir, attrConfig.DevSet)
+                : null;
         }
 
-        // Step 3: Load training data
+        if (string.IsNullOrEmpty(trainPath))
+        {
+            await Console.Error.WriteLineAsync(
+                "ERROR [args] No training data specified. Either:\n" +
+                "  - Set TrainSet in [AutoOptimize] attribute: [AutoOptimize(TrainSet = \"data/train.jsonl\")]\n" +
+                "  - Pass --train <path> on the command line");
+            return Program.ExitCodes.InvalidArguments;
+        }
+
+        // Step 3: Discover ILmpRunner (or fall back to auto-wiring)
+        // Set LMP_MODEL env var if --model was specified, so runner can read it
+        if (!string.IsNullOrEmpty(model))
+            Environment.SetEnvironmentVariable("LMP_MODEL", model);
+
+        ILmpRunner runner;
+        var discovery = RunnerDiscovery.Discover(buildResult.OutputAssembly);
+        if (discovery.Runner is not null)
+        {
+            runner = discovery.Runner;
+        }
+        else
+        {
+            // No ILmpRunner found — try convention-based discovery (static CreateClient())
+            await Console.Error.WriteLineAsync("No ILmpRunner found. Discovering via conventions (static CreateClient())...");
+            var (conventionRunner, conventionError) = ConventionRunner.TryCreate(buildResult.OutputAssembly);
+            if (conventionRunner is null)
+            {
+                await Console.Error.WriteLineAsync($"ERROR [discovery] {conventionError}");
+                return Program.ExitCodes.ProjectNotFound;
+            }
+            runner = conventionRunner;
+        }
+
+        // Step 4: Check staleness (skip if up-to-date unless --force)
+        var moduleName = runner.CreateModule().GetType().Name;
+        var generatedDir = outputDir ?? Path.Combine(projectDir, "Generated");
+        var generatedPath = Path.Combine(generatedDir, $"{moduleName}.Optimized.g.cs");
+
+        if (!force && await CSharpArtifactWriter.IsUpToDateAsync(generatedPath, trainPath, cancellationToken))
+        {
+            await Console.Error.WriteLineAsync($"Optimization up-to-date: {generatedPath}");
+            await Console.Error.WriteLineAsync("Use --force to re-optimize.");
+            return Program.ExitCodes.Success;
+        }
+
+        // Step 4: Load training data
         if (!File.Exists(trainPath))
         {
             await Console.Error.WriteLineAsync($"ERROR [input] Training file not found: {trainPath}");
@@ -130,7 +186,7 @@ internal static class OptimizeCommand
         IReadOnlyList<Example> trainSet;
         try
         {
-            trainSet = discovery.Runner.LoadDataset(trainPath);
+            trainSet = runner.LoadDataset(trainPath);
         }
         catch (Exception ex)
         {
@@ -138,13 +194,13 @@ internal static class OptimizeCommand
             return Program.ExitCodes.InputParseError;
         }
 
-        // Step 4: Create module and metric
+        // Step 5: Create module and metric
         LmpModule module;
         Func<Example, object, float> metric;
         try
         {
-            module = discovery.Runner.CreateModule();
-            metric = discovery.Runner.CreateMetric();
+            module = runner.CreateModule();
+            metric = runner.CreateMetric();
         }
         catch (Exception ex)
         {
@@ -152,35 +208,41 @@ internal static class OptimizeCommand
             return Program.ExitCodes.ProjectNotFound;
         }
 
-        // Step 5: Create optimizer
-        IOptimizer opt;
-        switch (optimizerName.ToLowerInvariant())
+        // Step 6: Create optimizer
+        IOptimizer opt = optimizerName switch
         {
-            case "bootstrap":
-                opt = new BootstrapFewShot(maxDemos);
-                break;
-            case "random":
-                opt = new BootstrapRandomSearch(numTrials, maxDemos);
-                break;
-            default:
-                await Console.Error.WriteLineAsync(
-                    $"ERROR [args] Unknown optimizer '{optimizerName}'. Supported: bootstrap, random.");
-                return Program.ExitCodes.InvalidArguments;
-        }
+            "bootstrap" => new BootstrapFewShot(maxDemos),
+            "random" => new BootstrapRandomSearch(numTrials, maxDemos),
+            _ => throw new InvalidOperationException($"Unknown optimizer: {optimizerName}")
+        };
 
-        // Step 6: Run optimization
+        // Step 7: Run optimization
         await Console.Error.WriteLineAsync($"""
-            LMP Optimize
+            LMP Auto-Optimize
             ════════════════════════════════════════
+            Module         : {moduleName}
             Optimizer      : {optimizerName}
             Training set   : {trainSet.Count} examples
             Max demos      : {maxDemos}
             Num trials     : {numTrials}
             """);
 
+        float bestScore;
+        string outputPath;
         try
         {
-            module = await opt.CompileAsync(module, trainSet, metric, CompileOptions.RuntimeOnly, cancellationToken);
+            var compileOptions = new CompileOptions
+            {
+                OutputDir = generatedDir,
+                TrainDataPath = trainPath
+            };
+            module = await opt.CompileAsync(module, trainSet, metric, compileOptions, cancellationToken);
+
+            // Evaluate on training set to get score
+            var evalResult = await Evaluator.EvaluateAsync(
+                module, trainSet, metric, cancellationToken: cancellationToken);
+            bestScore = evalResult.AverageScore;
+            outputPath = Path.Combine(generatedDir, $"{module.GetType().Name}.Optimized.g.cs");
         }
         catch (Exception ex)
         {
@@ -188,37 +250,27 @@ internal static class OptimizeCommand
             return Program.ExitCodes.CompilationFailed;
         }
 
-        // Step 7: Save optimized state
-        var outputDir = Path.GetDirectoryName(outputPath);
-        if (!string.IsNullOrEmpty(outputDir))
-            Directory.CreateDirectory(outputDir);
-
-        try
-        {
-            await module.SaveStateAsync(outputPath, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            await Console.Error.WriteLineAsync($"ERROR [artifact] Failed to save module state: {ex.Message}");
-            return Program.ExitCodes.ArtifactError;
-        }
-
-        // Step 8: Print summary
+        // Step 9: Print summary
         var predictors = module.GetPredictors();
         await Console.Error.WriteLineAsync($"""
 
-            Optimization complete!
+            Auto-optimize complete!
             ────────────────────────────────────────
+            Score          : {bestScore:F4}
             Output         : {outputPath}
             Predictors     : {predictors.Count}
             """);
 
         foreach (var (name, predictor) in predictors)
         {
-            await Console.Error.WriteLineAsync($"  {name}: {predictor.Demos.Count} demos");
+            await Console.Error.WriteLineAsync($"  {name}: {predictor.Demos.Count} demos, instructions={predictor.Instructions?.Length ?? 0} chars");
         }
 
-        // Step 9: Evaluate on dev set if provided
+        await Console.Error.WriteLineAsync();
+        await Console.Error.WriteLineAsync("Commit the generated file to source control:");
+        await Console.Error.WriteLineAsync($"  git add {Path.GetRelativePath(projectDir, outputPath)}");
+
+        // Step 10: Evaluate on dev set if provided
         if (!string.IsNullOrEmpty(devPath))
         {
             if (!File.Exists(devPath))
@@ -229,7 +281,7 @@ internal static class OptimizeCommand
 
             try
             {
-                var devSet = discovery.Runner.LoadDataset(devPath);
+                var devSet = runner.LoadDataset(devPath);
                 var evalResult = await Evaluator.EvaluateAsync(
                     module, devSet, metric, cancellationToken: cancellationToken);
 
@@ -253,19 +305,27 @@ internal static class OptimizeCommand
     private static void PrintHelp()
     {
         Console.WriteLine("""
-            Usage: dotnet lmp optimize --project <path> --train <path> [options]
+            Usage: dotnet lmp auto-optimize --project <path> [options]
 
-            Builds a project, discovers an ILmpRunner implementation, runs optimization,
-            and saves the optimized module state.
+            Builds a project, discovers [AutoOptimize] modules and ILmpRunner, runs
+            optimization, and writes Generated/{Module}.Optimized.g.cs with the winning state.
+
+            Training data and budget are read from the [AutoOptimize] attribute by default.
+            CLI flags override attribute values when specified.
+
+            Typically invoked automatically by MSBuild via the LMP.Build package:
+              dotnet build -p:LmpAutoOptimize=true
 
             Options:
               --project <path>     Required. Path to the .csproj file.
-              --train <path>       Required. Path to training JSONL file.
-              --dev <path>         Optional. Path to dev/validation JSONL file for scoring after optimization.
-              --output <path>      Output path for saved module state. Default: <project-dir>/lmp-output/module-state.json
+              --train <path>       Training JSONL file. Overrides [AutoOptimize(TrainSet)].
+              --dev <path>         Dev/validation JSONL file. Overrides [AutoOptimize(DevSet)].
+              --model <name>       LLM model/deployment override. Sets LMP_MODEL env var.
+              --output <dir>       Output directory for .g.cs files. Default: Generated/.
               --optimizer <name>   Optimizer: "random" (default) or "bootstrap".
               --num-trials <int>   Number of trials for random search. Default: 8.
               --max-demos <int>    Max demos per predictor. Default: 4.
+              --force              Re-optimize even if existing artifact is up-to-date.
               --help, -h           Show this help message.
             """);
     }

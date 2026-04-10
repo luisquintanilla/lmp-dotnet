@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LMP.Samples.AutoOptimize</RootNamespace>
+    <UserSecretsId>f1a2b3c4-auto-optimize-sample-e5f6</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LMP.Modules\LMP.Modules.csproj" />
+    <ProjectReference Include="..\..\src\LMP.SourceGen\LMP.SourceGen.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
+  </ItemGroup>
+
+  <!-- LMP Build-Time Optimization Reporting -->
+  <!-- For local dev: use dotnet run instead of installed 'dotnet lmp' tool -->
+  <PropertyGroup>
+    <LmpCliCommand>dotnet run --project $(MSBuildThisFileDirectory)..\..\src\LMP.Cli\LMP.Cli.csproj --</LmpCliCommand>
+  </PropertyGroup>
+  <Import Project="..\..\src\LMP.Build\build\LMP.Build.targets" />
+</Project>

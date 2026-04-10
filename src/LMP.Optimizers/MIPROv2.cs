@@ -119,6 +119,7 @@ public sealed class MIPROv2 : IOptimizer
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
+        CompileOptions? options = null,
         CancellationToken cancellationToken = default)
         where TModule : LmpModule
     {
@@ -222,6 +223,16 @@ public sealed class MIPROv2 : IOptimizer
         }
 
         _lastTrialHistory = trialHistory;
+
+        // Auto-emit .g.cs artifact
+        string? outputDir = options?.OutputDir;
+        if (outputDir is not null)
+        {
+            await CSharpArtifactWriter.WriteAsync(
+                bestCandidate, outputDir, bestScore, nameof(MIPROv2),
+                options?.TrainDataPath, cancellationToken);
+        }
+
         return bestCandidate;
     }
 
@@ -243,7 +254,7 @@ public sealed class MIPROv2 : IOptimizer
 
         // Clone the module for bootstrapping so the original stays clean
         var bootstrapModule = module.Clone<TModule>();
-        await bootstrap.CompileAsync(bootstrapModule, trainSplit, metric, cancellationToken);
+        await bootstrap.CompileAsync(bootstrapModule, trainSplit, metric, CompileOptions.RuntimeOnly, cancellationToken);
 
         // Extract demos from the bootstrapped module
         var pool = new Dictionary<string, List<(object Input, object Output)>>();

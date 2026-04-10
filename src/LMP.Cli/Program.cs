@@ -37,6 +37,7 @@ public static class Program
             {
                 "inspect" => await InspectCommand.ExecuteAsync(args[1..]),
                 "optimize" => await OptimizeCommand.ExecuteAsync(args[1..]),
+                "auto-optimize" => await AutoOptimizeCommand.ExecuteAsync(args[1..]),
                 "eval" => await EvalCommand.ExecuteAsync(args[1..]),
                 "run" => await RunCommand.ExecuteAsync(args[1..]),
                 "--help" or "-h" => PrintUsageAndReturn(),
@@ -85,10 +86,11 @@ public static class Program
             Usage: dotnet lmp <command> [options]
 
             Commands:
-              inspect     Pretty-print saved module parameters
-              optimize    Optimize a module via IOptimizer.CompileAsync
-              eval        Evaluate a module against a dataset
-              run         Execute a module on a single input
+              inspect        Pretty-print saved module parameters
+              optimize       Optimize a module via IOptimizer.CompileAsync
+              auto-optimize  Optimize and write Generated/{Module}.Optimized.g.cs
+              eval           Evaluate a module against a dataset
+              run            Execute a module on a single input
 
             Options:
               --help, -h     Show this help message

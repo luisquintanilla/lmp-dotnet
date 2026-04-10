@@ -154,11 +154,11 @@ Console.WriteLine("Step 6: Save & Load");
 Console.WriteLine("────────────────────");
 
 var artifactPath = Path.Combine(Path.GetTempPath(), "triage-optimized.json");
-await optimized.SaveAsync(artifactPath);
+await optimized.SaveStateAsync(artifactPath);
 Console.WriteLine($"  Saved to: {artifactPath}");
 
 var loaded = new SupportTriageModule(client);
-await loaded.LoadAsync(artifactPath);
+await loaded.ApplyStateAsync(artifactPath);
 
 var loadedScore = await Evaluator.EvaluateAsync(loaded, devSet, metric);
 Console.WriteLine($"  Loaded module score: {loadedScore.AverageScore:P1}");

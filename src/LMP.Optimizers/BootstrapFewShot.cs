@@ -53,6 +53,7 @@ public sealed class BootstrapFewShot : IOptimizer
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
+        CompileOptions? options = null,
         CancellationToken cancellationToken = default)
         where TModule : LmpModule
     {
@@ -126,6 +127,17 @@ public sealed class BootstrapFewShot : IOptimizer
                     predictor.AddDemo(entry.Input, entry.Output);
                 }
             }
+        }
+
+        // Auto-emit .g.cs artifact
+        string? outputDir = options?.OutputDir;
+        if (outputDir is not null)
+        {
+            var evalResult = await Evaluator.EvaluateAsync(
+                module, trainSet, metric, cancellationToken: cancellationToken);
+            await CSharpArtifactWriter.WriteAsync(
+                module, outputDir, evalResult.AverageScore, nameof(BootstrapFewShot),
+                options?.TrainDataPath, cancellationToken);
         }
 
         return module;

@@ -17,6 +17,14 @@ internal static class RunnerDiscovery
     internal sealed record DiscoveryResult(ILmpRunner? Runner, string? Error);
 
     /// <summary>
+    /// Configuration discovered from <c>[AutoOptimize]</c> attributes on LmpModule subclasses.
+    /// </summary>
+    /// <param name="TrainSet">Relative path to training data (from attribute).</param>
+    /// <param name="DevSet">Relative path to dev data (from attribute, may be null).</param>
+    /// <param name="BudgetSeconds">Time budget from attribute.</param>
+    internal sealed record AutoOptimizeConfig(string? TrainSet, string? DevSet, int BudgetSeconds);
+
+    /// <summary>
     /// Loads the specified assembly and discovers the first <see cref="ILmpRunner"/> implementation.
     /// Instantiates it via parameterless constructor.
     /// </summary>
@@ -69,26 +77,74 @@ internal static class RunnerDiscovery
     }
 
     /// <summary>
-    /// Custom AssemblyLoadContext that resolves dependencies from the same directory as the target assembly.
+    /// Scans the specified assembly for LmpModule subclasses with <c>[AutoOptimize]</c>
+    /// attributes and returns the configuration from the first match.
     /// </summary>
-    private sealed class LmpAssemblyLoadContext : AssemblyLoadContext
+    public static AutoOptimizeConfig? DiscoverAutoOptimizeConfig(string assemblyPath)
+    {
+        if (!File.Exists(assemblyPath))
+            return null;
+
+        try
+        {
+            var context = new LmpAssemblyLoadContext(assemblyPath);
+            var assembly = context.LoadFromAssemblyPath(Path.GetFullPath(assemblyPath));
+
+            foreach (var type in assembly.GetTypes())
+            {
+                if (type.IsAbstract || type.IsInterface)
+                    continue;
+
+                var attr = type.GetCustomAttribute<AutoOptimizeAttribute>();
+                if (attr is not null)
+                {
+                    return new AutoOptimizeConfig(
+                        TrainSet: attr.TrainSet,
+                        DevSet: attr.DevSet,
+                        BudgetSeconds: attr.BudgetSeconds);
+                }
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Custom AssemblyLoadContext that defers to the default context first (preserving
+    /// type identity for shared types like ILmpRunner, IChatClient, LmpModule), then
+    /// falls back to loading from the target assembly's output directory.
+    /// </summary>
+    internal sealed class LmpAssemblyLoadContext : AssemblyLoadContext
     {
         private readonly string _basePath;
 
         public LmpAssemblyLoadContext(string assemblyPath)
-            : base(isCollectible: false) // non-collectible for simplicity
+            : base(isCollectible: false)
         {
             _basePath = Path.GetDirectoryName(Path.GetFullPath(assemblyPath))!;
+            Resolving += OnResolving;
         }
 
         protected override Assembly? Load(AssemblyName assemblyName)
         {
-            // Try to resolve from the same directory as the target assembly
+            // Always return null → let the default context try first.
+            // This preserves type identity for all shared assemblies
+            // (LMP.*, MEAI.*, System.*). The Resolving event handles
+            // project-specific assemblies (Azure.*, user code) that
+            // the default context can't find.
+            return null;
+        }
+
+        private Assembly? OnResolving(AssemblyLoadContext context, AssemblyName assemblyName)
+        {
+            // Default context couldn't resolve — load from target's output directory
             var candidatePath = Path.Combine(_basePath, $"{assemblyName.Name}.dll");
             if (File.Exists(candidatePath))
                 return LoadFromAssemblyPath(candidatePath);
-
-            // Fall back to default resolution
             return null;
         }
     }

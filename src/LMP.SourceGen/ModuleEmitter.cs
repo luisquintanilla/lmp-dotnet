@@ -43,6 +43,13 @@ internal static class ModuleEmitter
         sb.Append("partial class ").AppendLine(model.TypeName);
         sb.AppendLine("{");
 
+        // [AutoOptimize] once-guard field
+        if (model.HasAutoOptimize)
+        {
+            sb.AppendLine("    private bool __optimizedStateApplied;");
+            sb.AppendLine();
+        }
+
         // [Predict] backing fields
         if (model.PredictMethods.Count > 0)
         {
@@ -55,6 +62,14 @@ internal static class ModuleEmitter
         EmitGetPredictors(sb, model);
         sb.AppendLine();
         EmitCloneCore(sb, model);
+
+        // For [AutoOptimize] modules: emit partial void declaration + call site.
+        // If no .g.cs implementation exists, the compiler removes both (C# partial void rules).
+        if (model.HasAutoOptimize)
+        {
+            sb.AppendLine();
+            EmitAutoOptimizeHook(sb, model);
+        }
 
         // Close class
         sb.AppendLine("}");
@@ -77,6 +92,17 @@ internal static class ModuleEmitter
     {
         sb.AppendLine("    public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()");
         sb.AppendLine("    {");
+
+        // [AutoOptimize] — apply optimized state once on first call
+        if (model.HasAutoOptimize)
+        {
+            sb.AppendLine("        if (!__optimizedStateApplied)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            __optimizedStateApplied = true;");
+            sb.AppendLine("            ApplyOptimizedState();");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+        }
 
         // Ensure [Predict] backing fields are initialized
         foreach (var pm in model.PredictMethods)
@@ -241,6 +267,22 @@ internal static class ModuleEmitter
     private static string SanitizeForIdentifier(string name)
     {
         return name.Replace('<', '_').Replace('>', '_');
+    }
+
+    /// <summary>
+    /// Emits the <c>partial void ApplyOptimizedState()</c> declaration and a once-guarded
+    /// call in <c>GetPredictors()</c>. If the optimizer hasn't written a <c>.g.cs</c>
+    /// implementation, the compiler removes both (C# partial void rules).
+    /// </summary>
+    private static void EmitAutoOptimizeHook(StringBuilder sb, ModuleModel model)
+    {
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Applied once when <see cref=\"GetPredictors\"/> is first called.");
+        sb.AppendLine("    /// The optimizer CLI writes the implementation in");
+        sb.AppendLine("    /// <c>Generated/" + model.TypeName + ".Optimized.g.cs</c>.");
+        sb.AppendLine("    /// If no implementation exists, the compiler removes this entirely.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    partial void ApplyOptimizedState();");
     }
 
     /// <summary>

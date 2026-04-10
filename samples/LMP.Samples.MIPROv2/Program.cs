@@ -175,7 +175,7 @@ Console.WriteLine("╚═══════════════════�
 
 // ── Step 7: Save optimized module ───────────────────────────
 var artifactPath = Path.Combine(Path.GetTempPath(), "mipro-optimized.json");
-await mipOptimized.SaveAsync(artifactPath);
+await mipOptimized.SaveStateAsync(artifactPath);
 Console.WriteLine($"\nSaved optimized module to: {artifactPath}");
 File.Delete(artifactPath);
 

@@ -1,0 +1,4 @@
+{"input":{"question":"What is the boiling point of water?"},"label":{"answer":"The boiling point of water at standard atmospheric pressure is 100 degrees Celsius (212 degrees Fahrenheit)."}}
+{"input":{"question":"Who was the first person to walk on the Moon?"},"label":{"answer":"Neil Armstrong was the first person to walk on the Moon on July 20, 1969."}}
+{"input":{"question":"What is the chemical symbol for gold?"},"label":{"answer":"The chemical symbol for gold is Au, from the Latin word aurum."}}
+{"input":{"question":"What causes tides?"},"label":{"answer":"Tides are caused primarily by the gravitational pull of the Moon and the Sun on Earth's oceans."}}

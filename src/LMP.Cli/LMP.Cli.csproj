@@ -16,4 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\LMP.Optimizers\LMP.Optimizers.csproj" />
   </ItemGroup>
+
+  <!-- CLI is provider-agnostic: no Azure, no provider packages.
+       Client creation happens in the user's assembly via static CreateClient(). -->
 </Project>
