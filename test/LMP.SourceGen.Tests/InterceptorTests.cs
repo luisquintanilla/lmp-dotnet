@@ -160,7 +160,7 @@ public class InterceptorTests
         var callSites = CreateSingleCallSite();
         var source = InterceptorEmitter.GenerateSource(callSites);
 
-        Assert.Contains("trace?.Record(self.Name, input!, result);", source);
+        Assert.Contains("trace?.Record(self.Name, input!, result, response.Usage);", source);
     }
 
     [Fact]

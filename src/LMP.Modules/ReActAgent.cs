@@ -114,7 +114,7 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
                 ?? throw new InvalidOperationException(
                     $"ReActAgent '{Name}': structured output returned null.");
 
-            trace?.Record(Name, input!, result);
+            trace?.Record(Name, input!, result, response.Usage);
 
             if (validate is null)
                 return result;

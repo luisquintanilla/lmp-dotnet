@@ -166,7 +166,7 @@ internal static class InterceptorEmitter
         sb.AppendLine();
 
         // Trace recording
-        sb.AppendLine("                trace?.Record(self.Name, input!, result);");
+        sb.AppendLine("                trace?.Record(self.Name, input!, result, response.Usage);");
         sb.AppendLine();
 
         // Validation and early return

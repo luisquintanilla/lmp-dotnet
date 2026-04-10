@@ -75,7 +75,7 @@ public class ChainOfThought<TInput, TOutput> : Predictor<TInput, TOutput>
             // ChainOfThoughtResult<TOutput>. Optimizers call AddDemo(input, output)
             // which casts output to TOutput — recording the wrapper would cause
             // InvalidCastException during BootstrapFewShot optimization.
-            trace?.Record(Name, input!, result);
+            trace?.Record(Name, input!, result, response.Usage);
 
             if (validate is null)
                 return result;

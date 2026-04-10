@@ -116,7 +116,7 @@ public class Predictor<TInput, TOutput> : IPredictor
                 ?? throw new InvalidOperationException(
                     $"Predictor '{Name}': structured output returned null.");
 
-            trace?.Record(Name, input!, result);
+            trace?.Record(Name, input!, result, response.Usage);
 
             if (validate is null)
                 return result;

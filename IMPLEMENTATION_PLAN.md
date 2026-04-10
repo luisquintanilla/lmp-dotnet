@@ -1188,7 +1188,7 @@ Solution structure is stale. Add:
 
 > **Design principle:** Reuse M.E.AI's `UsageDetails` from `ChatResponse.Usage`. Auto-collect multi-dimensional cost. User provides `Func<TrialCost, double>` projection — same pattern as `Metric.Create`.
 
-#### Task 9B.1: Capture ChatResponse.Usage in Predictor/Trace ❌
+#### Task 9B.1: Capture ChatResponse.Usage in Predictor/Trace ✅
 
 **Files:** `src/LMP.Abstractions/Trace.cs`, `src/LMP.Core/Predictor.cs`
 
