@@ -1,6 +1,6 @@
 # LMP System Architecture
 
-> **Status:** v2 — rewritten from first principles  
+> **Status:** v3 — updated to reflect implemented codebase  
 > **Target:** .NET 10 / C# 14  
 > **Dependency:** `Microsoft.Extensions.AI` (`IChatClient`)  
 > **Philosophy:** Building blocks, not a framework
@@ -22,13 +22,21 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Layer 4 — Optional Tooling (post-MVP)                               │
-│   dotnet lmp optimize CLI · Aspire dashboard · [Predict] sugar      │
-│   C# 14 interceptors for zero-dispatch PredictAsync                 │
+│ Layer 4 — Tooling & Integrations                                    │
+│   dotnet lmp CLI (inspect, optimize, eval, run)                     │
+│   LMP.Aspire.Hosting (dashboard, telemetry)                         │
+│   [Predict] sugar · C# 14 interceptors for zero-dispatch            │
+├─────────────────────────────────────────────────────────────────────┤
+│ Extensions — Optional Packages                                      │
+│   LMP.Extensions.Evaluation — M.E.AI IEvaluator → LMP metric bridge│
+│   LMP.Extensions.Z3 — Z3 SMT constraint-based demo selection        │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Layer 3 — Optimization                           LMP.Optimizers     │
-│   Evaluator · BootstrapFewShot · BootstrapRandomSearch · MIPROv2*   │
-│   IOptimizer interface — all return same module with params filled   │
+│   Evaluator · BootstrapFewShot · BootstrapRandomSearch · MIPROv2    │
+│   ISampler: CategoricalTpeSampler · SmacSampler                     │
+│   GEPA · TraceAnalyzer · ParetoFrontier                             │
+│   IOptimizer — all return same module with params filled             │
+│   (TensorPrimitives used internally for statistical computation)    │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Layer 2 — Reasoning Strategies                   LMP.Modules        │
 │   ChainOfThought · BestOfN · Refine · ReActAgent · ProgramOfThought*│
@@ -36,12 +44,15 @@
 ├─────────────────────────────────────────────────────────────────────┤
 │ Layer 1 — Core Building Blocks    LMP.Abstractions + LMP.Core       │
 │   [LmpSignature] · Predictor<TIn,TOut> · LmpModule · Example       │
-│   Trace · LmpAssert / LmpSuggest · IRetriever                      │
+│   Trace · ISampler · IPredictor · IRetriever                        │
+│   LmpAssert / LmpSuggest · [Predict] attribute                     │
+│   ⚡ AOT-compatible: Abstractions, Core, Optimizers                 │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Layer 0 — .NET Platform (zero LMP code)                             │
 │   IChatClient · GetResponseAsync<T>() · ChatClientBuilder           │
 │   DataAnnotations · System.Text.Json source gen · M.E.AI.Evaluation │
 │   AIFunction · FunctionInvokingChatClient · IOptions<T>             │
+│   System.Numerics.Tensors (TensorPrimitives)                        │
 └─────────────────────────────────────────────────────────────────────┘
 
                          * = post-MVP
@@ -113,10 +124,10 @@ Internally: source-generated `PromptBuilder` → `ChatMessage[]` → `IChatClien
 
 ### `LmpModule`
 
-Base class for composable LM programs. Users override `ForwardAsync()`.
+Base class for composable LM programs. Users subclass `LmpModule<TInput, TOutput>` (typed) or `LmpModule` (untyped) and override `ForwardAsync()`.
 
 ```csharp
-public class TicketTriageModule : LmpModule
+public class TicketTriageModule : LmpModule<TicketInput, DraftReply>
 {
     private readonly Predictor<TicketInput, ClassifyTicket> _classify;
     private readonly Predictor<ClassifyTicket, DraftReply> _draft;
@@ -127,13 +138,16 @@ public class TicketTriageModule : LmpModule
         _draft = new Predictor<ClassifyTicket, DraftReply>(client);
     }
 
-    public async Task<DraftReply> ForwardAsync(TicketInput input)
+    public override async Task<DraftReply> ForwardAsync(
+        TicketInput input, CancellationToken ct = default)
     {
         var classification = await _classify.PredictAsync(input);
         return await _draft.PredictAsync(classification);
     }
 }
 ```
+
+`LmpModule<TInput, TOutput>` bridges to the untyped `LmpModule.ForwardAsync(object)` automatically, so optimizers and evaluators work through a single code path.
 
 Source generator emits `GetPredictors()` — zero-reflection predictor discovery for optimization.
 `SaveAsync()` / `LoadAsync()` use source-generated `JsonSerializerContext` — AOT-compatible.
@@ -142,11 +156,14 @@ Source generator emits `GetPredictors()` — zero-reflection predictor discovery
 
 | Type | Purpose |
 |---|---|
-| `Example<TInput, TLabel>` | Training data record. `WithInputs()` extracts just the input portion. |
-| `Trace` | Records `(predictor, inputs, outputs)` tuples during execution for optimization. |
+| `Example` / `Example<TInput, TLabel>` | Training data. Non-generic base has `WithInputs()` and `GetLabel()` for type-erased optimizer access. |
+| `Trace` | Records `(predictor, inputs, outputs)` tuples during execution for optimization. Thread-safe. |
+| `IPredictor` | Non-generic predictor interface used by optimizers for type-erased demo addition and state management. |
+| `ISampler` | Bayesian hyperparameter sampler interface: `Propose()` → `Update()` cycle. |
 | `LmpAssert` | Runtime assertion with retry/backtrack: `LmpAssert.That(result, r => r.Urgency >= 1)` |
 | `LmpSuggest` | Soft assertion — logs a warning, no retry: `LmpSuggest.That(result, r => r.Category != "unknown")` |
 | `IRetriever` | RAG interface: `RetrieveAsync(query, k) → string[]`. Users bring their own implementation via DI. |
+| `[Predict]` | Method attribute — source gen emits backing `Predictor` field and method body for partial methods on `LmpModule`. |
 
 ---
 
@@ -212,8 +229,7 @@ Runs a module on a dev set, scores with a metric function, aggregates results.
 var score = await Evaluator.EvaluateAsync(
     module,
     devSet,
-    metric: (label, output) => label.Category == output.Category ? 1f : 0f);
-// score == 0.87 (87% accuracy)
+    metric: (example, output) => /* score in [0, 1] */);
 ```
 
 Uses `Parallel.ForEachAsync` for concurrent evaluation across the dataset.
@@ -224,7 +240,7 @@ The core "compile" step. Runs a teacher module on the training set, collects suc
 
 ```csharp
 var optimizer = new BootstrapFewShot(metric, maxDemos: 4);
-var optimized = await optimizer.OptimizeAsync(module, trainSet);
+var optimized = await optimizer.CompileAsync(module, trainSet, metric);
 // optimized module now has few-shot demos filled in
 ```
 
@@ -236,24 +252,59 @@ var optimized = await optimizer.OptimizeAsync(module, trainSet);
 
 ```csharp
 var optimizer = new BootstrapRandomSearch(metric, numTrials: 8);
-var best = await optimizer.OptimizeAsync(module, trainSet, devSet);
+var best = await optimizer.CompileAsync(module, trainSet, metric);
 ```
 
-### `MIPROv2` *(post-MVP)*
+### `MIPROv2`
 
-Bayesian optimization over both instructions and demos. DSPy's MIPROv2 uses Optuna's TPE sampler (~35K LOC). LMP could use [ML.NET AutoML tuners](https://learn.microsoft.com/dotnet/machine-learning/how-to-guides/how-to-use-the-automl-api) as a backend.
+Bayesian optimization over both instructions and demos. The most advanced optimizer — uses instruction proposal via LM, demo set search via TPE (Tree-structured Parzen Estimator), and multi-phase search.
+
+```csharp
+var optimizer = new MIPROv2(numTrials: 30, maxDemos: 4, samplerFactory: cardinalities => new SmacSampler(cardinalities));
+var best = await optimizer.CompileAsync(module, trainSet, metric);
+```
+
+Configurable: `numTrials`, `numInstructionCandidates`, `numDemoSubsets`, `maxDemos`, `gamma`, and `samplerFactory` (default: `CategoricalTpeSampler`).
+
+### `ISampler`
+
+Bayesian hyperparameter sampler interface used by MIPROv2. Lives in `LMP.Abstractions`.
+
+```csharp
+public interface ISampler
+{
+    int TrialCount { get; }
+    Dictionary<string, int> Propose();
+    void Update(Dictionary<string, int> config, float score);
+}
+```
+
+Built-in implementations in `LMP.Optimizers`:
+- **`CategoricalTpeSampler`** — Tree-structured Parzen Estimator for categorical spaces (default for MIPROv2)
+- **`SmacSampler`** — Sequential Model-based Algorithm Configuration with random forests
+
+### Advanced Optimization Components
+
+| Component | Purpose |
+|---|---|
+| `GEPA` | Genetic-Pareto Evolutionary Algorithm — instruction optimization with LLM reflection |
+| `TraceAnalyzer` | Empirical Bayesian analysis of trial history, warm-start support |
+| `ParetoFrontier` | Multi-objective frontier tracking for GEPA |
+
+These components use `System.Numerics.Tensors` (`TensorPrimitives`) internally for efficient statistical computations (averaging, normalization, score disagreement).
 
 ### `IOptimizer`
 
-All optimizers implement this interface. All return the same module type with parameters filled in — no new types created.
+All optimizers implement this interface. All return the same module type with parameters filled in — no new types created. Uses non-generic `Example` base class (with `WithInputs()` / `GetLabel()`) for type-erased training data.
 
 ```csharp
 public interface IOptimizer
 {
-    Task<TModule> OptimizeAsync<TModule>(
+    Task<TModule> CompileAsync<TModule>(
         TModule module,
-        IReadOnlyList<Example<TInput, TLabel>> trainSet,
-        Func<TLabel, TOutput, float>? metric = null)
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken = default)
         where TModule : LmpModule;
 }
 ```
@@ -400,8 +451,8 @@ Current input:
 
 | DSPy | LMP | Notes |
 |---|---|---|
-| `dspy.Example` | `Example<TInput, TLabel>` | Typed record with `WithInputs()` |
-| Metric function | `Func<TLabel, TOutput, float>` | Or use `M.E.AI.Evaluation` evaluators — don't rebuild |
+| `dspy.Example` | `Example` / `Example<TInput, TLabel>` | Non-generic base with `WithInputs()` / `GetLabel()` for type-erased access |
+| Metric function | `Func<Example, object, float>` | Or use `M.E.AI.Evaluation` evaluators via `LMP.Extensions.Evaluation` bridge |
 | `dspy.Evaluate` | `Evaluator.EvaluateAsync()` | `Parallel.ForEachAsync` for concurrency |
 
 ### Optimization
@@ -410,7 +461,9 @@ Current input:
 |---|---|---|
 | `BootstrapFewShot` (~250 LOC) | `BootstrapFewShot` | Run teacher, collect successful traces, fill `Demos` |
 | `BootstrapFewShotWithRandomSearch` | `BootstrapRandomSearch` | × N candidates with `Task.WhenAll` |
-| `MIPROv2` (~35K LOC, uses Optuna TPE) | `MIPROv2` (post-MVP) | ML.NET AutoML tuners as possible backend |
+| `MIPROv2` (~35K LOC, uses Optuna TPE) | `MIPROv2` | Uses `ISampler` (CategoricalTpeSampler/SmacSampler) instead of Optuna |
+| Optuna TPE sampler | `CategoricalTpeSampler` | Pure .NET categorical TPE — no Python dependency |
+| SMAC | `SmacSampler` | Sequential model-based sampler with random forests |
 
 ### Save / Load
 
@@ -444,17 +497,25 @@ These are structural advantages of the .NET platform that no amount of Python li
 
 ---
 
+## Implemented Extensions
+
+| Extension | Package | What It Does |
+|---|---|---|
+| M.E.AI.Evaluation bridge | `LMP.Extensions.Evaluation` | Bridges `IEvaluator` into LMP metric functions |
+| Z3 constraints | `LMP.Extensions.Z3` | SMT-based constraint optimization for demo selection |
+| Aspire integration | `LMP.Aspire.Hosting` | Dashboard resource, telemetry (ActivitySource + Meter) for optimization runs |
+| C# 14 Interceptors | `LMP.SourceGen` | Zero-dispatch `PredictAsync` optimization — compiler rewrites call sites |
+| `[Predict]` sugar | `LMP.Abstractions` + `LMP.SourceGen` | Partial method attribute — source gen emits `Predictor` field and method body |
+| `dotnet lmp` CLI | `LMP.Cli` | CLI tool: `inspect`, `optimize`, `eval`, `run` commands for CI/CD pipelines |
+| ISampler / TPE / SMAC | `LMP.Optimizers` | Bayesian samplers for MIPROv2 — no external ML dependencies |
+| GEPA | `LMP.Optimizers` | Genetic-Pareto instruction optimization with LLM reflection |
+
 ## Post-MVP Extensions
 
 | Extension | Package | What It Does |
 |---|---|---|
-| ML.NET AutoML | `LMP.Optimizers.AutoML` | MIPROv2 tuner backend using [ML.NET AutoML](https://learn.microsoft.com/dotnet/machine-learning/how-to-guides/how-to-use-the-automl-api) |
 | Infer.NET | `LMP.Extensions.Probabilistic` | Bayesian A/B testing of instruction variants |
-| Z3 | `LMP.Extensions.Constraints` | Multi-constraint feasibility analysis for optimizer search spaces |
-| C# 14 Interceptors | `LMP.Core` | Zero-dispatch `PredictAsync` optimization — compiler rewrites call sites |
-| Aspire integration | `LMP.Aspire` | Dashboard for optimization runs, traces, evaluator metrics |
-| `[Predict]` sugar | `LMP.Core` | Partial method attribute — source gen emits `PredictAsync` body |
-| `dotnet lmp optimize` | `LMP.Cli` | CLI tool wrapping `IOptimizer` for CI/CD pipelines |
+| ProgramOfThought | `LMP.Modules` | LM generates C# code → Roslyn scripting executes it → structured result |
 
 ---
 
@@ -502,7 +563,7 @@ public partial record DraftReply
 }
 
 // === Module — composes two predictors ===
-public class TicketTriageModule : LmpModule
+public class TicketTriageModule : LmpModule<TicketInput, DraftReply>
 {
     private readonly Predictor<TicketInput, ClassifyTicket> _classify;
     private readonly Predictor<ClassifyTicket, DraftReply> _draft;
@@ -513,7 +574,8 @@ public class TicketTriageModule : LmpModule
         _draft = new Predictor<ClassifyTicket, DraftReply>(client);
     }
 
-    public async Task<DraftReply> ForwardAsync(TicketInput input)
+    public override async Task<DraftReply> ForwardAsync(
+        TicketInput input, CancellationToken ct = default)
     {
         var classification = await _classify.PredictAsync(input);
         LmpAssert.That(classification, c => c.Urgency >= 1 && c.Urgency <= 5);
@@ -529,22 +591,21 @@ var client = new ChatClientBuilder(new OpenAIChatClient("gpt-4o-mini"))
 
 var module = new TicketTriageModule(client);
 
-var trainSet = LoadExamples<TicketInput, DraftReply>("train.jsonl");
-var devSet   = LoadExamples<TicketInput, DraftReply>("dev.jsonl");
+var trainSet = LoadExamples("train.jsonl");  // IReadOnlyList<Example>
 
-var optimizer = new BootstrapRandomSearch(
-    metric: (label, output) => label.ReplyText.Contains(output.Category) ? 1f : 0f,
-    numTrials: 8);
+Func<Example, object, float> metric = (example, output) =>
+    ((DraftReply)output).ReplyText.Length > 0 ? 1f : 0f;
 
-var optimized = await optimizer.OptimizeAsync(module, trainSet, devSet);
+var optimizer = new BootstrapRandomSearch(metric, numTrials: 8);
+
+var optimized = await optimizer.CompileAsync(module, trainSet, metric);
 
 // === Save optimized parameters ===
 await optimized.SaveAsync("triage-v1.json");
 
 // === Evaluate ===
-var score = await Evaluator.EvaluateAsync(optimized, devSet,
-    metric: (label, output) => label.ReplyText.Contains(output.Category) ? 1f : 0f);
-Console.WriteLine($"Accuracy: {score:P1}");
+var result = await Evaluator.EvaluateAsync(optimized, trainSet, metric);
+Console.WriteLine($"Accuracy: {result.AverageScore:P1}");
 
 // === Deploy — load in production ===
 var production = new TicketTriageModule(client);
@@ -557,18 +618,38 @@ var reply = await production.ForwardAsync(new TicketInput("I was charged twice")
 ## Package Structure
 
 ```
-LMP.sln
+LMP.slnx
 ├── src/
-│   ├── LMP.Abstractions/     # [LmpSignature], IRetriever, Example<T>, Trace, base types
-│   ├── LMP.Core/             # Predictor<TIn,TOut>, LmpModule, LmpAssert, source generator
-│   ├── LMP.Modules/          # ChainOfThought, BestOfN, Refine, ReActAgent
-│   └── LMP.Optimizers/       # Evaluator, BootstrapFewShot, BootstrapRandomSearch, IOptimizer
+│   ├── LMP.Abstractions/        # [LmpSignature], ISampler, IPredictor, Example, Trace, [Predict], base types
+│   ├── LMP.Core/                # Predictor<TIn,TOut>, LmpModule, LmpAssert/LmpSuggest
+│   ├── LMP.SourceGen/           # Roslyn IIncrementalGenerator: PromptBuilder, interceptors, [Predict] wiring
+│   ├── LMP.Modules/             # ChainOfThought, BestOfN, Refine, ReActAgent
+│   ├── LMP.Optimizers/          # Evaluator, BootstrapFewShot, BootstrapRandomSearch, MIPROv2, GEPA
+│   │                            # SmacSampler, CategoricalTpeSampler, TraceAnalyzer, ParetoFrontier
+│   ├── LMP.Extensions.Evaluation/  # M.E.AI IEvaluator → LMP metric bridge
+│   ├── LMP.Extensions.Z3/       # Z3 SMT constraint-based demo selection
+│   ├── LMP.Aspire.Hosting/      # Aspire resource + telemetry for optimization runs
+│   └── LMP.Cli/                 # CLI tool (dotnet lmp): inspect, optimize, eval, run
 │
-├── tests/
+├── test/
+│   ├── LMP.Abstractions.Tests/
 │   ├── LMP.Core.Tests/
+│   ├── LMP.SourceGen.Tests/
 │   ├── LMP.Modules.Tests/
-│   └── LMP.Optimizers.Tests/
+│   ├── LMP.Optimizers.Tests/
+│   ├── LMP.Cli.Tests/
+│   ├── LMP.Extensions.Z3.Tests/
+│   └── LMP.Aspire.Hosting.Tests/
 │
 └── samples/
     └── LMP.Samples.TicketTriage/
 ```
+
+### AOT Compatibility
+
+Three core packages have `<IsAotCompatible>true</IsAotCompatible>`:
+- **LMP.Abstractions** — interfaces and base types, zero reflection
+- **LMP.Core** — Predictor uses source-generated `JsonSerializerContext`, no runtime reflection
+- **LMP.Optimizers** — pure algorithmic code, uses `TensorPrimitives` for math
+
+Extension packages (`LMP.Modules`, `LMP.Extensions.*`, `LMP.Cli`) are **not** AOT-compatible due to Roslyn scripting, native Z3 bindings, or reflection-based discovery.

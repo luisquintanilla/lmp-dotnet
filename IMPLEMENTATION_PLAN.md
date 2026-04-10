@@ -1155,7 +1155,7 @@ This is the most stale spec. Fix:
 
 **Completion:** Plan reflects actual implementation state.
 
-#### Task 9A.5: Verify `system-architecture.md` ❌
+#### Task 9A.5: Verify `system-architecture.md` ✅
 
 **File:** `docs/01-architecture/system-architecture.md`
 
