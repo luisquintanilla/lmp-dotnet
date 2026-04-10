@@ -919,4 +919,123 @@ public class ModuleEmitterTests
     }
 
     #endregion
+
+    #region [AutoOptimize] tests
+
+    [Fact]
+    public void GenerateSource_WithAutoOptimize_EmitsPartialVoidDeclaration()
+    {
+        var model = CreateModuleModel();
+        var modelWithAutoOpt = model with { HasAutoOptimize = true };
+        var source = ModuleEmitter.GenerateSource(modelWithAutoOpt);
+
+        Assert.Contains("partial void ApplyOptimizedState();", source);
+    }
+
+    [Fact]
+    public void GenerateSource_WithAutoOptimize_EmitsOnceGuardField()
+    {
+        var model = CreateModuleModel();
+        var modelWithAutoOpt = model with { HasAutoOptimize = true };
+        var source = ModuleEmitter.GenerateSource(modelWithAutoOpt);
+
+        Assert.Contains("private bool __optimizedStateApplied;", source);
+    }
+
+    [Fact]
+    public void GenerateSource_WithAutoOptimize_EmitsGuardedCallInGetPredictors()
+    {
+        var model = CreateModuleModel();
+        var modelWithAutoOpt = model with { HasAutoOptimize = true };
+        var source = ModuleEmitter.GenerateSource(modelWithAutoOpt);
+
+        Assert.Contains("if (!__optimizedStateApplied)", source);
+        Assert.Contains("__optimizedStateApplied = true;", source);
+        Assert.Contains("ApplyOptimizedState();", source);
+    }
+
+    [Fact]
+    public void GenerateSource_WithoutAutoOptimize_DoesNotEmitPartialVoid()
+    {
+        var model = CreateModuleModel();
+        var source = ModuleEmitter.GenerateSource(model);
+
+        Assert.DoesNotContain("ApplyOptimizedState", source);
+        Assert.DoesNotContain("__optimizedStateApplied", source);
+    }
+
+    [Fact]
+    public void Pipeline_WithAutoOptimize_EmitsValidCode()
+    {
+        var source = GetAutoOptimizeModuleSource();
+        var (diagnostics, runResult) = RunGenerator(source);
+
+        // No errors
+        var errors = diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+        Assert.Empty(errors);
+
+        // Should have generated file for the module
+        var generatedSources = runResult.GeneratedTrees;
+        var modulePredictors = generatedSources
+            .FirstOrDefault(t => t.FilePath.Contains("AutoOptModule.Predictors.g.cs"));
+        Assert.NotNull(modulePredictors);
+
+        var generatedText = modulePredictors.GetText().ToString();
+        Assert.Contains("partial void ApplyOptimizedState();", generatedText);
+        Assert.Contains("__optimizedStateApplied", generatedText);
+    }
+
+    private static string GetAutoOptimizeModuleSource() => """
+        namespace LMP
+        {
+            public abstract class LmpModule
+            {
+                public virtual System.Collections.Generic.IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors() => System.Array.Empty<(string, IPredictor)>();
+                protected virtual LmpModule CloneCore() => throw new System.NotSupportedException();
+            }
+            public interface IPredictor
+            {
+                IPredictor Clone();
+            }
+            public class Predictor<TInput, TOutput> : IPredictor where TOutput : class
+            {
+                public Predictor(object client) { }
+                public System.Text.Json.JsonSerializerOptions? SerializerOptions { get; set; }
+                public IPredictor Clone() => this;
+            }
+
+            [System.AttributeUsage(System.AttributeTargets.Class)]
+            public sealed class AutoOptimizeAttribute : System.Attribute
+            {
+                public string? TrainSet { get; init; }
+                public string? DevSet { get; init; }
+                public int BudgetSeconds { get; init; } = 120;
+            }
+        }
+
+        namespace TestApp
+        {
+            using LMP;
+
+            public record QAInput(string Question);
+            public partial record QAOutput { public required string Answer { get; init; } }
+
+            [AutoOptimize(TrainSet = "Data/train.jsonl", BudgetSeconds = 60)]
+            public partial class AutoOptModule : LmpModule
+            {
+                private readonly Predictor<QAInput, QAOutput> _qa;
+
+                public AutoOptModule(object client)
+                {
+                    _qa = new Predictor<QAInput, QAOutput>(client);
+                }
+
+                public override System.Threading.Tasks.Task<object> ForwardAsync(
+                    object input, System.Threading.CancellationToken ct = default)
+                    => System.Threading.Tasks.Task.FromResult<object>(null!);
+            }
+        }
+        """;
+
+    #endregion
 }
