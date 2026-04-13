@@ -230,7 +230,7 @@ public sealed class MIPROv2 : IOptimizer
         {
             await CSharpArtifactWriter.WriteAsync(
                 bestCandidate, outputDir, bestScore, nameof(MIPROv2),
-                options?.TrainDataPath, cancellationToken);
+                options?.TrainDataPath, options?.Baseline, cancellationToken);
         }
 
         return bestCandidate;

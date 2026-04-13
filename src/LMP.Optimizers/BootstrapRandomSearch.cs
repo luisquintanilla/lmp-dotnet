@@ -107,7 +107,7 @@ public sealed class BootstrapRandomSearch : IOptimizer
         {
             await CSharpArtifactWriter.WriteAsync(
                 best, outputDir, results[bestIndex].AverageScore, nameof(BootstrapRandomSearch),
-                options?.TrainDataPath, cancellationToken);
+                options?.TrainDataPath, options?.Baseline, cancellationToken);
         }
 
         return best;

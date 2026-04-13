@@ -89,7 +89,7 @@ public sealed class Z3ConstrainedDemoSelector : IOptimizer
                 module, trainSet, metric, cancellationToken: cancellationToken);
             await CSharpArtifactWriter.WriteAsync(
                 module, outputDir, evalResult.AverageScore, nameof(Z3ConstrainedDemoSelector),
-                options?.TrainDataPath, cancellationToken);
+                options?.TrainDataPath, options?.Baseline, cancellationToken);
         }
 
         return module;

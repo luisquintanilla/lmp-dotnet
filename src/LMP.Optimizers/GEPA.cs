@@ -114,7 +114,7 @@ public sealed class GEPA : IOptimizer
                 best, trainSet, metric, cancellationToken: cancellationToken);
             await CSharpArtifactWriter.WriteAsync(
                 best, outputDir, evalResult.AverageScore, nameof(GEPA),
-                options?.TrainDataPath, cancellationToken);
+                options?.TrainDataPath, options?.Baseline, cancellationToken);
         }
 
         return best;

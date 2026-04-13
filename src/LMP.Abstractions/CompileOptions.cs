@@ -20,6 +20,12 @@ public sealed record CompileOptions
     public string? TrainDataPath { get; init; }
 
     /// <summary>
+    /// Optional baseline score (pre-optimization) for comparison.
+    /// When set, the generated <c>.g.cs</c> header includes the baseline for context.
+    /// </summary>
+    public float? Baseline { get; init; }
+
+    /// <summary>
     /// Optimization only — no <c>.g.cs</c> file is written.
     /// Use in tests or runtime-only scenarios.
     /// </summary>
