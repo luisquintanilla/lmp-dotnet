@@ -277,23 +277,18 @@ internal static class AutoOptimizeCommand
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken, budgetCts.Token);
 
-            var compileOptions = new CompileOptions
-            {
-                OutputDir = generatedDir,
-                TrainDataPath = trainPath,
-                Baseline = baselineScore
-            };
-
+            // RuntimeOnly: optimizer returns optimized module WITHOUT writing .g.cs.
+            // CLI controls artifact writing after comparing to baseline on the SAME dataset.
             try
             {
-                module = await opt.CompileAsync(module, trainSet, metric, compileOptions, linked.Token);
+                module = await opt.CompileAsync(module, trainSet, metric, CompileOptions.RuntimeOnly, linked.Token);
             }
             catch (OperationCanceledException) when (budgetCts.IsCancellationRequested)
             {
                 await Console.Error.WriteLineAsync($"Budget of {budgetSeconds}s reached. Using best result so far.");
             }
 
-            // Evaluate on training set to get score
+            // Evaluate optimized module on FULL training set (same dataset as baseline)
             var evalResult = await Evaluator.EvaluateAsync(
                 module, trainSet, metric, cancellationToken: cancellationToken);
             bestScore = evalResult.AverageScore;
@@ -305,16 +300,47 @@ internal static class AutoOptimizeCommand
             return Program.ExitCodes.CompilationFailed;
         }
 
-        // Step 9: Print summary with baseline comparison
+        // Step 9: Baseline guard — only accept if improved
         float improvement = bestScore - baselineScore;
         float improvementPct = baselineScore > 0 ? (improvement / baselineScore) * 100f : 0f;
         var predictors = module.GetPredictors();
+
+        if (bestScore <= baselineScore)
+        {
+            // Regression or no improvement — do NOT write artifact
+            if (File.Exists(outputPath))
+                File.Delete(outputPath);
+
+            await Console.Error.WriteLineAsync($"""
+
+                Optimization did not improve over baseline.
+                ────────────────────────────────────────
+                Baseline       : {baselineScore:F4}
+                Optimized      : {bestScore:F4}  ({improvement:F4}, {improvementPct:F1}%)
+                Result         : Artifact NOT written (no improvement)
+
+                The model already performs well on this task. Try:
+                  - A harder task where few-shot demos add value
+                  - More training examples (current: {trainSet.Count})
+                  - A different optimizer (--optimizer mipro)
+                  - More trials (--num-trials 20)
+                """);
+
+            return Program.ExitCodes.Success;
+        }
+
+        // Improvement confirmed — write the artifact with the CLI's full-dataset score
+        Directory.CreateDirectory(generatedDir);
+        await CSharpArtifactWriter.WriteAsync(
+            module, generatedDir, bestScore, optimizerName,
+            trainPath, baselineScore, cancellationToken);
+
         await Console.Error.WriteLineAsync($"""
 
             Auto-optimize complete!
             ────────────────────────────────────────
             Baseline       : {baselineScore:F4}
-            Optimized      : {bestScore:F4}  ({(improvement >= 0 ? "+" : "")}{improvement:F4}, {(improvement >= 0 ? "+" : "")}{improvementPct:F1}%)
+            Optimized      : {bestScore:F4}  (+{improvement:F4}, +{improvementPct:F1}%)
             Output         : {outputPath}
             Predictors     : {predictors.Count}
             """);
