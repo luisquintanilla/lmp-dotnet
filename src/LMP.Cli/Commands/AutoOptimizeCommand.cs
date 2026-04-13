@@ -1,5 +1,6 @@
 using LMP.Cli.Infrastructure;
 using LMP.Optimizers;
+using Microsoft.Extensions.AI;
 
 namespace LMP.Cli.Commands;
 
@@ -21,6 +22,7 @@ internal static class AutoOptimizeCommand
         string optimizer = "random";
         int numTrials = 8;
         int maxDemos = 4;
+        int? budgetSeconds = null;
         bool force = false;
 
         for (int i = 0; i < args.Length; i++)
@@ -59,6 +61,14 @@ internal static class AutoOptimizeCommand
                         return Program.ExitCodes.InvalidArguments;
                     }
                     break;
+                case "--budget" when i + 1 < args.Length:
+                    if (!int.TryParse(args[++i], out var b) || b < 1)
+                    {
+                        await Console.Error.WriteLineAsync("ERROR [args] --budget must be a positive integer (seconds).");
+                        return Program.ExitCodes.InvalidArguments;
+                    }
+                    budgetSeconds = b;
+                    break;
                 case "--force":
                     force = true;
                     break;
@@ -80,16 +90,16 @@ internal static class AutoOptimizeCommand
         }
 
         var normalizedOptimizer = optimizer.ToLowerInvariant();
-        if (normalizedOptimizer is not ("bootstrap" or "random"))
+        if (normalizedOptimizer is not ("bootstrap" or "random" or "mipro" or "gepa"))
         {
             await Console.Error.WriteLineAsync(
-                $"ERROR [args] Unknown optimizer '{optimizer}'. Supported: bootstrap, random.");
+                $"ERROR [args] Unknown optimizer '{optimizer}'. Supported: bootstrap, random, mipro, gepa.");
             return Program.ExitCodes.InvalidArguments;
         }
 
         return await RunAutoOptimizeAsync(
             project, train, dev, model, output, normalizedOptimizer,
-            numTrials, maxDemos, force, CancellationToken.None);
+            numTrials, maxDemos, budgetSeconds, force, CancellationToken.None);
     }
 
     internal static async Task<int> RunAutoOptimizeAsync(
@@ -101,6 +111,7 @@ internal static class AutoOptimizeCommand
         string optimizerName,
         int numTrials,
         int maxDemos,
+        int? budgetSeconds,
         bool force,
         CancellationToken cancellationToken)
     {
@@ -129,6 +140,8 @@ internal static class AutoOptimizeCommand
             devPath ??= attrConfig.DevSet is not null
                 ? Path.Combine(projectDir, attrConfig.DevSet)
                 : null;
+            // BudgetSeconds from attribute is used to set numTrials if not explicitly overridden
+            budgetSeconds ??= attrConfig.BudgetSeconds > 0 ? attrConfig.BudgetSeconds : null;
         }
 
         if (string.IsNullOrEmpty(trainPath))
@@ -208,35 +221,77 @@ internal static class AutoOptimizeCommand
             return Program.ExitCodes.ProjectNotFound;
         }
 
+        // Step 5b: Measure baseline score (before optimization)
+        float baselineScore;
+        try
+        {
+            var baselineResult = await Evaluator.EvaluateAsync(
+                module, trainSet, metric, cancellationToken: cancellationToken);
+            baselineScore = baselineResult.AverageScore;
+            await Console.Error.WriteLineAsync($"Baseline score: {baselineScore:F4}");
+        }
+        catch (Exception ex)
+        {
+            await Console.Error.WriteLineAsync($"WARNING [baseline] Could not measure baseline: {ex.Message}");
+            baselineScore = 0f;
+        }
+
         // Step 6: Create optimizer
+        // For MIPROv2/GEPA, we need an IChatClient for proposal/reflection generation.
+        // ConventionRunner exposes CreateClient(); for ILmpRunner users we reuse CreateModule's client.
         IOptimizer opt = optimizerName switch
         {
             "bootstrap" => new BootstrapFewShot(maxDemos),
             "random" => new BootstrapRandomSearch(numTrials, maxDemos),
+            "mipro" => new MIPROv2(
+                proposalClient: GetProposalClient(runner),
+                numTrials: numTrials,
+                maxDemos: maxDemos),
+            "gepa" => new GEPA(
+                reflectionClient: GetProposalClient(runner),
+                maxIterations: numTrials),
             _ => throw new InvalidOperationException($"Unknown optimizer: {optimizerName}")
         };
 
         // Step 7: Run optimization
+        string budgetDisplay = budgetSeconds.HasValue ? $"{budgetSeconds}s" : "unlimited";
         await Console.Error.WriteLineAsync($"""
             LMP Auto-Optimize
             ════════════════════════════════════════
             Module         : {moduleName}
             Optimizer      : {optimizerName}
             Training set   : {trainSet.Count} examples
+            Baseline score : {baselineScore:F4}
             Max demos      : {maxDemos}
             Num trials     : {numTrials}
+            Budget         : {budgetDisplay}
             """);
 
         float bestScore;
         string outputPath;
         try
         {
+            using var budgetCts = budgetSeconds.HasValue
+                ? new CancellationTokenSource(TimeSpan.FromSeconds(budgetSeconds.Value))
+                : new CancellationTokenSource();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, budgetCts.Token);
+
             var compileOptions = new CompileOptions
             {
                 OutputDir = generatedDir,
-                TrainDataPath = trainPath
+                TrainDataPath = trainPath,
+                Baseline = baselineScore
             };
-            module = await opt.CompileAsync(module, trainSet, metric, compileOptions, cancellationToken);
+
+            try
+            {
+                module = await opt.CompileAsync(module, trainSet, metric, compileOptions, linked.Token);
+            }
+            catch (OperationCanceledException) when (budgetCts.IsCancellationRequested)
+            {
+                await Console.Error.WriteLineAsync($"Budget of {budgetSeconds}s reached. Using best result so far.");
+            }
 
             // Evaluate on training set to get score
             var evalResult = await Evaluator.EvaluateAsync(
@@ -250,13 +305,16 @@ internal static class AutoOptimizeCommand
             return Program.ExitCodes.CompilationFailed;
         }
 
-        // Step 9: Print summary
+        // Step 9: Print summary with baseline comparison
+        float improvement = bestScore - baselineScore;
+        float improvementPct = baselineScore > 0 ? (improvement / baselineScore) * 100f : 0f;
         var predictors = module.GetPredictors();
         await Console.Error.WriteLineAsync($"""
 
             Auto-optimize complete!
             ────────────────────────────────────────
-            Score          : {bestScore:F4}
+            Baseline       : {baselineScore:F4}
+            Optimized      : {bestScore:F4}  ({(improvement >= 0 ? "+" : "")}{improvement:F4}, {(improvement >= 0 ? "+" : "")}{improvementPct:F1}%)
             Output         : {outputPath}
             Predictors     : {predictors.Count}
             """);
@@ -302,6 +360,21 @@ internal static class AutoOptimizeCommand
         return Program.ExitCodes.Success;
     }
 
+    /// <summary>
+    /// Gets an IChatClient for proposal/reflection LMs (MIPROv2, GEPA).
+    /// ConventionRunner exposes CreateClient() directly; for ILmpRunner users,
+    /// the module must be created via a convention with CreateClient().
+    /// </summary>
+    private static IChatClient GetProposalClient(ILmpRunner runner)
+    {
+        if (runner is ConventionRunner convention)
+            return convention.CreateClient();
+
+        throw new InvalidOperationException(
+            "MIPROv2 and GEPA optimizers require an IChatClient for proposal/reflection generation. " +
+            "Use a module with a static CreateClient() convention, or choose 'bootstrap'/'random' optimizer.");
+    }
+
     private static void PrintHelp()
     {
         Console.WriteLine("""
@@ -322,9 +395,10 @@ internal static class AutoOptimizeCommand
               --dev <path>         Dev/validation JSONL file. Overrides [AutoOptimize(DevSet)].
               --model <name>       LLM model/deployment override. Sets LMP_MODEL env var.
               --output <dir>       Output directory for .g.cs files. Default: Generated/.
-              --optimizer <name>   Optimizer: "random" (default) or "bootstrap".
-              --num-trials <int>   Number of trials for random search. Default: 8.
+              --optimizer <name>   Optimizer: "random" (default), "bootstrap", "mipro", or "gepa".
+              --num-trials <int>   Number of trials/iterations. Default: 8.
               --max-demos <int>    Max demos per predictor. Default: 4.
+              --budget <seconds>   Time budget in seconds. Overrides [AutoOptimize(BudgetSeconds)].
               --force              Re-optimize even if existing artifact is up-to-date.
               --help, -h           Show this help message.
             """);

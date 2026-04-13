@@ -48,6 +48,13 @@ internal sealed class ConventionRunner : ILmpRunner
     }
 
     /// <summary>
+    /// Creates an <see cref="IChatClient"/> by calling the user's <c>static CreateClient()</c>.
+    /// Used by the CLI to provide a proposal/reflection client for MIPROv2/GEPA optimizers.
+    /// </summary>
+    public IChatClient CreateClient()
+        => (IChatClient)_createClient.Invoke(null, null)!;
+
+    /// <summary>
     /// Attempts to create a convention-based runner from the built assembly.
     /// Returns null with a descriptive error if conventions are not met.
     /// </summary>

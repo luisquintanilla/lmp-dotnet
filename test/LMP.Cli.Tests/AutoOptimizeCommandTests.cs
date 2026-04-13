@@ -117,6 +117,7 @@ public class AutoOptimizeCommandTests
             optimizerName: "random",
             numTrials: 4,
             maxDemos: 2,
+            budgetSeconds: null,
             force: false,
             CancellationToken.None);
         Assert.Equal(Program.ExitCodes.ProjectNotFound, exitCode);

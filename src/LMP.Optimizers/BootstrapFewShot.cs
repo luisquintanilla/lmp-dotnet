@@ -137,7 +137,7 @@ public sealed class BootstrapFewShot : IOptimizer
                 module, trainSet, metric, cancellationToken: cancellationToken);
             await CSharpArtifactWriter.WriteAsync(
                 module, outputDir, evalResult.AverageScore, nameof(BootstrapFewShot),
-                options?.TrainDataPath, cancellationToken);
+                options?.TrainDataPath, options?.Baseline, cancellationToken);
         }
 
         return module;
