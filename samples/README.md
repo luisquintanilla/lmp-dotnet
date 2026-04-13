@@ -52,28 +52,43 @@ Start at the top and work your way down. Each sample builds on concepts from the
 | [**AdvancedOptimizers**](LMP.Samples.AdvancedOptimizers/) | Pluggable search strategies: ISampler, SmacSampler, CostAwareSampler, TraceAnalyzer, warm-start transfer learning. |
 | [**AutoOptimize**](LMP.Samples.AutoOptimize/) | Build-time auto-optimization. `[AutoOptimize]` → source gen → `.g.cs` artifacts → `dotnet build -p:LmpAutoOptimize=true`. |
 
+### 📊 Benchmarks (Real Datasets)
+
+| Sample | What You'll Learn |
+|--------|-------------------|
+| [**MathReasoning**](LMP.Samples.MathReasoning/) | ChainOfThought + MIPROv2 on MATH algebra. ~74% → ~88% accuracy. Download [MATH dataset](https://huggingface.co/datasets/hendrycks/competition_math) (MIT). |
+| [**IntentClassification**](LMP.Samples.IntentClassification/) | BootstrapRandomSearch on Banking77 (77 classes). ~55% → ~80%. Download [Banking77](https://huggingface.co/datasets/PolyAI/banking77) (CC-BY-4.0). |
+| [**FacilitySupport**](LMP.Samples.FacilitySupport/) | GEPA on enterprise multi-task (urgency + sentiment + categories). ~75% → ~87%. FacilitySupportAnalyzer (Meta). |
+| [**AdvancedRag**](LMP.Samples.AdvancedRag/) | Multi-hop RAG with 4 optimizable predictors (expand, rerank, CRAG, CoT answer). ~42% → ~60%+. Download [RAG-QA Arena](https://dspy.ai/tutorials/rag/) (CC-BY-SA-4.0). |
+
 ---
 
 ## Samples × Techniques Matrix
 
-| Technique | TicketTriage | Agent | RAG | Middleware | Evaluation | MIPROv2 | GEPA | Z3 | AdvOpt | AutoOpt |
-|-----------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| LmpModule / Predictor | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Chain of Thought | ✅ | | | ✅ | ✅ | | | | | |
-| Tool Calling / ReAct | | ✅ | | | | | | | | |
-| Retrieval (RAG) | | | ✅ | | | | | | | |
-| M.E.AI Middleware | | | | ✅ | | | | | | |
-| BootstrapFewShot | ✅ | | | | | | | | | ✅ |
-| BootstrapRandomSearch | | | | | | ✅ | | ✅ | ✅ | ✅ |
-| MIPROv2 (Bayesian) | | | | | | ✅ | | | ✅ | ✅ |
-| GEPA (Evolutionary) | | | | | | | ✅ | | | ✅ |
-| Z3 Constraints | | | | | | | | ✅ | | |
-| ISampler / SmacSampler | | | | | | | | | ✅ | |
-| CostAwareSampler | | | | | | | | | ✅ | |
-| Evaluator | ✅ | | | | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| M.E.AI Evaluation | | | | | ✅ | | | | | |
-| Source Generation | | | | | | | | | | ✅ |
-| MSBuild Integration | | | | | | | | | | ✅ |
+| Technique | TicketTriage | Agent | RAG | Middleware | Evaluation | MIPROv2 | GEPA | Z3 | AdvOpt | AutoOpt | MathReason | IntentClass | FacilSupport | AdvRag |
+|-----------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| LmpModule / Predictor | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Chain of Thought | ✅ | | | ✅ | ✅ | | | | | | ✅ | | | ✅ |
+| Tool Calling / ReAct | | ✅ | | | | | | | | | | | | |
+| Retrieval (RAG) | | | ✅ | | | | | | | | | | | ✅ |
+| Multi-Hop RAG | | | | | | | | | | | | | | ✅ |
+| Query Expansion | | | | | | | | | | | | | | ✅ |
+| LLM Reranking | | | | | | | | | | | | | | ✅ |
+| CRAG Validation | | | | | | | | | | | | | | ✅ |
+| M.E.AI Middleware | | | | ✅ | | | | | | | | | | |
+| BootstrapFewShot | ✅ | | | | | | | | | ✅ | | | | |
+| BootstrapRandomSearch | | | | | | ✅ | | ✅ | ✅ | ✅ | ✅ | ✅ | | |
+| MIPROv2 (Bayesian) | | | | | | ✅ | | | ✅ | ✅ | ✅ | ✅ | | ✅ |
+| GEPA (Evolutionary) | | | | | | | ✅ | | | ✅ | | | ✅ | |
+| Z3 Constraints | | | | | | | | ✅ | | | | | | |
+| ISampler / SmacSampler | | | | | | | | | ✅ | | | | | |
+| CostAwareSampler | | | | | | | | | ✅ | | | | | |
+| Evaluator | ✅ | | | | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| M.E.AI Evaluation | | | | | ✅ | | | | | | | | | |
+| Multi-Predictor Module | | | | | | | | | | | | | ✅ | ✅ |
+| Real Benchmark Dataset | | | | | | | | | | | ✅ | ✅ | ✅ | ✅ |
+| Source Generation | | | | | | | | | | ✅ | | | | |
+| MSBuild Integration | | | | | | | | | | ✅ | | | | |
 
 ---
 
@@ -91,9 +106,20 @@ The Z3 sample additionally requires the Z3 NuGet package (included in the projec
 
 ## Data
 
-Most samples use the same **support ticket** domain:
+Most tutorial samples use the same **support ticket** domain:
 - `data/train.jsonl` — training examples (ticket text → category + reply)
 - `data/dev.jsonl` — held-out evaluation set
 
 The RAG sample uses a fictional **NovaBridge API** knowledge base.
 The AutoOptimize sample uses a simple **Q&A** dataset.
+
+### Benchmark Samples (Real Datasets)
+
+Benchmark samples do **not** ship data in this repository. Each README has download + conversion instructions:
+
+| Sample | Dataset | Source | License |
+|--------|---------|--------|---------|
+| MathReasoning | MATH algebra | [hendrycks/competition_math](https://huggingface.co/datasets/hendrycks/competition_math) | MIT |
+| IntentClassification | Banking77 | [PolyAI/banking77](https://huggingface.co/datasets/PolyAI/banking77) | CC-BY-4.0 |
+| FacilitySupport | FacilitySupportAnalyzer | Meta (public) | See source |
+| AdvancedRag | RAG-QA Arena Tech | [DSPy tutorials](https://dspy.ai/tutorials/rag/) | CC-BY-SA-4.0 |
