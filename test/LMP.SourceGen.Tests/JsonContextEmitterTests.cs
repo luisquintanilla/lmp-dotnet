@@ -117,6 +117,16 @@ public class JsonContextEmitterTests
         Assert.Contains("JsonSerializerOptions Instance", source);
     }
 
+    [Fact]
+    public void GenerateSource_IncludesJsonStringEnumConverter()
+    {
+        var model = CreateModel();
+        var source = JsonContextEmitter.GenerateSource(model)!;
+
+        Assert.Contains("JsonStringEnumConverter", source);
+        Assert.Contains("JsonNamingPolicy.CamelCase", source);
+    }
+
     #endregion
 
     #region Syntax validity

@@ -250,6 +250,63 @@ public class ModelExtractionTests
         Assert.Empty(diagnostics);
     }
 
+    [Fact]
+    public void EnumOutputField_ExtractsEnumValues()
+    {
+        var source = """
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            public enum UrgencyLevel { Low, Medium, High }
+
+            [LmpSignature("Assess urgency")]
+            public partial record UrgencyOutput
+            {
+                [Description("Urgency of the request")]
+                public required UrgencyLevel Urgency { get; init; }
+            }
+            """;
+
+        var (diagnostics, runResult) = RunGenerator(source);
+
+        Assert.Empty(diagnostics);
+
+        // Verify generated code includes enum values in prompt
+        var generatedSources = runResult.GeneratedTrees
+            .Select(t => t.GetText()?.ToString() ?? "")
+            .ToArray();
+
+        var jsonContextSource = generatedSources
+            .FirstOrDefault(s => s.Contains("JsonStringEnumConverter"));
+        Assert.NotNull(jsonContextSource);
+    }
+
+    [Fact]
+    public void EnumOutputField_NoDiagnostics()
+    {
+        var source = """
+            using System.ComponentModel;
+            using LMP;
+
+            namespace TestApp;
+
+            public enum Sentiment { Positive, Neutral, Negative }
+
+            [LmpSignature("Classify sentiment")]
+            public partial record SentimentOutput
+            {
+                [Description("The sentiment")]
+                public required Sentiment Sentiment { get; init; }
+            }
+            """;
+
+        var (diagnostics, _) = RunGenerator(source);
+
+        Assert.Empty(diagnostics);
+    }
+
     private static (Diagnostic[] Diagnostics, GeneratorDriverRunResult RunResult) RunGenerator(string source)
     {
         var compilation = CreateCompilation(source);

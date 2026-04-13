@@ -111,6 +111,20 @@ internal static class ModelExtractor
             if (isNonSerializable)
                 hasNonSerializableProperty = true;
 
+            // Detect enum types and extract member names for prompt generation
+            EquatableArray<string>? enumValues = null;
+            if (member.Type.TypeKind == TypeKind.Enum && member.Type is INamedTypeSymbol enumType)
+            {
+                var values = ImmutableArray.CreateBuilder<string>();
+                foreach (var enumMember in enumType.GetMembers().OfType<IFieldSymbol>())
+                {
+                    if (enumMember.HasConstantValue)
+                        values.Add(enumMember.Name);
+                }
+                if (values.Count > 0)
+                    enumValues = new EquatableArray<string>(values.ToImmutable());
+            }
+
             builder.Add(new OutputFieldModel(
                 Name: member.Name,
                 ClrTypeName: clrType,
@@ -118,7 +132,8 @@ internal static class ModelExtractor
                 Description: description,
                 IsRequired: member.IsRequired,
                 IsNonSerializable: isNonSerializable,
-                Location: location));
+                Location: location,
+                EnumValues: enumValues));
         }
 
         return new EquatableArray<OutputFieldModel>(builder.ToImmutable());

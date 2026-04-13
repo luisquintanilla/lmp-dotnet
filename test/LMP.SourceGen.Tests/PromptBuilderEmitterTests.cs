@@ -500,6 +500,136 @@ public class PromptBuilderEmitterTests
 
     #endregion
 
+    #region Enum output fields
+
+    [Fact]
+    public void GenerateSource_EnumField_IncludesValidValues()
+    {
+        var enumValues = new EquatableArray<string>(
+            ImmutableArray.Create("Low", "Medium", "High"));
+
+        var outputFields = new[]
+        {
+            new OutputFieldModel("Urgency", "UrgencyLevel", "global::TestApp.UrgencyLevel",
+                "Urgency of the request", IsRequired: true, IsNonSerializable: false,
+                Location: default, EnumValues: enumValues),
+        };
+
+        var model = CreateModel(outputFields: outputFields);
+        var source = PromptBuilderEmitter.GenerateSource(model);
+
+        Assert.Contains("[Valid values: Low, Medium, High]", source);
+    }
+
+    [Fact]
+    public void GenerateSource_EnumField_AppendsAfterDescription()
+    {
+        var enumValues = new EquatableArray<string>(
+            ImmutableArray.Create("Positive", "Neutral", "Negative"));
+
+        var outputFields = new[]
+        {
+            new OutputFieldModel("Sentiment", "SentimentLevel", "global::TestApp.SentimentLevel",
+                "Sentiment of the message", IsRequired: true, IsNonSerializable: false,
+                Location: default, EnumValues: enumValues),
+        };
+
+        var model = CreateModel(outputFields: outputFields);
+        var source = PromptBuilderEmitter.GenerateSource(model);
+
+        Assert.Contains("Sentiment of the message [Valid values: Positive, Neutral, Negative]", source);
+    }
+
+    [Fact]
+    public void GenerateSource_NonEnumField_NoValidValues()
+    {
+        var outputFields = new[]
+        {
+            CreateOutputField("Category", "string", "The category"),
+        };
+
+        var model = CreateModel(outputFields: outputFields);
+        var source = PromptBuilderEmitter.GenerateSource(model);
+
+        Assert.Contains("The category", source);
+        Assert.DoesNotContain("[Valid values:", source);
+    }
+
+    [Fact]
+    public void GenerateSource_MixedEnumAndStringFields()
+    {
+        var enumValues = new EquatableArray<string>(
+            ImmutableArray.Create("Low", "Medium", "High"));
+
+        var outputFields = new[]
+        {
+            new OutputFieldModel("Urgency", "UrgencyLevel", "global::TestApp.UrgencyLevel",
+                "Urgency level", IsRequired: true, IsNonSerializable: false,
+                Location: default, EnumValues: enumValues),
+            CreateOutputField("Notes", "string", "Additional notes"),
+        };
+
+        var model = CreateModel(outputFields: outputFields);
+        var source = PromptBuilderEmitter.GenerateSource(model);
+
+        Assert.Contains("[Valid values: Low, Medium, High]", source);
+        Assert.Contains("Additional notes", source);
+    }
+
+    [Fact]
+    public void Pipeline_EnumOutputField_EmitsValidValues()
+    {
+        var source = GetEnumPipelineTestSource();
+        var (diagnostics, result) = RunGenerator(source);
+
+        var promptSource = result.GeneratedTrees
+            .FirstOrDefault(t => t.FilePath.Contains("PromptBuilder"))
+            ?.GetText()?.ToString();
+
+        Assert.NotNull(promptSource);
+        Assert.Contains("[Valid values: Low, Medium, High]", promptSource!);
+    }
+
+    #endregion
+
+    #region Enum helpers
+
+    private static string GetEnumPipelineTestSource() => """
+        using System.ComponentModel;
+
+        namespace LMP
+        {
+            public class Predictor<TInput, TOutput> where TOutput : class
+            {
+                public Predictor(object client) { }
+            }
+        }
+
+        namespace TestApp
+        {
+            using LMP;
+
+            public enum UrgencyLevel { Low, Medium, High }
+
+            public record TicketInput(
+                [Description("The raw ticket text")] string TicketText);
+
+            [LmpSignature("Assess urgency")]
+            public partial record UrgencyOutput
+            {
+                [Description("Urgency of the request")]
+                public required UrgencyLevel Urgency { get; init; }
+            }
+
+            public class TicketModule
+            {
+                private readonly Predictor<TicketInput, UrgencyOutput> _urgency = null!;
+            }
+        }
+        """;
+
+    #endregion
+
     #region Helpers
 
     private static PromptBuilderModel CreateFullModel(
