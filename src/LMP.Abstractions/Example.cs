@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LMP;
 
@@ -12,11 +13,14 @@ public abstract record Example
 {
     /// <summary>
     /// Default <see cref="JsonSerializerOptions"/> used by <see cref="LoadFromJsonl{TInput,TLabel}(string,JsonSerializerOptions?)"/>
-    /// when no options are provided. Uses case-insensitive property matching.
+    /// when no options are provided. Uses case-insensitive property matching and string enum conversion.
     /// </summary>
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "LoadFromJsonl callers can pass source-gen options. Default includes enum converter for convenience.")]
     private static readonly JsonSerializerOptions s_defaultJsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
     /// <summary>

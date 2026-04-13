@@ -1,6 +1,49 @@
 using System.ComponentModel;
+using System.Text.Json.Serialization;
 
 namespace LMP.Samples.FacilitySupport;
+
+/// <summary>Urgency levels for facility support requests.</summary>
+public enum UrgencyLevel
+{
+    Low,
+    Medium,
+    High
+}
+
+/// <summary>Sentiment classifications for facility support messages.</summary>
+public enum SentimentLevel
+{
+    Positive,
+    Neutral,
+    Negative
+}
+
+/// <summary>Facility service categories from the FacilitySupportAnalyzer dataset.</summary>
+public enum ServiceCategory
+{
+    [JsonStringEnumMemberName("Routine Maintenance")]
+    RoutineMaintenance,
+    [JsonStringEnumMemberName("Customer Feedback")]
+    CustomerFeedback,
+    [JsonStringEnumMemberName("Training and Support")]
+    TrainingAndSupport,
+    [JsonStringEnumMemberName("Quality and Safety")]
+    QualityAndSafety,
+    [JsonStringEnumMemberName("Sustainability")]
+    Sustainability,
+    [JsonStringEnumMemberName("Cleaning Scheduling")]
+    CleaningScheduling,
+    [JsonStringEnumMemberName("Specialized Cleaning")]
+    SpecializedCleaning,
+    [JsonStringEnumMemberName("Emergency Repair")]
+    EmergencyRepair,
+    [JsonStringEnumMemberName("Facility Management")]
+    FacilityManagement,
+    [JsonStringEnumMemberName("General Inquiries")]
+    GeneralInquiries,
+    None
+}
 
 /// <summary>
 /// Input for facility support analysis — a support email or message.
@@ -17,8 +60,8 @@ public record SupportInput(
 public partial record UrgencyOutput
 {
     /// <summary>Urgency level of the request.</summary>
-    [Description("Urgency level: 'low', 'medium', or 'high'")]
-    public required string Urgency { get; init; }
+    [Description("Urgency level of the request")]
+    public required UrgencyLevel Urgency { get; init; }
 }
 
 /// <summary>
@@ -28,8 +71,8 @@ public partial record UrgencyOutput
 public partial record SentimentOutput
 {
     /// <summary>Sentiment of the message.</summary>
-    [Description("Sentiment: 'positive', 'neutral', or 'negative'")]
-    public required string Sentiment { get; init; }
+    [Description("Sentiment expressed in the message")]
+    public required SentimentLevel Sentiment { get; init; }
 }
 
 /// <summary>
@@ -39,12 +82,12 @@ public partial record SentimentOutput
 public partial record CategoryOutput
 {
     /// <summary>Primary service category.</summary>
-    [Description("Primary service category. Must be one of: 'Routine Maintenance', 'Customer Feedback', 'Training and Support', 'Quality and Safety', 'Sustainability', 'Cleaning Scheduling', 'Specialized Cleaning', 'Emergency Repair', 'Facility Management', 'General Inquiries'")]
-    public required string PrimaryCategory { get; init; }
+    [Description("Primary service category for this request")]
+    public required ServiceCategory PrimaryCategory { get; init; }
 
     /// <summary>Secondary service category, if applicable.</summary>
-    [Description("Secondary service category from the same list above, or 'None' if only one category applies")]
-    public required string SecondaryCategory { get; init; }
+    [Description("Secondary service category, or None if only one category applies")]
+    public required ServiceCategory SecondaryCategory { get; init; }
 }
 
 /// <summary>
@@ -53,10 +96,10 @@ public partial record CategoryOutput
 /// </summary>
 public record AnalysisResult(
     [property: Description("Urgency level")]
-    string Urgency,
+    UrgencyLevel Urgency,
     [property: Description("Sentiment")]
-    string Sentiment,
+    SentimentLevel Sentiment,
     [property: Description("Primary service category")]
-    string PrimaryCategory,
+    ServiceCategory PrimaryCategory,
     [property: Description("Secondary service category")]
-    string SecondaryCategory);
+    ServiceCategory SecondaryCategory);

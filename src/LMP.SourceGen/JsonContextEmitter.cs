@@ -48,7 +48,8 @@ internal static class JsonContextEmitter
         sb.AppendLine();
         sb.AppendLine("    {");
         sb.AppendLine("        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,");
-        sb.AppendLine("        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull");
+        sb.AppendLine("        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,");
+        sb.AppendLine("        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }");
         sb.AppendLine("    };");
         sb.AppendLine("}");
 

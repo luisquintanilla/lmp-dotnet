@@ -229,6 +229,34 @@ Step 3: MIPROv2 Bayesian Optimization (instructions + demos)
 
 *Exact numbers will vary by model, deployment, and dataset split.*
 
+## Observed Results (gpt-4o-mini, 200 train / 100 dev)
+
+> **Important:** The "Expected Output" section above shows idealized numbers.
+> Actual results depend heavily on model, dataset size, and optimization trial count.
+
+In testing with Azure OpenAI gpt-4o-mini on 200 training + 100 dev MATH Algebra:
+
+| Configuration | Observed Score | Notes |
+|--------------|---------------|-------|
+| Baseline (ChainOfThought, no opt) | ~85-90% | gpt-4o-mini is already strong at algebra |
+| BootstrapRandomSearch | ~65% | Regressed — noisy demos from bootstrap hurt |
+| MIPROv2 | ~70% | Also regressed — few trials + strong baseline |
+
+**Why optimization regressed:** When the baseline model is already very strong (85-90%),
+optimization with small data (30-80 training examples) can make things worse — bootstrap
+selects noisy demos, and the optimizer finds suboptimal configurations in limited trials.
+This is a known issue with small-data optimization, also seen in DSPy.
+
+**When optimization helps:** With weaker models, harder task subsets (Level 4-5 problems),
+or larger training sets (500+), optimization shows meaningful improvement.
+
+## Known Issues
+
+- **Evaluator error handling:** LLM responses that fail to parse (malformed JSON, reasoning 
+  loops) are caught and scored 0.0f instead of crashing the evaluation
+- **Answer normalization:** LaTeX answer extraction is heuristic-based; some non-standard
+  formats may not normalize correctly
+
 ## Key Takeaways
 
 - **ChainOfThought is essential for math** — without step-by-step reasoning, models skip steps and make arithmetic errors

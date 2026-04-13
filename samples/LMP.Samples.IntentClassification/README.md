@@ -207,6 +207,43 @@ Step 3: MIPROv2 (instructions + demos)
 
 *Exact numbers will vary by model and dataset split.*
 
+## Observed Results (gpt-4o-mini, 300 train / 100 dev)
+
+> **Important:** The "Expected Output" section above shows idealized numbers.
+> Actual results with gpt-4o-mini are lower due to the label invention problem.
+
+In testing with Azure OpenAI gpt-4o-mini on 300 training + 100 dev Banking77:
+
+| Configuration | Observed Score | Notes |
+|--------------|---------------|-------|
+| Baseline (zero-shot) | ~3.3% | Model invents plausible but wrong labels |
+| BootstrapRandomSearch | ~10% | 3x improvement from demo selection |
+| MIPROv2 | ~16.7% | 5x improvement over baseline |
+
+**The label invention problem:** With 77 fine-grained intents, the model invents
+labels like `"currency_exchange"` when the correct label is `"exchange_via_app"`.
+The labels are semantically close but don't match the Banking77 label set exactly.
+This sample includes mitigations (all 77 labels listed in the signature + LmpAssert
+validation), but string-based comparison still limits accuracy.
+
+**Optimization does help:** Despite low absolute scores, the 5x relative improvement
+(3.3% → 16.7%) demonstrates that demo selection meaningfully anchors the model
+toward the correct label vocabulary.
+
+**The enum solution:** LMP now supports C# enum types as output properties (see the
+[FacilitySupport](../LMP.Samples.FacilitySupport/) sample). For Banking77, converting
+the 77 intents to a C# enum would enforce valid labels at the API level via JSON Schema
+constraints — eliminating label invention entirely.
+
+## Known Issues
+
+- **Label invention is the dominant failure mode** — the model knows the right concept
+  but uses its own label rather than the Banking77 label set
+- **LmpAssert.That workaround** — the current approach lists all 77 labels in both the
+  LmpSignature text and a ValidIntents HashSet; enum types would reduce this to one place
+- **Small-data sensitivity** — 300 training examples spread across 77 labels means ~4
+  examples per label on average, limiting demo diversity
+
 ## Key Takeaways
 
 - **Zero-shot fails on many-label classification** — 77 classes is too many for the model to disambiguate without examples

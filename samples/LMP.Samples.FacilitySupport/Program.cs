@@ -88,9 +88,9 @@ Console.WriteLine();
 // Score = average of 3 sub-task accuracies (each 0 or 1)
 Func<AnalysisResult, AnalysisResult, float> combinedMetric = (predicted, expected) =>
 {
-    float urgencyScore = NormalizeLabel(predicted.Urgency) == NormalizeLabel(expected.Urgency) ? 1f : 0f;
-    float sentimentScore = NormalizeLabel(predicted.Sentiment) == NormalizeLabel(expected.Sentiment) ? 1f : 0f;
-    float categoryScore = NormalizeLabel(predicted.PrimaryCategory) == NormalizeLabel(expected.PrimaryCategory) ? 1f : 0f;
+    float urgencyScore = predicted.Urgency == expected.Urgency ? 1f : 0f;
+    float sentimentScore = predicted.Sentiment == expected.Sentiment ? 1f : 0f;
+    float categoryScore = predicted.PrimaryCategory == expected.PrimaryCategory ? 1f : 0f;
     return (urgencyScore + sentimentScore + categoryScore) / 3f;
 };
 
@@ -182,13 +182,6 @@ Console.WriteLine("╚═══════════════════�
 
 // ── Helpers ─────────────────────────────────────────────────
 
-static string NormalizeLabel(string label)
-{
-    if (string.IsNullOrWhiteSpace(label))
-        return "";
-    return label.Trim().ToLowerInvariant();
-}
-
 /// <summary>
 /// Prints per-sub-task accuracy breakdown from the combined metric results.
 /// </summary>
@@ -200,9 +193,9 @@ static void PrintSubTaskScores(EvaluationResult result, IReadOnlyList<Example> d
         if (r.Output is not AnalysisResult predicted) continue;
         validCount++;
         var expected = (AnalysisResult)r.Example.GetLabel();
-        if (NormalizeLabel(predicted.Urgency) == NormalizeLabel(expected.Urgency)) urgencyCorrect++;
-        if (NormalizeLabel(predicted.Sentiment) == NormalizeLabel(expected.Sentiment)) sentimentCorrect++;
-        if (NormalizeLabel(predicted.PrimaryCategory) == NormalizeLabel(expected.PrimaryCategory)) categoryCorrect++;
+        if (predicted.Urgency == expected.Urgency) urgencyCorrect++;
+        if (predicted.Sentiment == expected.Sentiment) sentimentCorrect++;
+        if (predicted.PrimaryCategory == expected.PrimaryCategory) categoryCorrect++;
     }
     int total = result.PerExample.Count;
     int failed = total - validCount;

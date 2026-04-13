@@ -35,41 +35,22 @@ public partial class FacilitySupportModule : LmpModule<SupportInput, AnalysisRes
         SupportInput input,
         CancellationToken cancellationToken = default)
     {
-        // Run all three sub-tasks concurrently — they're independent
+        // Run all three sub-tasks concurrently — they're independent.
+        // No manual validation needed: C# enum types produce JSON Schema
+        // "enum" constraints that are enforced at the API level.
         var urgencyTask = _urgency.PredictAsync(
             input,
             trace: Trace,
-            validate: result =>
-            {
-                LmpAssert.That(result,
-                    r => r.Urgency is "low" or "medium" or "high" or "critical",
-                    "Urgency must be one of: low, medium, high, critical");
-            },
-            maxRetries: 2,
             cancellationToken: cancellationToken);
 
         var sentimentTask = _sentiment.PredictAsync(
             input,
             trace: Trace,
-            validate: result =>
-            {
-                LmpAssert.That(result,
-                    r => r.Sentiment is "positive" or "neutral" or "negative" or "frustrated",
-                    "Sentiment must be one of: positive, neutral, negative, frustrated");
-            },
-            maxRetries: 2,
             cancellationToken: cancellationToken);
 
         var categoryTask = _category.PredictAsync(
             input,
             trace: Trace,
-            validate: result =>
-            {
-                LmpAssert.That(result,
-                    r => !string.IsNullOrWhiteSpace(r.PrimaryCategory),
-                    "Primary category must not be empty");
-            },
-            maxRetries: 2,
             cancellationToken: cancellationToken);
 
         await Task.WhenAll(urgencyTask, sentimentTask, categoryTask);

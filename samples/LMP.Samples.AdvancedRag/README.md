@@ -263,6 +263,39 @@ Step 3: MIPROv2 Optimization (all 4 predictors)
 
 *Exact numbers will vary by model, corpus, and dataset.*
 
+## Observed Results (gpt-4o-mini, 100 train / 50 dev / 299 corpus)
+
+> **Important:** The "Expected Output" section above shows idealized numbers.
+> Actual results demonstrate clear multi-hop improvement.
+
+In testing with Azure OpenAI gpt-4o-mini on 100 training + 50 dev + 299 corpus:
+
+| Configuration | Observed F1 | Notes |
+|--------------|-------------|-------|
+| Simple RAG (1 hop) | ~32.4% | Basic retrieval + answer generation |
+| Multi-Hop RAG (3 hops) | ~39.0% | +6.6pp from query expansion + CRAG |
+| MIPROv2 Optimized | ~8.2% | Regressed — small data + few trials |
+
+**Multi-hop works:** The 3-hop pipeline with query expansion and CRAG validation
+improves over simple RAG by ~6.6 percentage points (32.4% → 39.0%).
+
+**MIPROv2 regression:** With only 50 dev examples and limited optimization trials,
+MIPROv2 finds a worse configuration. The 4-predictor pipeline has many parameters
+to tune, and small data leads to overfitting on the training mini-batches.
+
+**Corpus construction note:** The full RAG-QA Arena corpus has 28K documents. For
+testing, we constructed a pragmatic 299-passage corpus from the QA answer texts +
+distractor passages. A larger, more diverse corpus would improve results.
+
+## Known Issues
+
+- **MIPROv2 needs more data** — 4 predictors × instruction + demo variants requires
+  many more trials than simpler modules
+- **Corpus size matters** — 299 passages is minimal for RAG evaluation; production
+  use should target 1000+ passages
+- **F1 metric is strict** — partial matches score low even when the answer captures
+  the right concept
+
 ## Key Takeaways
 
 - **4 predictors, all optimizable** — every LLM call in the pipeline is a typed LMP predictor that MIPROv2 can tune
