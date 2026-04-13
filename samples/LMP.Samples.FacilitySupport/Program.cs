@@ -194,19 +194,22 @@ static string NormalizeLabel(string label)
 /// </summary>
 static void PrintSubTaskScores(EvaluationResult result, IReadOnlyList<Example> devSet)
 {
-    int urgencyCorrect = 0, sentimentCorrect = 0, categoryCorrect = 0;
+    int urgencyCorrect = 0, sentimentCorrect = 0, categoryCorrect = 0, validCount = 0;
     foreach (var r in result.PerExample)
     {
+        if (r.Output is not AnalysisResult predicted) continue;
+        validCount++;
         var expected = (AnalysisResult)r.Example.GetLabel();
-        var predicted = (AnalysisResult)r.Output;
         if (NormalizeLabel(predicted.Urgency) == NormalizeLabel(expected.Urgency)) urgencyCorrect++;
         if (NormalizeLabel(predicted.Sentiment) == NormalizeLabel(expected.Sentiment)) sentimentCorrect++;
         if (NormalizeLabel(predicted.PrimaryCategory) == NormalizeLabel(expected.PrimaryCategory)) categoryCorrect++;
     }
     int total = result.PerExample.Count;
+    int failed = total - validCount;
     Console.WriteLine($"    Urgency:    {urgencyCorrect}/{total} ({(float)urgencyCorrect / total:P1})");
     Console.WriteLine($"    Sentiment:  {sentimentCorrect}/{total} ({(float)sentimentCorrect / total:P1})");
     Console.WriteLine($"    Category:   {categoryCorrect}/{total} ({(float)categoryCorrect / total:P1})");
+    if (failed > 0) Console.WriteLine($"    ({failed} examples failed — LLM returned invalid output)");
 }
 
 static string Truncate(string s, int maxLen) =>

@@ -17,7 +17,7 @@ public record SupportInput(
 public partial record UrgencyOutput
 {
     /// <summary>Urgency level of the request.</summary>
-    [Description("Urgency level: 'low', 'medium', 'high', or 'critical'")]
+    [Description("Urgency level: 'low', 'medium', or 'high'")]
     public required string Urgency { get; init; }
 }
 
@@ -28,7 +28,7 @@ public partial record UrgencyOutput
 public partial record SentimentOutput
 {
     /// <summary>Sentiment of the message.</summary>
-    [Description("Sentiment: 'positive', 'neutral', 'negative', or 'frustrated'")]
+    [Description("Sentiment: 'positive', 'neutral', or 'negative'")]
     public required string Sentiment { get; init; }
 }
 
@@ -39,11 +39,11 @@ public partial record SentimentOutput
 public partial record CategoryOutput
 {
     /// <summary>Primary service category.</summary>
-    [Description("Primary service category (e.g., 'HVAC', 'Plumbing', 'Electrical', 'Janitorial', 'Security', 'Elevator', 'Parking', 'General')")]
+    [Description("Primary service category. Must be one of: 'Routine Maintenance', 'Customer Feedback', 'Training and Support', 'Quality and Safety', 'Sustainability', 'Cleaning Scheduling', 'Specialized Cleaning', 'Emergency Repair', 'Facility Management', 'General Inquiries'")]
     public required string PrimaryCategory { get; init; }
 
     /// <summary>Secondary service category, if applicable.</summary>
-    [Description("Secondary service category if the request spans multiple areas, or 'None'")]
+    [Description("Secondary service category from the same list above, or 'None' if only one category applies")]
     public required string SecondaryCategory { get; init; }
 }
 
