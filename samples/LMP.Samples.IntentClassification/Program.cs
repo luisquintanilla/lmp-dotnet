@@ -118,7 +118,7 @@ Console.WriteLine("  Random search: try different demo subsets → pick the best
 Console.WriteLine();
 
 var optModule = new IntentClassificationModule(client);
-var brs = new BootstrapRandomSearch(numTrials: 10, maxDemos: 6, metricThreshold: 0.5f, seed: 42);
+var brs = new BootstrapRandomSearch(numTrials: 10, maxDemos: 6, metricThreshold: 0.3f, seed: 42);
 var optimized = await brs.CompileAsync(optModule, trainSet, untypedMetric);
 var optScore = await Evaluator.EvaluateAsync(optimized, devSet, exactMatch);
 
@@ -137,7 +137,7 @@ var mipro = new MIPROv2(
     numInstructionCandidates: 4,
     numDemoSubsets: 4,
     maxDemos: 6,
-    metricThreshold: 0.5f,
+    metricThreshold: 0.3f,
     gamma: 0.25,
     seed: 42);
 
@@ -152,7 +152,7 @@ Console.WriteLine("Step 4: Error Analysis (misclassified examples)");
 Console.WriteLine("────────────────────────────────────────────────");
 
 var errors = mipScore.PerExample
-    .Where(r => r.Score < 1.0f)
+    .Where(r => r.Score < 1.0f && r.Output is not null)
     .Take(5);
 
 foreach (var err in errors)
@@ -164,6 +164,10 @@ foreach (var err in errors)
     Console.WriteLine($"  Predicted: {predicted.Intent}");
     Console.WriteLine();
 }
+
+var failCount = mipScore.PerExample.Count(r => r.Output is null);
+if (failCount > 0)
+    Console.WriteLine($"  ({failCount} examples failed — LLM returned invalid output)");
 
 // ── Step 5: Results Comparison ──────────────────────────────
 Console.WriteLine("╔══════════════════════════════════════════════════════╗");
