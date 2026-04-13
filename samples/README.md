@@ -65,8 +65,8 @@ Start at the top and work your way down. Each sample builds on concepts from the
 | M.E.AI Middleware | | | | ✅ | | | | | | |
 | BootstrapFewShot | ✅ | | | | | | | | | ✅ |
 | BootstrapRandomSearch | | | | | | ✅ | | ✅ | ✅ | ✅ |
-| MIPROv2 (Bayesian) | | | | | | ✅ | | | ✅ | |
-| GEPA (Evolutionary) | | | | | | | ✅ | | | |
+| MIPROv2 (Bayesian) | | | | | | ✅ | | | ✅ | ✅ |
+| GEPA (Evolutionary) | | | | | | | ✅ | | | ✅ |
 | Z3 Constraints | | | | | | | | ✅ | | |
 | ISampler / SmacSampler | | | | | | | | | ✅ | |
 | CostAwareSampler | | | | | | | | | ✅ | |

@@ -16,8 +16,11 @@
     <LmpGeneratedDir Condition="'$(LmpGeneratedDir)' == ''">$(MSBuildProjectDirectory)\Generated</LmpGeneratedDir>
     <LmpAutoOptimizeBudget Condition="'$(LmpAutoOptimizeBudget)' == ''"></LmpAutoOptimizeBudget>
     <LmpAutoOptimizeVerbose Condition="'$(LmpAutoOptimizeVerbose)' == ''">false</LmpAutoOptimizeVerbose>
+    <!-- Optimizer strategy: bootstrap, random (default), mipro, gepa -->
     <LmpOptimizer Condition="'$(LmpOptimizer)' == ''"></LmpOptimizer>
+    <!-- Number of optimization trials/iterations (default: 8) -->
     <LmpNumTrials Condition="'$(LmpNumTrials)' == ''"></LmpNumTrials>
+    <!-- Max few-shot demos per predictor (default: 4) -->
     <LmpMaxDemos Condition="'$(LmpMaxDemos)' == ''"></LmpMaxDemos>
     <LmpModel Condition="'$(LmpModel)' == ''"></LmpModel>
     <!-- CLI command: defaults to 'dotnet lmp'. Override for local dev:
@@ -92,8 +95,8 @@
 
   <!--
     Inline task: Reads optimization metadata from .g.cs header comments.
-    Parses: Score, Strategy, Demos, Timestamp from:
-      // LMP Auto-Optimize | Score: 0.7320 | Strategy: BootstrapFewShot | Demos: 1
+    Parses: Score, Baseline, Strategy, Demos, GeneratedDate from:
+      // LMP Auto-Optimize | Score: 0.7320 | Baseline: 0.3200 | Strategy: BootstrapFewShot | Demos: 1
       // Generated: 2026-04-10T19:30:33.8800139Z
   -->
   <UsingTask TaskName="_LmpReadOptimizationMetadata"

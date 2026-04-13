@@ -138,9 +138,34 @@ dotnet run --project samples/LMP.Samples.AutoOptimize
 |---|---|---|
 | `LmpAutoOptimize` | `false` | Set to `true` to trigger optimization |
 | `LmpAutoOptimizeForce` | `false` | Re-optimize even if data hasn't changed |
-| `LmpAutoOptimizeBudget` | *(attribute value)* | Override the time budget (seconds) |
+| `LmpOptimizer` | `random` | Strategy: `bootstrap`, `random`, `mipro`, or `gepa` |
+| `LmpNumTrials` | `8` | Number of optimization trials/iterations |
+| `LmpMaxDemos` | `4` | Max few-shot demos per predictor |
+| `LmpAutoOptimizeBudget` | *(attribute value)* | Time budget in seconds (overrides `BudgetSeconds` in attribute) |
 | `LmpModel` | *(user secret)* | Override the model deployment name |
 | `LmpAutoOptimizeVerbose` | `false` | Show detailed optimizer output |
+
+**Example — MIPROv2 with 20 trials and 5-minute budget:**
+
+```bash
+dotnet build -p:LmpAutoOptimize=true -p:LmpOptimizer=mipro -p:LmpNumTrials=20 -p:LmpAutoOptimizeBudget=300
+```
+
+### Baseline guard
+
+The CLI measures a **baseline score** before optimization (running the unoptimized module
+on the training set). After optimization, it evaluates the optimized module on the **same
+dataset**. The `.g.cs` artifact is only written if the optimized score **strictly improves**
+over baseline. If not, you'll see:
+
+```
+Optimization did not improve over baseline.
+  Baseline: 0.7801  |  Optimized: 0.7735
+  Artifact NOT written (no improvement)
+```
+
+This prevents committing regressions. The `LMP1000` build diagnostic also shows the
+baseline when available: `Score: 0.82 (Baseline: 0.65)`.
 
 ---
 

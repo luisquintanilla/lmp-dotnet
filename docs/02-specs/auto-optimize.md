@@ -377,7 +377,39 @@ If a `Generated/{Module}.Optimized.g.cs` already exists and its header hashes ma
 | Property | Default | Description |
 |----------|---------|-------------|
 | `LmpAutoOptimize` | `false` | Enable build-time optimization |
+| `LmpAutoOptimizeForce` | `false` | Re-optimize even if artifact is up-to-date |
+| `LmpOptimizer` | `random` | Strategy: `bootstrap`, `random`, `mipro`, `gepa` |
+| `LmpNumTrials` | `8` | Number of optimization trials/iterations |
+| `LmpMaxDemos` | `4` | Max few-shot demos per predictor |
+| `LmpAutoOptimizeBudget` | *(from attribute)* | Time budget in seconds (overrides `BudgetSeconds`) |
+| `LmpModel` | *(from env/config)* | LLM model/deployment name override |
+| `LmpCliCommand` | `dotnet lmp` | CLI command (override for local dev) |
 | `DesignTimeBuild` | (set by IDE) | Skipped — IDE design-time builds must not run the optimizer |
+
+### Optimizer strategies
+
+| Strategy | CLI flag | Description |
+|----------|----------|-------------|
+| `BootstrapFewShot` | `--optimizer bootstrap` | Single-pass: runs each training example, collects high-scoring traces as demos |
+| `BootstrapRandomSearch` | `--optimizer random` (default) | N trials of BootstrapFewShot with shuffled training order; picks best candidate on validation split |
+| `MIPROv2` | `--optimizer mipro` | Bayesian instruction + demo optimization. Requires `IChatClient` for proposal generation |
+| `GEPA` | `--optimizer gepa` | Evolutionary optimization via LLM reflection. Requires `IChatClient` for reflection generation |
+
+MIPROv2 and GEPA require a `static IChatClient CreateClient()` convention method on the module (same client used for proposal/reflection).
+
+### Baseline guard
+
+The CLI measures a **baseline score** before optimization (running the unoptimized module on the full training set). After optimization, it evaluates the optimized module on the **same dataset**. The `.g.cs` artifact is only written if the optimized score **strictly improves** over baseline.
+
+If no improvement is detected:
+- Existing `.g.cs` is deleted
+- CLI prints guidance (more data, different optimizer, more trials)
+- Build exits successfully (no improvement is not a failure)
+
+This prevents committing regressions. The `LMP1000` build diagnostic shows baseline when available:
+```
+warning LMP1000: QAModule optimized — Score: 0.8200 (Baseline: 0.6500) | Strategy: MIPROv2 | Demos: 3 | 2026-04-13
+```
 
 ### Normal builds
 
