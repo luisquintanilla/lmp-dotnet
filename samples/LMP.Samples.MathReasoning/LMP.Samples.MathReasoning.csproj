@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LMP.Samples.MathReasoning</RootNamespace>
+    <UserSecretsId>a3f7b2c1-9d4e-4a8b-b1e6-7f2c3d5e8a9b</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LMP.Modules\LMP.Modules.csproj" />
+    <ProjectReference Include="..\..\src\LMP.Optimizers\LMP.Optimizers.csproj" />
+    <ProjectReference Include="..\..\src\LMP.SourceGen\LMP.SourceGen.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
