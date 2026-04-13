@@ -50,9 +50,21 @@ public static class Evaluator
             },
             async (example, ct) =>
             {
-                var output = await module.ForwardAsync(example.WithInputs(), ct);
-                var score = metric(example, output);
-                results.Add(new ExampleResult(example, output, score));
+                try
+                {
+                    var output = await module.ForwardAsync(example.WithInputs(), ct);
+                    var score = metric(example, output);
+                    results.Add(new ExampleResult(example, output, score));
+                }
+                catch (OperationCanceledException)
+                {
+                    throw; // Propagate cancellation
+                }
+                catch
+                {
+                    // LLM failures (malformed JSON, network errors, etc.) → score 0
+                    results.Add(new ExampleResult(example, null!, 0f));
+                }
             });
 
         var scores = results.Select(r => r.Score).ToArray();
@@ -154,9 +166,20 @@ public static class Evaluator
             },
             async (example, ct) =>
             {
-                var output = await module.ForwardAsync(example.WithInputs(), ct);
-                var score = await metric(example, output);
-                results.Add(new ExampleResult(example, output, score));
+                try
+                {
+                    var output = await module.ForwardAsync(example.WithInputs(), ct);
+                    var score = await metric(example, output);
+                    results.Add(new ExampleResult(example, output, score));
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    results.Add(new ExampleResult(example, null!, 0f));
+                }
             });
 
         var scores = results.Select(r => r.Score).ToArray();

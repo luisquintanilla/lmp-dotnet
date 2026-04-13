@@ -169,3 +169,6 @@ rcf/
 
 # LMP-specific
 .internal/
+
+# Benchmark data files (downloaded locally, not committed)
+samples/*/data/

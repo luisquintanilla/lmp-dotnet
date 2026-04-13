@@ -408,7 +408,7 @@ public class EvaluatorTests
     #region Error Propagation
 
     [Fact]
-    public async Task EvaluateAsync_ModuleThrows_PropagatesException()
+    public async Task EvaluateAsync_ModuleThrows_ScoresZero()
     {
         var module = new FailingModule();
         var devSet = new List<Example>
@@ -416,8 +416,10 @@ public class EvaluatorTests
             new Example<string, string>("a", "la")
         };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Evaluator.EvaluateAsync(module, devSet, (_, _) => 1f));
+        var result = await Evaluator.EvaluateAsync(module, devSet, (_, _) => 1f);
+        Assert.Equal(0f, result.AverageScore);
+        Assert.Single(result.PerExample);
+        Assert.Equal(0f, result.PerExample[0].Score);
     }
 
     #endregion
