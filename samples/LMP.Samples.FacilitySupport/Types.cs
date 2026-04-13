@@ -1,0 +1,62 @@
+using System.ComponentModel;
+
+namespace LMP.Samples.FacilitySupport;
+
+/// <summary>
+/// Input for facility support analysis — a support email or message.
+/// </summary>
+/// <param name="Message">The facility support email or message text.</param>
+public record SupportInput(
+    [property: Description("The facility support email or message text")]
+    string Message);
+
+/// <summary>
+/// Urgency classification output.
+/// </summary>
+[LmpSignature("Assess the urgency level of this facility support request")]
+public partial record UrgencyOutput
+{
+    /// <summary>Urgency level of the request.</summary>
+    [Description("Urgency level: 'low', 'medium', 'high', or 'critical'")]
+    public required string Urgency { get; init; }
+}
+
+/// <summary>
+/// Sentiment analysis output.
+/// </summary>
+[LmpSignature("Analyze the sentiment expressed in this facility support request")]
+public partial record SentimentOutput
+{
+    /// <summary>Sentiment of the message.</summary>
+    [Description("Sentiment: 'positive', 'neutral', 'negative', or 'frustrated'")]
+    public required string Sentiment { get; init; }
+}
+
+/// <summary>
+/// Service category identification output.
+/// </summary>
+[LmpSignature("Identify the facility service categories relevant to this support request")]
+public partial record CategoryOutput
+{
+    /// <summary>Primary service category.</summary>
+    [Description("Primary service category (e.g., 'HVAC', 'Plumbing', 'Electrical', 'Janitorial', 'Security', 'Elevator', 'Parking', 'General')")]
+    public required string PrimaryCategory { get; init; }
+
+    /// <summary>Secondary service category, if applicable.</summary>
+    [Description("Secondary service category if the request spans multiple areas, or 'None'")]
+    public required string SecondaryCategory { get; init; }
+}
+
+/// <summary>
+/// Combined analysis result — the module's final output.
+/// All three sub-task results bundled together for evaluation.
+/// </summary>
+public record AnalysisResult(
+    [property: Description("Urgency level")]
+    string Urgency,
+    [property: Description("Sentiment")]
+    string Sentiment,
+    [property: Description("Primary service category")]
+    string PrimaryCategory,
+    [property: Description("Secondary service category")]
+    string SecondaryCategory);
