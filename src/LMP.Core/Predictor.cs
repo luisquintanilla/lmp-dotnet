@@ -109,8 +109,11 @@ public class Predictor<TInput, TOutput> : IPredictor
         {
             var messages = BuildMessages(input, lastError);
 
-            var response = await _client.GetResponseAsync<TOutput>(
-                messages, Config, cancellationToken: cancellationToken);
+            var response = SerializerOptions is not null
+                ? await _client.GetResponseAsync<TOutput>(
+                    messages, SerializerOptions, Config, cancellationToken: cancellationToken)
+                : await _client.GetResponseAsync<TOutput>(
+                    messages, Config, cancellationToken: cancellationToken);
 
             var result = response.Result
                 ?? throw new InvalidOperationException(
