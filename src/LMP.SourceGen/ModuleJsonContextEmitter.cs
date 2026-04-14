@@ -37,6 +37,7 @@ internal static class ModuleJsonContextEmitter
         sb.AppendLine("using System.CodeDom.Compiler;");
         sb.AppendLine("using System.Text.Json;");
         sb.AppendLine("using System.Text.Json.Serialization;");
+        sb.AppendLine("using System.Text.Json.Serialization.Metadata;");
         sb.AppendLine("using LMP;");
         sb.AppendLine();
 
@@ -57,6 +58,7 @@ internal static class ModuleJsonContextEmitter
         sb.AppendLine("        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,");
         sb.AppendLine("        WriteIndented = true,");
         sb.AppendLine("        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,");
+        sb.AppendLine("        TypeInfoResolver = new DefaultJsonTypeInfoResolver(),");
         sb.AppendLine("        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }");
         sb.AppendLine("    };");
         sb.AppendLine("}");
