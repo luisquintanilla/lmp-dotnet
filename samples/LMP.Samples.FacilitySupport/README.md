@@ -220,18 +220,33 @@ Step 3: GEPA Evolutionary Optimization
 ## Observed Results (gpt-4o-mini, 100 train / 100 dev)
 
 > **Important:** The "Expected Output" section above shows idealized numbers.
-> Actual results demonstrate meaningful GEPA improvement.
+> Actual results with enum types show improved baseline accuracy.
 
 In testing with Azure OpenAI gpt-4o-mini on 100 training + 100 dev FacilitySupport:
 
 | Configuration | Observed Score | Notes |
 |--------------|---------------|-------|
-| Baseline (no opt) | ~23.3% | Urgency 35%, Sentiment 35%, Category varies |
-| GEPA (evolutionary) | ~36.7% | Urgency 65%, Sentiment 45%, Category improved |
+| Baseline (no opt) | ~52.3% | Urgency 47%, Sentiment 43%, Category 67% |
+| GEPA (evolutionary) | Pending re-test | Bug fix applied — see below |
 
-**GEPA shows +57% relative improvement** — from 23.3% to 36.7% combined score.
-Urgency classification nearly doubled (35% → 65%), demonstrating GEPA's ability
-to evolve targeted instructions per sub-task.
+The baseline improved from ~23.3% to ~52.3% after adding C# enum types (commit `712db8c`),
+demonstrating the value of constrained output over free-form string prediction.
+
+### Bug Fix: GEPA 0% with SerializerOptions (commit `506a0e0`)
+
+GEPA was producing 0% on all examples due to a missing `TypeInfoResolver` in the
+source-generated `JsonSerializerOptions`. The root cause:
+
+1. **Baseline worked** (52.3%) because `SerializerOptions` was `null` — MEAI used
+   `AIJsonUtilities.DefaultOptions` which has a proper `TypeInfoResolver`
+2. **GEPA failed** (0%) because `GetPredictors()` sets `SerializerOptions` to the
+   generated options. MEAI's `GetResponseAsync<T>` calls `MakeReadOnly()` on these
+   options, which in .NET 10 **requires** an explicit `TypeInfoResolver`
+3. The `InvalidOperationException` was silently caught by GEPA's catch-all handlers,
+   causing all predictions to fail with no visible error
+
+**Fix:** Added `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` to all 3
+source-gen emitters (ModuleJsonContext, JsonContext, ChainOfThought).
 
 ### C# Enum Types (Constrained Output)
 
@@ -262,6 +277,8 @@ prompt-level hints + validation + retry.
   iterations is minimal; production use should target 500+ examples
 - **Category accuracy is hardest** — 10 categories with semantically overlapping labels
   (e.g., "Routine Maintenance" vs "Facility Management") is inherently challenging
+- **GEPA needs re-testing** — after the TypeInfoResolver fix, GEPA should produce
+  meaningful optimization results; the 0% score was a framework bug, not an optimizer issue
 
 ## Key Takeaways
 
