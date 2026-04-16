@@ -101,7 +101,10 @@ Console.WriteLine("Step 1: Baseline Evaluation");
 Console.WriteLine("───────────────────────────");
 
 var baselineModule = new FacilitySupportModule(client);
-var baseline = await Evaluator.EvaluateAsync(baselineModule, devSet, combinedMetric);
+// maxConcurrency: 1 — module runs 3 sub-predictors concurrently via Task.WhenAll,
+// so effective API call count is 1 × 3 = 3 simultaneous calls.
+var baseline = await Evaluator.EvaluateAsync(baselineModule, devSet, combinedMetric,
+    maxConcurrency: 1);
 
 Console.WriteLine($"  Combined Score: {baseline.AverageScore:P1}");
 PrintSubTaskScores(baseline, devSet);
@@ -143,11 +146,19 @@ var gepa = new GEPA(
     maxIterations: 30,
     miniBatchSize: 5,
     mergeEvery: 5,
+    maxConcurrency: 1,   // 3 sub-predictors via Task.WhenAll × 1 = 3 concurrent API calls
     seed: 42,
     progress: gepaProgress);
 
 var gepaOptimized = await gepa.CompileAsync(gepaModule, trainSet, untypedMetric);
-var gepaScore = await Evaluator.EvaluateAsync(gepaOptimized, devSet, combinedMetric);
+
+// Brief cooldown to let Azure rate-limit windows reset after GEPA's intensive API usage.
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
+
+// maxConcurrency: 1 — 3 sub-predictors × 1 = 3 concurrent API calls.
+var gepaScore = await Evaluator.EvaluateAsync(gepaOptimized, devSet, combinedMetric,
+    maxConcurrency: 1);
 
 Console.WriteLine();
 Console.WriteLine($"  Combined Score: {gepaScore.AverageScore:P1}");

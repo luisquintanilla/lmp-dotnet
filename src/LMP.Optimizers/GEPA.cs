@@ -31,6 +31,7 @@ public sealed class GEPA : IOptimizer
     private readonly int _maxIterations;
     private readonly int _miniBatchSize;
     private readonly int _mergeEvery;
+    private readonly int _maxConcurrency;
     private readonly int? _seed;
     private readonly IProgress<GEPAProgressReport>? _progress;
 
@@ -44,6 +45,12 @@ public sealed class GEPA : IOptimizer
     /// <param name="maxIterations">Maximum evolutionary iterations. Default is 50.</param>
     /// <param name="miniBatchSize">Examples per mini-batch for reflection. Default is 5.</param>
     /// <param name="mergeEvery">Perform a merge operation every N iterations. Default is 5.</param>
+    /// <param name="maxConcurrency">
+    /// Maximum concurrent <see cref="LmpModule.ForwardAsync"/> calls during full-set evaluation.
+    /// Default is 4. For modules with multiple concurrent sub-predictors, the effective number of
+    /// concurrent API calls is <c>maxConcurrency × predictors_per_forward</c>. Reduce this value
+    /// if you encounter rate limit errors or HTTP timeouts during optimization.
+    /// </param>
     /// <param name="seed">Optional random seed for reproducibility.</param>
     /// <param name="progress">Optional progress reporter for iteration updates.</param>
     public GEPA(
@@ -51,6 +58,7 @@ public sealed class GEPA : IOptimizer
         int maxIterations = 50,
         int miniBatchSize = 5,
         int mergeEvery = 5,
+        int maxConcurrency = 4,
         int? seed = null,
         IProgress<GEPAProgressReport>? progress = null)
     {
@@ -58,11 +66,13 @@ public sealed class GEPA : IOptimizer
         ArgumentOutOfRangeException.ThrowIfLessThan(maxIterations, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(miniBatchSize, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(mergeEvery, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
 
         _reflectionClient = reflectionClient;
         _maxIterations = maxIterations;
         _miniBatchSize = miniBatchSize;
         _mergeEvery = mergeEvery;
+        _maxConcurrency = maxConcurrency;
         _seed = seed;
         _progress = progress;
     }
@@ -90,7 +100,7 @@ public sealed class GEPA : IOptimizer
         int componentIndex = 0; // Round-robin predictor index
 
         // Seed the frontier: evaluate initial module on the FULL trainSet (stable valset)
-        var initialScores = await EvaluateOnFullSet(module, trainSet, metric, cancellationToken);
+        var initialScores = await EvaluateOnFullSet(module, trainSet, metric, cancellationToken, _maxConcurrency);
         frontier.Add(module, initialScores);
 
         float baselineAvg = initialScores.Average(s => s.Score);
@@ -106,7 +116,7 @@ public sealed class GEPA : IOptimizer
                 candidate = await MergeAsync(frontier, trainSet, metric, rng, cancellationToken);
 
                 // Always evaluate merge candidates on full set (no gate check for merges)
-                var mergeScores = await EvaluateOnFullSet(candidate, trainSet, metric, cancellationToken);
+                var mergeScores = await EvaluateOnFullSet(candidate, trainSet, metric, cancellationToken, _maxConcurrency);
                 frontier.Add(candidate, mergeScores);
 
                 _progress?.Report(new GEPAProgressReport(
@@ -135,7 +145,7 @@ public sealed class GEPA : IOptimizer
                 }
 
                 // Passed gate: evaluate on the FULL trainSet for Pareto tracking
-                var fullScores = await EvaluateOnFullSet(mutated, trainSet, metric, cancellationToken);
+                var fullScores = await EvaluateOnFullSet(mutated, trainSet, metric, cancellationToken, _maxConcurrency);
                 frontier.Add(mutated, fullScores);
 
                 _progress?.Report(new GEPAProgressReport(
@@ -190,17 +200,26 @@ public sealed class GEPA : IOptimizer
         foreach (var example in miniBatch)
         {
             candidate.Trace = new Trace();
-            try
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                var output = await candidate.ForwardAsync(example.WithInputs(), cancellationToken);
-                var score = metric(example, output);
-                traceResults.Add((example, output, score, candidate.Trace));
-            }
-            catch (OperationCanceledException) { throw; }
-            catch
-            {
-                // Score as 0 for failed examples
-                traceResults.Add((example, "error", 0f, candidate.Trace));
+                try
+                {
+                    var output = await candidate.ForwardAsync(example.WithInputs(), cancellationToken);
+                    var score = metric(example, output);
+                    traceResults.Add((example, output, score, candidate.Trace));
+                    break;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch when (attempt < 2)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), cancellationToken);
+                }
+                catch
+                {
+                    // Score as 0 for failed examples
+                    traceResults.Add((example, "error", 0f, candidate.Trace));
+                    break;
+                }
             }
         }
 
@@ -225,11 +244,20 @@ public sealed class GEPA : IOptimizer
 
         if (failedTraces.Count > 0)
         {
-            var newInstruction = await ReflectOnPredictor(
-                targetName, targetPredictor.Instructions, failedTraces, cancellationToken);
+            try
+            {
+                var newInstruction = await ReflectOnPredictor(
+                    targetName, targetPredictor.Instructions, failedTraces, cancellationToken);
 
-            if (!string.IsNullOrWhiteSpace(newInstruction))
-                targetPredictor.Instructions = newInstruction;
+                if (!string.IsNullOrWhiteSpace(newInstruction))
+                    targetPredictor.Instructions = newInstruction;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                // Reflection failed (e.g., content filter, transient API error).
+                // Skip instruction mutation for this iteration and continue optimization.
+            }
         }
 
         return (candidate, parentMiniBatchScore, miniBatch);
@@ -379,16 +407,27 @@ public sealed class GEPA : IOptimizer
             },
             async (i, ct) =>
             {
-                try
+                // Retry up to 3 times with exponential back-off (2 s, 4 s) so that
+                // transient rate-limit (429) errors don't score candidates as 0 and
+                // falsely bias frontier.Best toward the initial module.
+                for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    var output = await evalModule.ForwardAsync(trainSet[i].WithInputs(), ct);
-                    var score = metric(trainSet[i], output);
-                    results[i] = new ExampleResult(trainSet[i], output, score);
-                }
-                catch (OperationCanceledException) { throw; }
-                catch
-                {
-                    results[i] = new ExampleResult(trainSet[i], "error", 0f);
+                    try
+                    {
+                        var output = await evalModule.ForwardAsync(trainSet[i].WithInputs(), ct);
+                        var score = metric(trainSet[i], output);
+                        results[i] = new ExampleResult(trainSet[i], output, score);
+                        return;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch when (attempt < 2)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), ct);
+                    }
+                    catch
+                    {
+                        results[i] = new ExampleResult(trainSet[i], "error", 0f);
+                    }
                 }
             });
 
@@ -413,18 +452,25 @@ public sealed class GEPA : IOptimizer
         foreach (var example in miniBatch)
         {
             evalModule.Trace = new Trace();
-            try
+            bool scored = false;
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                var output = await evalModule.ForwardAsync(example.WithInputs(), cancellationToken);
-                totalScore += metric(example, output);
-                count++;
+                try
+                {
+                    var output = await evalModule.ForwardAsync(example.WithInputs(), cancellationToken);
+                    totalScore += metric(example, output);
+                    count++;
+                    scored = true;
+                    break;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch when (attempt < 2)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), cancellationToken);
+                }
+                catch { break; }
             }
-            catch (OperationCanceledException) { throw; }
-            catch
-            {
-                count++;
-                // Score as 0 for failures
-            }
+            if (!scored) count++; // count the failure as score 0
         }
 
         return count > 0 ? totalScore / count : 0f;

@@ -1415,15 +1415,23 @@ namespace LMP.Optimizers;
 public sealed class GEPA : IOptimizer
 {
     /// <param name="reflectionClient">IChatClient used for reflection and instruction mutation.</param>
-    /// <param name="maxIterations">Number of optimization iterations (default: 40).</param>
-    /// <param name="maxConcurrency">Concurrent evaluations per full-set eval (default: 4).</param>
-    /// <param name="subSampleSize">Examples used per reflection mini-batch (default: 16).</param>
+    /// <param name="maxIterations">Number of optimization iterations (default: 50).</param>
+    /// <param name="miniBatchSize">Examples used per reflection mini-batch (default: 5).</param>
+    /// <param name="mergeEvery">Run a merge crossover every N iterations (default: 5).</param>
+    /// <param name="maxConcurrency">
+    /// Max concurrent ForwardAsync calls during full-set eval (default: 4).
+    /// For modules with M concurrent sub-predictors, effective API concurrency is
+    /// maxConcurrency × M. Reduce if you hit rate limits or HTTP timeouts.
+    /// </param>
+    /// <param name="seed">Optional random seed for reproducibility.</param>
     /// <param name="progress">Optional IProgress for iteration-by-iteration status.</param>
     public GEPA(
         IChatClient reflectionClient,
-        int maxIterations = 40,
+        int maxIterations = 50,
+        int miniBatchSize = 5,
+        int mergeEvery = 5,
         int maxConcurrency = 4,
-        int subSampleSize = 16,
+        int? seed = null,
         IProgress<GEPAProgressReport>? progress = null);
 
     public Task<TModule> CompileAsync<TModule>(
@@ -1439,24 +1447,29 @@ public sealed class GEPA : IOptimizer
 /// Useful for real-time monitoring of the optimization process.
 /// </summary>
 public sealed record GEPAProgressReport(
+    /// <summary>Current iteration number (1-based).</summary>
     int Iteration,
+    /// <summary>Total iterations requested.</summary>
     int TotalIterations,
-    GEPAIterationType IterationType,
-    string PredictorName,
-    float SubSampleScore,
-    float? FullSetScore,
+    /// <summary>Number of candidates currently in the Pareto frontier.</summary>
+    int FrontierSize,
+    /// <summary>Average score of the best candidate on the full set so far.</summary>
     float BestScore,
-    string? NewInstructions);
+    /// <summary>Whether this was a mutation or a merge iteration.</summary>
+    GEPAIterationType IterationType,
+    /// <summary>
+    /// For mutation iterations: true = mini-batch gate check passed (full eval ran),
+    /// false = gate check failed (full eval skipped). Null for merge iterations.
+    /// </summary>
+    bool? Passed);
 
 /// <summary>Classifies the type of GEPA iteration.</summary>
 public enum GEPAIterationType
 {
-    /// <summary>Sub-sample score improved; full-set evaluation was run.</summary>
-    Improved,
-    /// <summary>Sub-sample score did not improve; full-set evaluation was skipped (gate check).</summary>
-    Skipped,
-    /// <summary>Merge of two Pareto-frontier candidates was performed.</summary>
-    Merged
+    /// <summary>Reflective mutation — one predictor's instructions were mutated via LLM reflection.</summary>
+    Mutation,
+    /// <summary>Merge — instructions were combined from two Pareto-frontier parents.</summary>
+    Merge
 }
 ```
 
@@ -1466,14 +1479,15 @@ public enum GEPAIterationType
 var optimizer = new GEPA(
     reflectionClient: chatClient,
     maxIterations: 40,
+    maxConcurrency: 2,  // reduce if module has multiple concurrent sub-predictors
     progress: new Progress<GEPAProgressReport>(report =>
     {
+        string status = report.IterationType == GEPAIterationType.Merge
+            ? "MERGE"
+            : report.Passed == true ? "PASS" : "skip";
         Console.WriteLine(
             $"[{report.Iteration}/{report.TotalIterations}] " +
-            $"{report.IterationType} — {report.PredictorName}: " +
-            $"sub={report.SubSampleScore:P1}, " +
-            $"full={report.FullSetScore?.ToString("P1") ?? "skipped"}, " +
-            $"best={report.BestScore:P1}");
+            $"{status} frontier={report.FrontierSize} best={report.BestScore:P1}");
     }));
 
 var optimized = await optimizer.CompileAsync(module, trainSet,

@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>LMP.Samples.FacilitySupport</RootNamespace>
     <UserSecretsId>c5f9d4e3-2a6b-4c0d-d3e8-9b4a5f7c1d2e</UserSecretsId>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
   </PropertyGroup>
 
   <ItemGroup>

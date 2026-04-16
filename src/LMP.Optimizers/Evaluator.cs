@@ -50,20 +50,29 @@ public static class Evaluator
             },
             async (example, ct) =>
             {
-                try
+                for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    var output = await module.ForwardAsync(example.WithInputs(), ct);
-                    var score = metric(example, output);
-                    results.Add(new ExampleResult(example, output, score));
-                }
-                catch (OperationCanceledException)
-                {
-                    throw; // Propagate cancellation
-                }
-                catch
-                {
-                    // LLM failures (malformed JSON, network errors, etc.) → score 0
-                    results.Add(new ExampleResult(example, null!, 0f));
+                    try
+                    {
+                        var output = await module.ForwardAsync(example.WithInputs(), ct);
+                        var score = metric(example, output);
+                        results.Add(new ExampleResult(example, output, score));
+                        return;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch when (attempt < 2)
+                    {
+                        // Transient error (e.g., rate limit 429). Back off and retry.
+                        await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), ct);
+                    }
+                    catch
+                    {
+                        // LLM failures (malformed JSON, network errors, etc.) → score 0
+                        results.Add(new ExampleResult(example, null!, 0f));
+                    }
                 }
             });
 
@@ -166,19 +175,27 @@ public static class Evaluator
             },
             async (example, ct) =>
             {
-                try
+                for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    var output = await module.ForwardAsync(example.WithInputs(), ct);
-                    var score = await metric(example, output);
-                    results.Add(new ExampleResult(example, output, score));
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch
-                {
-                    results.Add(new ExampleResult(example, null!, 0f));
+                    try
+                    {
+                        var output = await module.ForwardAsync(example.WithInputs(), ct);
+                        var score = await metric(example, output);
+                        results.Add(new ExampleResult(example, output, score));
+                        return;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch when (attempt < 2)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), ct);
+                    }
+                    catch
+                    {
+                        results.Add(new ExampleResult(example, null!, 0f));
+                    }
                 }
             });
 
