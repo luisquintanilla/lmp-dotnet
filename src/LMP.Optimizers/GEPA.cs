@@ -32,6 +32,7 @@ public sealed class GEPA : IOptimizer
     private readonly int _miniBatchSize;
     private readonly int _mergeEvery;
     private readonly int? _seed;
+    private readonly IProgress<GEPAProgressReport>? _progress;
 
     /// <summary>
     /// Creates a new GEPA optimizer.
@@ -44,12 +45,14 @@ public sealed class GEPA : IOptimizer
     /// <param name="miniBatchSize">Examples per mini-batch for reflection. Default is 5.</param>
     /// <param name="mergeEvery">Perform a merge operation every N iterations. Default is 5.</param>
     /// <param name="seed">Optional random seed for reproducibility.</param>
+    /// <param name="progress">Optional progress reporter for iteration updates.</param>
     public GEPA(
         IChatClient reflectionClient,
         int maxIterations = 50,
         int miniBatchSize = 5,
         int mergeEvery = 5,
-        int? seed = null)
+        int? seed = null,
+        IProgress<GEPAProgressReport>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(reflectionClient);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxIterations, 1);
@@ -61,6 +64,7 @@ public sealed class GEPA : IOptimizer
         _miniBatchSize = miniBatchSize;
         _mergeEvery = mergeEvery;
         _seed = seed;
+        _progress = progress;
     }
 
     /// <inheritdoc />
@@ -78,6 +82,8 @@ public sealed class GEPA : IOptimizer
 
         if (trainSet.Count == 0)
             return module;
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         var rng = _seed.HasValue ? new Random(_seed.Value) : new Random();
         var frontier = new ParetoFrontier<TModule>();
@@ -102,6 +108,11 @@ public sealed class GEPA : IOptimizer
                 // Always evaluate merge candidates on full set (no gate check for merges)
                 var mergeScores = await EvaluateOnFullSet(candidate, trainSet, metric, cancellationToken);
                 frontier.Add(candidate, mergeScores);
+
+                _progress?.Report(new GEPAProgressReport(
+                    iter + 1, _maxIterations, frontier.Count,
+                    frontier.Best is null ? 0f : mergeScores.Average(s => s.Score),
+                    GEPAIterationType.Merge, null));
             }
             else
             {
@@ -115,15 +126,26 @@ public sealed class GEPA : IOptimizer
                     mutated, miniBatch, metric, cancellationToken);
 
                 if (mutatedMiniBatchScore <= parentMiniBatchScore)
+                {
+                    _progress?.Report(new GEPAProgressReport(
+                        iter + 1, _maxIterations, frontier.Count,
+                        frontier.ParetoFrontScore,
+                        GEPAIterationType.Mutation, false));
                     continue; // Mini-batch didn't improve — skip expensive full eval
+                }
 
                 // Passed gate: evaluate on the FULL trainSet for Pareto tracking
                 var fullScores = await EvaluateOnFullSet(mutated, trainSet, metric, cancellationToken);
                 frontier.Add(mutated, fullScores);
+
+                _progress?.Report(new GEPAProgressReport(
+                    iter + 1, _maxIterations, frontier.Count,
+                    frontier.ParetoFrontScore,
+                    GEPAIterationType.Mutation, true));
             }
         }
 
-        var best = frontier.Best;
+        var best = frontier.Best ?? module;
 
         // Auto-emit .g.cs artifact
         string? outputDir = options?.OutputDir;
@@ -215,7 +237,8 @@ public sealed class GEPA : IOptimizer
 
     /// <summary>
     /// Asks the reflection LLM to analyze failures for a specific predictor
-    /// and propose an improved instruction. Includes expected labels for diagnosis.
+    /// and propose an improved instruction. Uses predictor-specific trace I/O
+    /// rather than the full module output to avoid cross-task confusion.
     /// </summary>
     private async Task<string> ReflectOnPredictor(
         string predictorName,
@@ -223,42 +246,59 @@ public sealed class GEPA : IOptimizer
         List<(Example Example, object Output, float Score, Trace Trace)> failedTraces,
         CancellationToken cancellationToken)
     {
+        // Only reflect on examples that have trace entries for this predictor
+        // (error examples with no trace entries can't be diagnosed)
+        var diagnosable = failedTraces
+            .Where(r => r.Trace.Entries.Any(e => e.PredictorName == predictorName))
+            .Take(5)
+            .ToList();
+
+        if (diagnosable.Count == 0)
+            return "";
+
         var prompt = new StringBuilder();
-        prompt.AppendLine($"You are analyzing the '{predictorName}' predictor in an LM program.");
+        prompt.AppendLine($"You are improving the '{predictorName}' predictor in a multi-predictor LM pipeline.");
         prompt.AppendLine($"Current instruction: \"{currentInstruction}\"");
         prompt.AppendLine();
-        prompt.AppendLine("Here are examples where this predictor performed poorly:");
+        prompt.AppendLine($"This predictor has ONE specific job: classify the '{predictorName}' of the input.");
+        prompt.AppendLine("Other sub-tasks are handled by separate predictors — do NOT include them in this instruction.");
+        prompt.AppendLine();
+        prompt.AppendLine("Examples where this predictor contributed to errors:");
         prompt.AppendLine();
 
         int shown = 0;
-        foreach (var (example, output, score, trace) in failedTraces.Take(5))
+        foreach (var (example, _, score, trace) in diagnosable)
         {
             shown++;
-            prompt.AppendLine($"--- Example {shown} (score: {score:F2}) ---");
-            prompt.AppendLine($"Input: {example.WithInputs()}");
-            prompt.AppendLine($"Expected: {example.GetLabel()}");
-            prompt.AppendLine($"Got: {output}");
-
-            // Show trace entries for this predictor
             var entries = trace.Entries.Where(e => e.PredictorName == predictorName).ToList();
+            if (entries.Count == 0) continue;
+
+            prompt.AppendLine($"--- Example {shown} (combined module score: {score:F2}) ---");
             foreach (var entry in entries)
             {
-                prompt.AppendLine($"  Predictor received: {entry.Input}");
-                prompt.AppendLine($"  Predictor produced: {entry.Output}");
+                prompt.AppendLine($"  Input:    {entry.Input}");
+                prompt.AppendLine($"  Produced: {entry.Output}");
             }
+            // Show the full expected label so the LLM can infer the correct value for this sub-task
+            prompt.AppendLine($"  Full expected: {example.GetLabel()}");
             prompt.AppendLine();
         }
 
-        prompt.AppendLine("Based on these failures, propose an improved instruction for this predictor.");
-        prompt.AppendLine("The instruction should help the predictor produce outputs that match the expected labels more accurately.");
-        prompt.AppendLine("Respond with ONLY the new instruction text, nothing else.");
+        prompt.AppendLine($"Write an improved instruction for the '{predictorName}' predictor.");
+        prompt.AppendLine();
+        prompt.AppendLine("CRITICAL RULES — violation breaks the pipeline:");
+        prompt.AppendLine("  1. Output ONLY the instruction text — no explanation, no preamble");
+        prompt.AppendLine("  2. Do NOT describe output format, JSON, or field names");
+        prompt.AppendLine("  3. Do NOT instruct the predictor to output more than one field");
+        prompt.AppendLine($"  4. Focus exclusively on '{predictorName}' — ignore other sub-tasks");
 
         var response = await _reflectionClient.GetResponseAsync(
         [
             new ChatMessage(ChatRole.System,
-                "You are an expert prompt engineer analyzing LM program failures. " +
-                "Your goal is to diagnose why the predictor is failing and write a better instruction. " +
-                "Compare the expected output with what was actually produced to identify specific patterns of error."),
+                $"You are an expert prompt engineer. You are improving a SINGLE predictor called '{predictorName}' " +
+                "in a multi-task pipeline. The predictor's output schema is fixed and enforced automatically — " +
+                "never include output format instructions. Write a focused, concise instruction that helps the " +
+                $"predictor classify '{predictorName}' more accurately. Output ONLY the instruction text."),
             new ChatMessage(ChatRole.User, prompt.ToString())
         ],
         cancellationToken: cancellationToken);
@@ -312,35 +352,45 @@ public sealed class GEPA : IOptimizer
 
     /// <summary>
     /// Evaluates a module on the FULL training set. Returns per-example scores
-    /// in a stable order for Pareto frontier tracking. All candidates are evaluated
-    /// on the same examples so that per-instance comparison is valid.
+    /// in a STABLE order (index i always corresponds to trainSet[i]) for Pareto
+    /// frontier tracking. All candidates must be evaluated with this same order.
+    /// Runs examples concurrently for performance.
     /// </summary>
     private static async Task<IReadOnlyList<ExampleResult>> EvaluateOnFullSet<TModule>(
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int maxConcurrency = 4)
         where TModule : LmpModule
     {
         var results = new ExampleResult[trainSet.Count];
         var evalModule = module.Clone<TModule>();
 
-        for (int i = 0; i < trainSet.Count; i++)
-        {
-            evalModule.Trace = new Trace();
-            try
+        // Run concurrently but write results by position to maintain stable order.
+        // Multiple concurrent ForwardAsync calls share evalModule.Trace — safe because
+        // we don't use trace data for full-set evals (only for reflection mini-batches).
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, trainSet.Count),
+            new ParallelOptions
             {
-                var output = await evalModule.ForwardAsync(
-                    trainSet[i].WithInputs(), cancellationToken);
-                var score = metric(trainSet[i], output);
-                results[i] = new ExampleResult(trainSet[i], output, score);
-            }
-            catch (OperationCanceledException) { throw; }
-            catch
+                MaxDegreeOfParallelism = maxConcurrency,
+                CancellationToken = cancellationToken
+            },
+            async (i, ct) =>
             {
-                results[i] = new ExampleResult(trainSet[i], "error", 0f);
-            }
-        }
+                try
+                {
+                    var output = await evalModule.ForwardAsync(trainSet[i].WithInputs(), ct);
+                    var score = metric(trainSet[i], output);
+                    results[i] = new ExampleResult(trainSet[i], output, score);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch
+                {
+                    results[i] = new ExampleResult(trainSet[i], "error", 0f);
+                }
+            });
 
         return results;
     }
@@ -392,4 +442,32 @@ public sealed class GEPA : IOptimizer
             .ToList();
         return indices.Select(i => trainSet[i]).ToList();
     }
+}
+
+/// <summary>
+/// Progress report emitted by <see cref="GEPA"/> after each iteration.
+/// </summary>
+/// <param name="Iteration">Current iteration (1-based).</param>
+/// <param name="TotalIterations">Total iterations requested.</param>
+/// <param name="FrontierSize">Number of candidates currently in the Pareto frontier.</param>
+/// <param name="BestScore">Average score of the best candidate so far.</param>
+/// <param name="IterationType">Whether this iteration was a mutation or merge.</param>
+/// <param name="Passed">Whether the iteration's gate check passed (null for merges).</param>
+public sealed record GEPAProgressReport(
+    int Iteration,
+    int TotalIterations,
+    int FrontierSize,
+    float BestScore,
+    GEPAIterationType IterationType,
+    bool? Passed);
+
+/// <summary>
+/// Type of GEPA iteration.
+/// </summary>
+public enum GEPAIterationType
+{
+    /// <summary>Reflective mutation of one predictor.</summary>
+    Mutation,
+    /// <summary>Merge crossover from two Pareto-optimal parents.</summary>
+    Merge
 }

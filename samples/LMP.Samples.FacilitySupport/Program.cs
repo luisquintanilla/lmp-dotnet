@@ -114,7 +114,7 @@ Console.WriteLine("────────────────────�
 var gepaModule = new FacilitySupportModule(client);
 foreach (var (name, pred) in gepaModule.GetPredictors())
 {
-    Console.WriteLine($"  [{name}] \"{Truncate(pred.Instructions, 80)}\"");
+    Console.WriteLine($"  [{name}] \"{pred.Instructions}\"");
 }
 Console.WriteLine();
 
@@ -130,16 +130,26 @@ Console.WriteLine("    5. Mutated candidate enters Pareto frontier");
 Console.WriteLine("    6. Merge (crossover) Pareto-optimal parents every 5 iters");
 Console.WriteLine();
 
+var gepaProgress = new Progress<GEPAProgressReport>(r =>
+{
+    string status = r.IterationType == GEPAIterationType.Merge
+        ? "MERGE"
+        : r.Passed == true ? "PASS " : "skip ";
+    Console.WriteLine($"  iter {r.Iteration,2}/{r.TotalIterations} [{status}]  frontier={r.FrontierSize,2}  best={r.BestScore:P1}");
+});
+
 var gepa = new GEPA(
     reflectionClient: client,
     maxIterations: 30,
     miniBatchSize: 5,
     mergeEvery: 5,
-    seed: 42);
+    seed: 42,
+    progress: gepaProgress);
 
 var gepaOptimized = await gepa.CompileAsync(gepaModule, trainSet, untypedMetric);
 var gepaScore = await Evaluator.EvaluateAsync(gepaOptimized, devSet, combinedMetric);
 
+Console.WriteLine();
 Console.WriteLine($"  Combined Score: {gepaScore.AverageScore:P1}");
 PrintSubTaskScores(gepaScore, devSet);
 Console.WriteLine();
@@ -151,7 +161,7 @@ Console.WriteLine("────────────────────�
 foreach (var (name, pred) in gepaOptimized.GetPredictors())
 {
     Console.WriteLine($"  [{name}]");
-    Console.WriteLine($"    Instruction: \"{Truncate(pred.Instructions, 80)}\"");
+    Console.WriteLine($"    Instruction ({pred.Instructions.Length} chars): \"{pred.Instructions}\"");
     Console.WriteLine($"    Demos: {pred.Demos.Count}");
 }
 Console.WriteLine();
@@ -204,6 +214,3 @@ static void PrintSubTaskScores(EvaluationResult result, IReadOnlyList<Example> d
     Console.WriteLine($"    Category:   {categoryCorrect}/{total} ({(float)categoryCorrect / total:P1})");
     if (failed > 0) Console.WriteLine($"    ({failed} examples failed — LLM returned invalid output)");
 }
-
-static string Truncate(string s, int maxLen) =>
-    s.Length <= maxLen ? s : s[..maxLen] + "...";

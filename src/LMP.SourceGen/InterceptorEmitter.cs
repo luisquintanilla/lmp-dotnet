@@ -157,7 +157,11 @@ internal static class InterceptorEmitter
         sb.AppendLine();
 
         // Direct GetResponseAsync<T> call via the exposed Client property
-        sb.Append("                var response = await self.Client.GetResponseAsync<").Append(key.OutputTypeFQN)
+        // Pass SerializerOptions when available so JSON Schema is enforced (enum constraints, etc.)
+        sb.AppendLine("                var response = self.SerializerOptions is not null");
+        sb.Append("                    ? await self.Client.GetResponseAsync<").Append(key.OutputTypeFQN)
+          .AppendLine(">(messages, self.SerializerOptions, self.Config, cancellationToken: cancellationToken).ConfigureAwait(false)");
+        sb.Append("                    : await self.Client.GetResponseAsync<").Append(key.OutputTypeFQN)
           .AppendLine(">(messages, self.Config, cancellationToken: cancellationToken).ConfigureAwait(false);");
         sb.AppendLine();
 
