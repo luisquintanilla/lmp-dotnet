@@ -1400,7 +1400,92 @@ public static class TraceAnalyzer
 
 ---
 
-### 6.9 `EvaluationBridge` (LMP.Extensions.Evaluation)
+### 6.9 `GEPA`
+
+Gradient-free Evolutionary Prompt Adaptation optimizer. Uses reflection and a Pareto frontier to iteratively improve predictor instructions by diagnosing failures and proposing better instruction candidates.
+
+```csharp
+namespace LMP.Optimizers;
+
+/// <summary>
+/// Gradient-free Evolutionary Prompt Adaptation optimizer.
+/// Iteratively improves predictor Instructions by reflecting on failures
+/// and tracking a per-instance Pareto frontier.
+/// </summary>
+public sealed class GEPA : IOptimizer
+{
+    /// <param name="reflectionClient">IChatClient used for reflection and instruction mutation.</param>
+    /// <param name="maxIterations">Number of optimization iterations (default: 40).</param>
+    /// <param name="maxConcurrency">Concurrent evaluations per full-set eval (default: 4).</param>
+    /// <param name="subSampleSize">Examples used per reflection mini-batch (default: 16).</param>
+    /// <param name="progress">Optional IProgress for iteration-by-iteration status.</param>
+    public GEPA(
+        IChatClient reflectionClient,
+        int maxIterations = 40,
+        int maxConcurrency = 4,
+        int subSampleSize = 16,
+        IProgress<GEPAProgressReport>? progress = null);
+
+    public Task<TModule> CompileAsync<TModule>(
+        TModule module,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
+}
+
+/// <summary>
+/// Progress report emitted after each GEPA iteration.
+/// Useful for real-time monitoring of the optimization process.
+/// </summary>
+public sealed record GEPAProgressReport(
+    int Iteration,
+    int TotalIterations,
+    GEPAIterationType IterationType,
+    string PredictorName,
+    float SubSampleScore,
+    float? FullSetScore,
+    float BestScore,
+    string? NewInstructions);
+
+/// <summary>Classifies the type of GEPA iteration.</summary>
+public enum GEPAIterationType
+{
+    /// <summary>Sub-sample score improved; full-set evaluation was run.</summary>
+    Improved,
+    /// <summary>Sub-sample score did not improve; full-set evaluation was skipped (gate check).</summary>
+    Skipped,
+    /// <summary>Merge of two Pareto-frontier candidates was performed.</summary>
+    Merged
+}
+```
+
+**Usage:**
+
+```csharp
+var optimizer = new GEPA(
+    reflectionClient: chatClient,
+    maxIterations: 40,
+    progress: new Progress<GEPAProgressReport>(report =>
+    {
+        Console.WriteLine(
+            $"[{report.Iteration}/{report.TotalIterations}] " +
+            $"{report.IterationType} — {report.PredictorName}: " +
+            $"sub={report.SubSampleScore:P1}, " +
+            $"full={report.FullSetScore?.ToString("P1") ?? "skipped"}, " +
+            $"best={report.BestScore:P1}");
+    }));
+
+var optimized = await optimizer.CompileAsync(module, trainSet,
+    Metric.Create((SupportOutput p, SupportOutput e) =>
+        p.Urgency == e.Urgency && p.Category == e.Category ? 1.0f : 0.0f));
+```
+
+*Inspired by:* [`dspy/teleprompt/gepa.py`](https://github.com/stanfordnlp/dspy/blob/main/dspy/teleprompt/gepa.py) and [https://dspy.ai/tutorials/gepa_facilitysupportanalyzer/](https://dspy.ai/tutorials/gepa_facilitysupportanalyzer/).
+
+---
+
+### 6.10 `EvaluationBridge` (LMP.Extensions.Evaluation)
 
 Bridges `Microsoft.Extensions.AI.Evaluation` evaluators into LMP's metric system.
 
