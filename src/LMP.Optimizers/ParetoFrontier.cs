@@ -3,55 +3,103 @@ using System.Numerics.Tensors;
 namespace LMP.Optimizers;
 
 /// <summary>
-/// Tracks a Pareto frontier of non-dominated candidates for multi-objective optimization.
-/// A candidate survives if no other candidate dominates it on ALL per-example scores.
-/// This is the core selection mechanism for GEPA's evolutionary search.
+/// Tracks a Pareto frontier of candidates using per-instance best tracking.
+/// A candidate is on the frontier if it achieves the best score on at least one
+/// validation example. This matches the DSPy GEPA Pareto frontier design.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>Invariant:</b> All candidates must be evaluated on the same set of examples
+/// in the same order. The scores at position <c>i</c> must correspond to the same
+/// validation example for every candidate. GEPA enforces this by evaluating all
+/// candidates on the full training set.
+/// </para>
+/// </remarks>
 /// <typeparam name="TModule">The LMP module type being optimized.</typeparam>
 internal sealed class ParetoFrontier<TModule> where TModule : LmpModule
 {
-    private readonly List<(TModule Candidate, IReadOnlyList<ExampleResult> Scores)> _frontier = [];
+    private readonly List<(TModule Candidate, IReadOnlyList<ExampleResult> Scores)> _candidates = [];
+
+    // Per-instance tracking: best score and which candidates achieved it
+    private readonly List<float> _bestPerInstance = [];
+    private readonly List<HashSet<int>> _bestCandidatesPerInstance = [];
+
+    // Frontier = candidate indices that are best on at least one instance
+    private HashSet<int> _frontierIndices = [];
 
     /// <summary>Number of candidates on the frontier.</summary>
-    public int Count => _frontier.Count;
+    public int Count => _frontierIndices.Count;
 
-    /// <summary>All non-dominated candidates.</summary>
-    public IReadOnlyList<TModule> Frontier => _frontier.Select(f => f.Candidate).ToList();
+    /// <summary>Total number of candidates tracked (including non-frontier).</summary>
+    public int TotalCandidates => _candidates.Count;
+
+    /// <summary>All frontier candidates (those that are best on at least one instance).</summary>
+    public IReadOnlyList<TModule> Frontier => _frontierIndices.Order().Select(i => _candidates[i].Candidate).ToList();
 
     /// <summary>
     /// The candidate with the highest average score across all examples.
+    /// Considers all tracked candidates, not just frontier members.
     /// </summary>
     public TModule Best
     {
         get
         {
-            if (_frontier.Count == 0)
+            if (_candidates.Count == 0)
                 throw new InvalidOperationException("Frontier is empty.");
-            return _frontier.MaxBy(f => f.Scores.Average(s => s.Score))!.Candidate;
+            return _candidates.MaxBy(c => c.Scores.Average(s => s.Score))!.Candidate;
         }
     }
 
     /// <summary>
-    /// Adds a candidate to the frontier. Removes any candidates it dominates.
-    /// If the new candidate is dominated by an existing one, it is not added.
+    /// The Pareto front score: for each instance, take the best score achieved by any
+    /// candidate, then average across all instances. This represents the theoretical
+    /// best achievable by an ensemble of the frontier candidates.
+    /// </summary>
+    public float ParetoFrontScore => _bestPerInstance.Count > 0
+        ? _bestPerInstance.Average(s => (double)s) is double avg ? (float)avg : 0f
+        : 0f;
+
+    /// <summary>
+    /// Adds a candidate with its per-instance scores. The scores must be evaluated
+    /// on the same examples as all other candidates, in the same order.
     /// </summary>
     public void Add(TModule candidate, IReadOnlyList<ExampleResult> scores)
     {
         ArgumentNullException.ThrowIfNull(candidate);
         ArgumentNullException.ThrowIfNull(scores);
 
-        // Check if new candidate is dominated by any existing frontier member
-        for (int i = _frontier.Count - 1; i >= 0; i--)
-        {
-            var existing = _frontier[i].Scores;
-            if (Dominates(existing, scores))
-                return; // new candidate is dominated → don't add
+        int candidateIdx = _candidates.Count;
+        _candidates.Add((candidate, scores));
 
-            if (Dominates(scores, existing))
-                _frontier.RemoveAt(i); // new dominates existing → remove existing
+        // Expand per-instance tracking if needed (first candidate sets the size)
+        while (_bestPerInstance.Count < scores.Count)
+        {
+            _bestPerInstance.Add(float.NegativeInfinity);
+            _bestCandidatesPerInstance.Add([]);
         }
 
-        _frontier.Add((candidate, scores));
+        // Update per-instance bests
+        for (int i = 0; i < scores.Count; i++)
+        {
+            float score = scores[i].Score;
+            if (score > _bestPerInstance[i])
+            {
+                _bestPerInstance[i] = score;
+                _bestCandidatesPerInstance[i] = [candidateIdx];
+            }
+            else if (Math.Abs(score - _bestPerInstance[i]) < 1e-6f)
+            {
+                _bestCandidatesPerInstance[i].Add(candidateIdx);
+            }
+        }
+
+        // Recompute frontier: candidates that appear in at least one per-instance best set
+        _frontierIndices = [];
+        foreach (var set in _bestCandidatesPerInstance)
+        {
+            foreach (int idx in set)
+                _frontierIndices.Add(idx);
+        }
     }
 
     /// <summary>
@@ -60,19 +108,20 @@ internal sealed class ParetoFrontier<TModule> where TModule : LmpModule
     /// </summary>
     public (TModule Parent1, TModule Parent2) SelectParents(Random rng)
     {
-        if (_frontier.Count < 2)
+        if (_frontierIndices.Count < 2)
             throw new InvalidOperationException("Need at least 2 candidates for parent selection.");
 
-        int idx1 = rng.Next(_frontier.Count);
+        var frontierList = _frontierIndices.ToList();
+        int idx1 = frontierList[rng.Next(frontierList.Count)];
 
         // Pick the most "different" parent (largest score disagreement)
-        int idx2 = 0;
+        int idx2 = frontierList[0] == idx1 ? frontierList[1] : frontierList[0];
         double maxDiff = -1;
-        var scores1 = _frontier[idx1].Scores;
-        for (int i = 0; i < _frontier.Count; i++)
+        var scores1 = _candidates[idx1].Scores;
+        foreach (int i in frontierList)
         {
             if (i == idx1) continue;
-            var scores2 = _frontier[i].Scores;
+            var scores2 = _candidates[i].Scores;
             double diff = ComputeDisagreement(scores1, scores2);
             if (diff > maxDiff)
             {
@@ -81,25 +130,7 @@ internal sealed class ParetoFrontier<TModule> where TModule : LmpModule
             }
         }
 
-        return (_frontier[idx1].Candidate, _frontier[idx2].Candidate);
-    }
-
-    /// <summary>
-    /// Returns true if <paramref name="a"/> dominates <paramref name="b"/>:
-    /// a[i] >= b[i] for all i, and a[j] > b[j] for at least one j.
-    /// </summary>
-    private static bool Dominates(IReadOnlyList<ExampleResult> a, IReadOnlyList<ExampleResult> b)
-    {
-        bool strictlyBetter = false;
-        int count = Math.Min(a.Count, b.Count);
-        for (int i = 0; i < count; i++)
-        {
-            if (a[i].Score < b[i].Score)
-                return false; // a is worse on at least one → not dominated
-            if (a[i].Score > b[i].Score)
-                strictlyBetter = true;
-        }
-        return strictlyBetter;
+        return (_candidates[idx1].Candidate, _candidates[idx2].Candidate);
     }
 
     /// <summary>

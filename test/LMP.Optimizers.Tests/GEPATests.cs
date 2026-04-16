@@ -75,7 +75,7 @@ public sealed class GEPATests
             reflectionClient,
             maxIterations: 5,
             miniBatchSize: 3,
-            mergeEvery: 10, // no merge in this test
+            mergeEvery: 100, // no merge in this test
             seed: 42);
 
         var module = new GEPATestModule(taskClient);
@@ -84,8 +84,9 @@ public sealed class GEPATests
                 new GEPAOutput($"reply {i}")))
             .ToList();
 
-        // Metric that gives low scores (triggers reflection)
-        Func<Example, object, float> metric = (ex, output) => 0.3f;
+        // Metric: improved outputs score higher (enables gate check to pass)
+        Func<Example, object, float> metric = (ex, output) =>
+            output is GEPAOutput o && o.Reply.Contains("Improved", StringComparison.OrdinalIgnoreCase) ? 0.8f : 0.3f;
 
         var result = await gepa.CompileAsync(module, trainSet, metric);
         Assert.NotNull(result);
@@ -93,6 +94,10 @@ public sealed class GEPATests
         // After iterations with reflection, instructions should have been modified
         var predictors = result.GetPredictors();
         Assert.NotEmpty(predictors);
+
+        // The best candidate should have improved instructions
+        var instruction = predictors.First().Predictor.Instructions;
+        Assert.Contains("Improved", instruction, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -134,7 +139,7 @@ public sealed class GEPATests
             reflectionClient,
             maxIterations: 12,
             miniBatchSize: 3,
-            mergeEvery: 3, // merge on iterations 3, 6, 9
+            mergeEvery: 3,
             seed: 42);
 
         var module = new GEPATestModule(taskClient);
@@ -143,7 +148,9 @@ public sealed class GEPATests
                 new GEPAOutput($"reply {i}")))
             .ToList();
 
-        Func<Example, object, float> metric = (_, _) => 0.5f;
+        // Instruction-sensitive metric so gate check can pass
+        Func<Example, object, float> metric = (_, output) =>
+            output is GEPAOutput o && o.Reply.Contains("Improved", StringComparison.OrdinalIgnoreCase) ? 0.8f : 0.3f;
 
         var result = await gepa.CompileAsync(module, trainSet, metric);
         Assert.NotNull(result);
@@ -300,7 +307,11 @@ file sealed class FakeGEPAPredictor : IPredictor
 
     public object Predict(object input, Trace? trace)
     {
-        var output = new GEPAOutput("Generated reply");
+        // Output varies based on instruction content — enables testing of gate check
+        var reply = Instructions.Contains("Improved", StringComparison.OrdinalIgnoreCase)
+            ? "Improved reply"
+            : "Generated reply";
+        var output = new GEPAOutput(reply);
         trace?.Record(Name, input, output);
         return output;
     }

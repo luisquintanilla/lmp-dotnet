@@ -11,11 +11,12 @@ namespace LMP.Optimizers;
 /// <remarks>
 /// <para>
 /// GEPA evolves <b>instructions only</b> (not demos). It maintains a Pareto frontier
-/// of non-dominated candidates and uses two operations:
+/// of candidates tracked per-instance on a stable validation set, and uses two operations:
 /// </para>
 /// <list type="bullet">
 /// <item><description><b>Reflective Mutation:</b> Run candidate on mini-batch → capture traces →
-/// LLM analyzes failures → proposes improved instructions.</description></item>
+/// LLM analyzes failures (including expected labels) → proposes improved instructions.
+/// Uses round-robin component selection (one predictor per iteration).</description></item>
 /// <item><description><b>Merge:</b> Combine instructions from two Pareto-optimal parents,
 /// taking each predictor's instruction from whichever parent scored better.</description></item>
 /// </list>
@@ -40,7 +41,7 @@ public sealed class GEPA : IOptimizer
     /// as the module's client, or a cheaper/faster model for cost efficiency.
     /// </param>
     /// <param name="maxIterations">Maximum evolutionary iterations. Default is 50.</param>
-    /// <param name="miniBatchSize">Examples per mini-batch evaluation. Default is 5.</param>
+    /// <param name="miniBatchSize">Examples per mini-batch for reflection. Default is 5.</param>
     /// <param name="mergeEvery">Perform a merge operation every N iterations. Default is 5.</param>
     /// <param name="seed">Optional random seed for reproducibility.</param>
     public GEPA(
@@ -80,10 +81,13 @@ public sealed class GEPA : IOptimizer
 
         var rng = _seed.HasValue ? new Random(_seed.Value) : new Random();
         var frontier = new ParetoFrontier<TModule>();
+        int componentIndex = 0; // Round-robin predictor index
 
-        // Seed the frontier with the initial module
-        var initialScores = await EvaluateOnSubset(module, trainSet, metric, rng, cancellationToken);
+        // Seed the frontier: evaluate initial module on the FULL trainSet (stable valset)
+        var initialScores = await EvaluateOnFullSet(module, trainSet, metric, cancellationToken);
         frontier.Add(module, initialScores);
+
+        float baselineAvg = initialScores.Average(s => s.Score);
 
         for (int iter = 0; iter < _maxIterations; iter++)
         {
@@ -92,16 +96,31 @@ public sealed class GEPA : IOptimizer
             TModule candidate;
             if (iter % _mergeEvery == 0 && iter > 0 && frontier.Count >= 2)
             {
-                candidate = Merge(frontier, trainSet, metric, rng);
+                // Merge: evidence-based crossover from two frontier parents
+                candidate = await MergeAsync(frontier, trainSet, metric, rng, cancellationToken);
+
+                // Always evaluate merge candidates on full set (no gate check for merges)
+                var mergeScores = await EvaluateOnFullSet(candidate, trainSet, metric, cancellationToken);
+                frontier.Add(candidate, mergeScores);
             }
             else
             {
-                candidate = await ReflectAndMutate(
-                    frontier, trainSet, metric, rng, cancellationToken);
-            }
+                // Reflective mutation with round-robin component selection
+                var (mutated, parentMiniBatchScore, miniBatch) = await ReflectAndMutate(
+                    frontier, trainSet, metric, rng, componentIndex, cancellationToken);
+                componentIndex++;
 
-            var scores = await EvaluateOnSubset(candidate, trainSet, metric, rng, cancellationToken);
-            frontier.Add(candidate, scores);
+                // Gate check: evaluate mutated on the SAME mini-batch used for reflection
+                float mutatedMiniBatchScore = await EvaluateMiniBatchScore(
+                    mutated, miniBatch, metric, cancellationToken);
+
+                if (mutatedMiniBatchScore <= parentMiniBatchScore)
+                    continue; // Mini-batch didn't improve — skip expensive full eval
+
+                // Passed gate: evaluate on the FULL trainSet for Pareto tracking
+                var fullScores = await EvaluateOnFullSet(mutated, trainSet, metric, cancellationToken);
+                frontier.Add(mutated, fullScores);
+            }
         }
 
         var best = frontier.Best;
@@ -123,20 +142,26 @@ public sealed class GEPA : IOptimizer
     /// <summary>
     /// Reflective mutation: select a candidate from the frontier, run on mini-batch,
     /// capture traces, ask the reflection LLM to diagnose failures and propose better instructions.
+    /// Uses round-robin to optimize ONE predictor per iteration.
     /// </summary>
-    private async Task<TModule> ReflectAndMutate<TModule>(
+    /// <returns>
+    /// The mutated candidate, the parent's score on the mini-batch (for gate check),
+    /// and the mini-batch examples used.
+    /// </returns>
+    private async Task<(TModule Candidate, float ParentMiniBatchScore, List<Example> MiniBatch)> ReflectAndMutate<TModule>(
         ParetoFrontier<TModule> frontier,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
         Random rng,
+        int componentIndex,
         CancellationToken cancellationToken)
         where TModule : LmpModule
     {
-        // Select a candidate from the frontier
+        // Select a parent from the frontier
         var parent = frontier.Frontier[rng.Next(frontier.Count)];
         var candidate = parent.Clone<TModule>();
 
-        // Run on mini-batch, capturing traces
+        // Sample mini-batch for reflection
         var miniBatch = SampleMiniBatch(trainSet, rng);
         var traceResults = new List<(Example Example, object Output, float Score, Trace Trace)>();
 
@@ -152,36 +177,45 @@ public sealed class GEPA : IOptimizer
             catch (OperationCanceledException) { throw; }
             catch
             {
-                // Skip failed examples
+                // Score as 0 for failed examples
+                traceResults.Add((example, "error", 0f, candidate.Trace));
             }
         }
 
+        float parentMiniBatchScore = traceResults.Count > 0
+            ? traceResults.Average(r => r.Score)
+            : 0f;
+
         if (traceResults.Count == 0)
-            return candidate;
+            return (candidate, parentMiniBatchScore, miniBatch);
 
-        // For each predictor, reflect on failures and propose improved instructions
-        foreach (var (name, predictor) in candidate.GetPredictors())
+        // Round-robin: select ONE predictor to optimize
+        var predictors = candidate.GetPredictors().ToList();
+        if (predictors.Count == 0)
+            return (candidate, parentMiniBatchScore, miniBatch);
+
+        var (targetName, targetPredictor) = predictors[componentIndex % predictors.Count];
+
+        // Get failed traces (score < 1.0 to catch partial failures too)
+        var failedTraces = traceResults
+            .Where(r => r.Score < 1.0f)
+            .ToList();
+
+        if (failedTraces.Count > 0)
         {
-            var failedTraces = traceResults
-                .Where(r => r.Score < 0.8f)
-                .ToList();
-
-            if (failedTraces.Count == 0)
-                continue;
-
             var newInstruction = await ReflectOnPredictor(
-                name, predictor.Instructions, failedTraces, cancellationToken);
+                targetName, targetPredictor.Instructions, failedTraces, cancellationToken);
 
             if (!string.IsNullOrWhiteSpace(newInstruction))
-                predictor.Instructions = newInstruction;
+                targetPredictor.Instructions = newInstruction;
         }
 
-        return candidate;
+        return (candidate, parentMiniBatchScore, miniBatch);
     }
 
     /// <summary>
     /// Asks the reflection LLM to analyze failures for a specific predictor
-    /// and propose an improved instruction.
+    /// and propose an improved instruction. Includes expected labels for diagnosis.
     /// </summary>
     private async Task<string> ReflectOnPredictor(
         string predictorName,
@@ -202,7 +236,8 @@ public sealed class GEPA : IOptimizer
             shown++;
             prompt.AppendLine($"--- Example {shown} (score: {score:F2}) ---");
             prompt.AppendLine($"Input: {example.WithInputs()}");
-            prompt.AppendLine($"Output: {output}");
+            prompt.AppendLine($"Expected: {example.GetLabel()}");
+            prompt.AppendLine($"Got: {output}");
 
             // Show trace entries for this predictor
             var entries = trace.Entries.Where(e => e.PredictorName == predictorName).ToList();
@@ -215,13 +250,15 @@ public sealed class GEPA : IOptimizer
         }
 
         prompt.AppendLine("Based on these failures, propose an improved instruction for this predictor.");
+        prompt.AppendLine("The instruction should help the predictor produce outputs that match the expected labels more accurately.");
         prompt.AppendLine("Respond with ONLY the new instruction text, nothing else.");
 
         var response = await _reflectionClient.GetResponseAsync(
         [
             new ChatMessage(ChatRole.System,
                 "You are an expert prompt engineer analyzing LM program failures. " +
-                "Your goal is to diagnose why the predictor is failing and write a better instruction."),
+                "Your goal is to diagnose why the predictor is failing and write a better instruction. " +
+                "Compare the expected output with what was actually produced to identify specific patterns of error."),
             new ChatMessage(ChatRole.User, prompt.ToString())
         ],
         cancellationToken: cancellationToken);
@@ -230,34 +267,43 @@ public sealed class GEPA : IOptimizer
     }
 
     /// <summary>
-    /// Merge operation: combine instructions from two Pareto-optimal parents.
-    /// For each predictor, take the instruction from whichever parent scored better
-    /// on a shared mini-batch evaluation.
+    /// Evidence-based merge: combine instructions from two Pareto-optimal parents.
+    /// For each predictor, evaluate both parents on a shared mini-batch and pick
+    /// the instruction from whichever parent scored better.
     /// </summary>
-    private TModule Merge<TModule>(
+    private async Task<TModule> MergeAsync<TModule>(
         ParetoFrontier<TModule> frontier,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
-        Random rng)
+        Random rng,
+        CancellationToken cancellationToken)
         where TModule : LmpModule
     {
         var (parent1, parent2) = frontier.SelectParents(rng);
         var child = parent1.Clone<TModule>();
 
-        var predictors1 = parent1.GetPredictors().ToDictionary(p => p.Name, p => p.Predictor);
-        var predictors2 = parent2.GetPredictors().ToDictionary(p => p.Name, p => p.Predictor);
+        // Evaluate both parents on the same mini-batch
+        var miniBatch = SampleMiniBatch(trainSet, rng);
+        float score1 = await EvaluateMiniBatchScore(parent1, miniBatch, metric, cancellationToken);
+        float score2 = await EvaluateMiniBatchScore(parent2, miniBatch, metric, cancellationToken);
 
-        // For each predictor in the child, pick instruction from the parent
-        // that has the higher-scoring instruction (based on overall averages from frontier)
+        // Pick instructions from the better-scoring parent for each predictor
+        var betterParent = score1 >= score2 ? parent1 : parent2;
+        var worseParent = score1 >= score2 ? parent2 : parent1;
+
+        var betterPredictors = betterParent.GetPredictors().ToDictionary(p => p.Name, p => p.Predictor);
+        var worsePredictors = worseParent.GetPredictors().ToDictionary(p => p.Name, p => p.Predictor);
+
         foreach (var (name, childPredictor) in child.GetPredictors())
         {
-            if (predictors1.TryGetValue(name, out var p1) &&
-                predictors2.TryGetValue(name, out var p2))
+            if (betterPredictors.TryGetValue(name, out var better))
             {
-                // Randomly pick from parents with 50/50 (simple crossover)
-                childPredictor.Instructions = rng.Next(2) == 0
-                    ? p1.Instructions
-                    : p2.Instructions;
+                // Default to the better parent's instruction, with 20% chance of using the other
+                // parent's instruction (to maintain diversity)
+                if (rng.NextDouble() < 0.2 && worsePredictors.TryGetValue(name, out var worse))
+                    childPredictor.Instructions = worse.Instructions;
+                else
+                    childPredictor.Instructions = better.Instructions;
             }
         }
 
@@ -265,39 +311,73 @@ public sealed class GEPA : IOptimizer
     }
 
     /// <summary>
-    /// Evaluates a module on a random mini-batch of training examples.
-    /// Returns per-example scores for Pareto frontier tracking.
+    /// Evaluates a module on the FULL training set. Returns per-example scores
+    /// in a stable order for Pareto frontier tracking. All candidates are evaluated
+    /// on the same examples so that per-instance comparison is valid.
     /// </summary>
-    private async Task<IReadOnlyList<ExampleResult>> EvaluateOnSubset<TModule>(
+    private static async Task<IReadOnlyList<ExampleResult>> EvaluateOnFullSet<TModule>(
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
-        Random rng,
         CancellationToken cancellationToken)
         where TModule : LmpModule
     {
-        var miniBatch = SampleMiniBatch(trainSet, rng);
-        var results = new List<ExampleResult>();
-
+        var results = new ExampleResult[trainSet.Count];
         var evalModule = module.Clone<TModule>();
-        for (int i = 0; i < miniBatch.Count; i++)
+
+        for (int i = 0; i < trainSet.Count; i++)
         {
             evalModule.Trace = new Trace();
             try
             {
                 var output = await evalModule.ForwardAsync(
-                    miniBatch[i].WithInputs(), cancellationToken);
-                var score = metric(miniBatch[i], output);
-                results.Add(new ExampleResult(miniBatch[i], output, score));
+                    trainSet[i].WithInputs(), cancellationToken);
+                var score = metric(trainSet[i], output);
+                results[i] = new ExampleResult(trainSet[i], output, score);
             }
             catch (OperationCanceledException) { throw; }
             catch
             {
-                results.Add(new ExampleResult(miniBatch[i], "error", 0f));
+                results[i] = new ExampleResult(trainSet[i], "error", 0f);
             }
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Evaluates a module on a specific mini-batch and returns the average score.
+    /// Used for gate checks and merge evidence.
+    /// </summary>
+    private static async Task<float> EvaluateMiniBatchScore<TModule>(
+        TModule module,
+        List<Example> miniBatch,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken)
+        where TModule : LmpModule
+    {
+        float totalScore = 0f;
+        int count = 0;
+        var evalModule = module.Clone<TModule>();
+
+        foreach (var example in miniBatch)
+        {
+            evalModule.Trace = new Trace();
+            try
+            {
+                var output = await evalModule.ForwardAsync(example.WithInputs(), cancellationToken);
+                totalScore += metric(example, output);
+                count++;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                count++;
+                // Score as 0 for failures
+            }
+        }
+
+        return count > 0 ? totalScore / count : 0f;
     }
 
     /// <summary>
