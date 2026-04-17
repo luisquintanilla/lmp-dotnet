@@ -3,6 +3,13 @@ using System.ComponentModel;
 namespace LMP.Samples.TicketTriage;
 
 /// <summary>
+/// Ticket category enum. Using a C# enum enforces valid categories at the schema
+/// level — the LLM is constrained to output exactly one of these values.
+/// This is the C# equivalent of DSPy's <c>typing.Literal</c>.
+/// </summary>
+public enum TicketCategory { Billing, Technical, Account, General }
+
+/// <summary>
 /// Input record for ticket classification. The raw support ticket text.
 /// </summary>
 /// <param name="TicketText">The raw support ticket text to classify.</param>
@@ -18,8 +25,8 @@ public record TicketInput(
 public partial record ClassifyTicket
 {
     /// <summary>Category of the ticket.</summary>
-    [Description("Category: billing, technical, account, general")]
-    public required string Category { get; init; }
+    [Description("The ticket category")]
+    public required TicketCategory Category { get; init; }
 
     /// <summary>Urgency level of the ticket.</summary>
     [Description("Urgency from 1 (low) to 5 (critical)")]

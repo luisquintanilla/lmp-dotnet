@@ -38,7 +38,8 @@ GEPA closes that gap. It captures the full execution trace of every failed examp
 
 - **Reflective Mutation** — Run → trace → diagnose → rewrite. This is the core loop.
 - **Pareto Frontier** — A set of candidates where no single candidate beats all others on every example. This keeps diversity: one candidate may excel at billing tickets while another handles security tickets better.
-- **Merge (Crossover)** — Periodically, GEPA picks two diverse Pareto-optimal parents and combines their per-predictor instructions into a child, inheriting the best traits of each.
+- **Merge (Crossover)** — Periodically, GEPA picks two diverse Pareto-optimal parents and combines their per-predictor instructions independently — the best `classify` instruction from parent A is paired with the best `draft` instruction from parent B. A merged candidate is only added to the frontier if it is not dominated by both parents.
+- **Progress reporting** — Each iteration is tagged `[PASS]` (improved frontier), `[skip]` (no improvement), or `[MERGE]` (crossover attempt). The displayed `best=` score always reflects the true best score across all frontier candidates.
 
 **GEPA vs. MIPROv2 at a glance:**
 
@@ -84,10 +85,13 @@ Three records define the data flow through the module:
 ```csharp
 public record TicketInput(string TicketText);
 
+// C# enum enforces valid categories via JSON Schema (equivalent to DSPy's typing.Literal)
+public enum TicketCategory { Billing, Technical, Account, General }
+
 [LmpSignature("Classify a support ticket by category and urgency")]
 public partial record ClassifyTicket
 {
-    public required string Category { get; init; }
+    public required TicketCategory Category { get; init; }
     public required int Urgency { get; init; }
 }
 
@@ -166,7 +170,7 @@ The sample uses a composite metric (0–1 scale):
 
 | Component | Weight | What it checks |
 |---|---|---|
-| Category match | 0.4 | Reply mentions the correct category (billing, technical, etc.) |
+| Category match | 0.4 | Reply mentions the correct category (billing, technical, account, general) |
 | Keyword overlap | 0.4 | Reply covers key terms from the reference answer |
 | Tone | 0.2 | Reply starts with a professional greeting |
 

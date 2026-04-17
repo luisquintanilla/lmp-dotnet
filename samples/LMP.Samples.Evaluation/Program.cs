@@ -73,8 +73,9 @@ Console.WriteLine("────────────────────�
 
 Func<DraftReply, DraftReply, float> keywordMetric = (prediction, label) =>
 {
+    if (prediction is null) return 0f;
     float score = 0f;
-    var categoryPhrases = new[] { "billing", "technical", "account", "security", "feature" };
+    var categoryPhrases = new[] { "billing", "technical", "account", "general" };
     var expectedCategory = categoryPhrases.FirstOrDefault(c =>
         label.ReplyText.Contains(c, StringComparison.OrdinalIgnoreCase)) ?? "";
     if (!string.IsNullOrEmpty(expectedCategory) &&
@@ -160,7 +161,12 @@ Console.WriteLine();
 
 var optimizerModule = new SupportTriageModule(client);
 var optimizer = new BootstrapRandomSearch(numTrials: 4, maxDemos: 3, metricThreshold: 0.1f, seed: 42);
-// Wrap async bridged metric as sync for CompileAsync (acceptable for demos/non-streaming evaluators)
+// BootstrapRandomSearch.CompileAsync takes a sync Func<Example, object, float> metric.
+// GetAwaiter().GetResult() is safe here because:
+//   • .NET 10 console apps have no SynchronizationContext (no deadlock risk).
+// ⚠ Do NOT copy this pattern into ASP.NET Core or Blazor — it will deadlock.
+//   In those environments, use an async-friendly optimizer overload or restructure
+//   your metric to be synchronous (e.g., use NLP evaluators instead of LLM-as-judge).
 Func<Example, object, float> syncBridgedMetric = (ex, pred) => bridgedMetric(ex, pred).GetAwaiter().GetResult();
 var optimized = await optimizer.CompileAsync(optimizerModule, trainSet, syncBridgedMetric);
 var optimizedResult = await Evaluator.EvaluateAsync(optimized, devSet, bridgedMetric);

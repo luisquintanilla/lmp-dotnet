@@ -98,11 +98,14 @@ The sample models a **support ticket triage** pipeline with three typed signatur
 // Input: raw ticket text
 public record TicketInput(string TicketText);
 
+// C# enum enforces valid categories via JSON Schema (equivalent to DSPy's typing.Literal)
+public enum TicketCategory { Billing, Technical, Account, General }
+
 // Intermediate: classification result
 [LmpSignature("Classify a support ticket by category and urgency")]
 public partial record ClassifyTicket
 {
-    public required string Category { get; init; }  // billing, technical, account, general
+    public required TicketCategory Category { get; init; }
     public required int Urgency { get; init; }       // 1 (low) to 5 (critical)
 }
 

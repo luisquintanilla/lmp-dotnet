@@ -62,8 +62,9 @@ var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
 
 Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
 {
+    if (prediction is null) return 0f;
     float score = 0f;
-    var categoryPhrases = new[] { "billing", "technical", "account", "security", "feature" };
+    var categoryPhrases = new[] { "billing", "technical", "account", "general" };
     var expectedCategory = categoryPhrases.FirstOrDefault(c =>
         label.ReplyText.Contains(c, StringComparison.OrdinalIgnoreCase)) ?? "";
     if (!string.IsNullOrEmpty(expectedCategory) &&

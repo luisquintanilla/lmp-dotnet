@@ -58,8 +58,9 @@ var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
 
 Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
 {
+    if (prediction is null) return 0f;
     float score = 0f;
-    var categoryPhrases = new[] { "billing", "technical", "account", "security", "feature" };
+    var categoryPhrases = new[] { "billing", "technical", "account", "general" };
     var expectedCategory = categoryPhrases.FirstOrDefault(c =>
         label.ReplyText.Contains(c, StringComparison.OrdinalIgnoreCase)) ?? "";
     if (!string.IsNullOrEmpty(expectedCategory) &&
@@ -110,7 +111,8 @@ var mipro = new MIPROv2(
     numDemoSubsets: 4,
     maxDemos: 4,
     metricThreshold: 0.3f,
-    seed: 42);
+    seed: 42,
+    maxConcurrency: 2);
 
 var tpeOptimized = await mipro.CompileAsync(tpeModule, trainSet, untypedMetric);
 var tpeScore = await Evaluator.EvaluateAsync(tpeOptimized, devSet, metric);
@@ -129,14 +131,10 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine("Step 3: TraceAnalyzer — Post-Optimization Analysis");
     Console.WriteLine("───────────────────────────────────────────────────");
 
-    // Build cardinalities (same search space as MIPROv2)
-    var cardinalities = new Dictionary<string, int>
-    {
-        ["classify_instr"] = 4,
-        ["classify_demos"] = 4,
-        ["draft_instr"] = 4,
-        ["draft_demos"] = 4
-    };
+    // Use LastCardinalities from the MIPROv2 run — cardinality includes the zero-shot
+    // (empty demos) option that MIPROv2 always prepends, so it's numDemoSubsets + 1.
+    var cardinalities = mipro.LastCardinalities!
+        .ToDictionary(kv => kv.Key, kv => kv.Value);
 
     // 3a: Parameter Posteriors — confidence per parameter value
     Console.WriteLine("  3a) Parameter Posteriors (mean score ± stderr per choice):");
@@ -169,6 +167,9 @@ Console.WriteLine("Step 4: MIPROv2 + SmacSampler (SMAC/RF)");
 Console.WriteLine("─────────────────────────────────────────");
 Console.WriteLine("  Random Forest surrogate + Expected Improvement...");
 
+Console.WriteLine("  Cooling down between optimization runs...");
+await Task.Delay(TimeSpan.FromSeconds(15));
+
 var smacModule = new SupportTriageModule(client);
 var miproSmac = new MIPROv2(
     proposalClient: client,
@@ -178,6 +179,7 @@ var miproSmac = new MIPROv2(
     maxDemos: 4,
     metricThreshold: 0.3f,
     seed: 42,
+    maxConcurrency: 2,
     samplerFactory: cards => new SmacSampler(cards, numTrees: 10, seed: 42));
 
 var smacOptimized = await miproSmac.CompileAsync(smacModule, trainSet, untypedMetric);
@@ -198,6 +200,9 @@ Console.WriteLine("────────────────────�
 Console.WriteLine("  FLAML Flow2 + adaptive step size driven by cost...");
 Console.WriteLine();
 
+Console.WriteLine("  Cooling down between optimization runs...");
+await Task.Delay(TimeSpan.FromSeconds(15));
+
 // 5a: Default cost projection (TotalTokens)
 Console.WriteLine("  5a) Default projection (TotalTokens):");
 var costModule = new SupportTriageModule(client);
@@ -209,6 +214,7 @@ var miproCost = new MIPROv2(
     maxDemos: 4,
     metricThreshold: 0.3f,
     seed: 42,
+    maxConcurrency: 2,
     samplerFactory: cards => new CostAwareSampler(cards, seed: 42));
 
 var costOptimized = await miproCost.CompileAsync(costModule, trainSet, untypedMetric);
@@ -219,6 +225,7 @@ Console.WriteLine();
 // 5b: Dollar pricing projection
 Console.WriteLine("  5b) Dollar pricing projection:");
 Console.WriteLine("      cost => OutputTokens * $0.06/1K + InputTokens * $0.01/1K");
+await Task.Delay(TimeSpan.FromSeconds(15));
 var dollarModule = new SupportTriageModule(client);
 var miproDollar = new MIPROv2(
     proposalClient: client,
@@ -228,6 +235,7 @@ var miproDollar = new MIPROv2(
     maxDemos: 4,
     metricThreshold: 0.3f,
     seed: 42,
+    maxConcurrency: 2,
     samplerFactory: cards => new CostAwareSampler(
         cards,
         costProjection: c => c.OutputTokens * 0.06 / 1000 + c.InputTokens * 0.01 / 1000,
@@ -241,6 +249,7 @@ Console.WriteLine();
 // 5c: Latency projection
 Console.WriteLine("  5c) Latency projection:");
 Console.WriteLine("      cost => ElapsedMilliseconds");
+await Task.Delay(TimeSpan.FromSeconds(15));
 var latencyModule = new SupportTriageModule(client);
 var miproLatency = new MIPROv2(
     proposalClient: client,
@@ -250,6 +259,7 @@ var miproLatency = new MIPROv2(
     maxDemos: 4,
     metricThreshold: 0.3f,
     seed: 42,
+    maxConcurrency: 2,
     samplerFactory: cards => new CostAwareSampler(
         cards,
         costProjection: c => c.ElapsedMilliseconds,
@@ -263,6 +273,7 @@ Console.WriteLine();
 // 5d: Blended cost (quality + latency)
 Console.WriteLine("  5d) Blended projection:");
 Console.WriteLine("      cost => TotalTokens * 0.7 + ElapsedMilliseconds * 0.3");
+await Task.Delay(TimeSpan.FromSeconds(15));
 var blendedModule = new SupportTriageModule(client);
 var miproBlended = new MIPROv2(
     proposalClient: client,
@@ -272,6 +283,7 @@ var miproBlended = new MIPROv2(
     maxDemos: 4,
     metricThreshold: 0.3f,
     seed: 42,
+    maxConcurrency: 2,
     samplerFactory: cards => new CostAwareSampler(
         cards,
         costProjection: c => c.TotalTokens * 0.7 + c.ElapsedMilliseconds * 0.3,
@@ -291,13 +303,12 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine("─────────────────────────────────────");
     Console.WriteLine("  Transferring TPE posteriors → new SmacSampler...");
 
-    var cardinalities = new Dictionary<string, int>
-    {
-        ["classify_instr"] = 4,
-        ["classify_demos"] = 4,
-        ["draft_instr"] = 4,
-        ["draft_demos"] = 4
-    };
+    Console.WriteLine("  Cooling down between optimization runs...");
+    await Task.Delay(TimeSpan.FromSeconds(15));
+
+    // Reuse cardinalities from the TPE run (includes zero-shot option)
+    var cardinalities = mipro.LastCardinalities!
+        .ToDictionary(kv => kv.Key, kv => kv.Value);
 
     // Create a new SmacSampler and warm-start it with TPE posteriors
     var warmSampler = new SmacSampler(cardinalities, numTrees: 10, seed: 123);
@@ -317,6 +328,7 @@ if (tpeHistory is { Count: > 0 })
         maxDemos: 4,
         metricThreshold: 0.3f,
         seed: 123,
+        maxConcurrency: 2,
         samplerFactory: _ => warmSampler);
 
     var warmOptimized = await miproWarm.CompileAsync(warmModule, trainSet, untypedMetric);

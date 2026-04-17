@@ -59,12 +59,14 @@ Start at the top and work your way down. Each sample builds on concepts from the
 | [**MathReasoning**](LMP.Samples.MathReasoning/) | ChainOfThought + MIPROv2 on MATH algebra. Strong baseline (~85-90%); optimization benefits from larger data. Download [MATH dataset](https://huggingface.co/datasets/hendrycks/competition_math) (MIT). |
 | [**IntentClassification**](LMP.Samples.IntentClassification/) | BootstrapRandomSearch on Banking77 (77 classes). Demonstrates 5x improvement from demo selection. Shows the label invention problem and LmpAssert mitigations. Download [Banking77](https://huggingface.co/datasets/PolyAI/banking77) (CC-BY-4.0). |
 | [**FacilitySupport**](LMP.Samples.FacilitySupport/) | GEPA on enterprise multi-task with **C# enum output types** (urgency + sentiment + categories). +57% relative improvement. Shows how enum types eliminate label invention via JSON Schema enforcement. FacilitySupportAnalyzer (Meta). |
-| [**AdvancedRag**](LMP.Samples.AdvancedRag/) | Multi-hop RAG with 4 optimizable predictors (expand, rerank, CRAG, CoT answer). Multi-hop improves +6.6pp over simple RAG. Download [RAG-QA Arena](https://dspy.ai/tutorials/rag/) (CC-BY-SA-4.0). |
+| [**AdvancedRag**](LMP.Samples.AdvancedRag/) | Multi-hop RAG with 4 optimizable predictors (expand, rerank, CRAG, CoT answer). Multi-hop improves ~4.7pp over simple RAG. Uses `CragConfidence` enum for constrained CRAG validation output. Download [RAG-QA Arena](https://dspy.ai/tutorials/rag/) (CC-BY-SA-4.0). |
 
-> **Note on enum types:** The FacilitySupport sample demonstrates LMP's C# enum support
-> for constrained output fields. Enum types produce JSON Schema `"enum"` constraints that
-> are enforced at the token generation level by OpenAI Structured Outputs — zero retries
-> needed. This is the C# equivalent of DSPy's `typing.Literal` support.
+> **Note on enum types:** LMP has native C# enum support for constrained output fields.
+> Enum types produce JSON Schema `"enum"` constraints enforced at the token generation level
+> by OpenAI Structured Outputs — zero retries needed. This is the C# equivalent of DSPy's
+> `typing.Literal` support. The `TicketCategory` enum (Billing/Technical/Account/General) is
+> used in 7 SupportTriageModule samples; `CragConfidence` and `UrgencyLevel`/`SentimentTone`/
+> `SupportCategory` are used in the AdvancedRag and FacilitySupport benchmark samples.
 
 ---
 
@@ -92,7 +94,7 @@ Start at the top and work your way down. Each sample builds on concepts from the
 | M.E.AI Evaluation | | | | | ✅ | | | | | | | | | |
 | Multi-Predictor Module | | | | | | | | | | | | | ✅ | ✅ |
 | Real Benchmark Dataset | | | | | | | | | | | ✅ | ✅ | ✅ | ✅ |
-| C# Enum Output Types | | | | | | | | | | | | | ✅ | |
+| C# Enum Output Types | ✅ | | | | | ✅ | ✅ | ✅ | ✅ | | ✅ | | ✅ | ✅ |
 | Source Generation | | | | | | | | | | ✅ | | | | |
 | MSBuild Integration | | | | | | | | | | ✅ | | | | |
 

@@ -65,8 +65,9 @@ var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
 
 Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
 {
+    if (prediction is null) return 0f;
     float score = 0f;
-    var categoryPhrases = new[] { "billing", "technical", "account", "security", "feature" };
+    var categoryPhrases = new[] { "billing", "technical", "account", "general" };
     var expectedCategory = categoryPhrases.FirstOrDefault(c =>
         label.ReplyText.Contains(c, StringComparison.OrdinalIgnoreCase)) ?? "";
     if (!string.IsNullOrEmpty(expectedCategory) &&
@@ -170,7 +171,11 @@ var mipro = new MIPROv2(
     numDemoSubsets: 4,
     maxDemos: 4,
     metricThreshold: 0.3f,
-    seed: 42);
+    seed: 42,
+    maxConcurrency: 2);
+
+Console.WriteLine("  Cooling down before MIPROv2 comparison...");
+await Task.Delay(TimeSpan.FromSeconds(30));
 var mipOptimized = await mipro.CompileAsync(mipModule, trainSet, untypedMetric);
 var mipScore = await Evaluator.EvaluateAsync(mipOptimized, devSet, metric);
 Console.WriteLine($"  Score: {mipScore.AverageScore:P1}");

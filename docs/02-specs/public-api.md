@@ -140,11 +140,14 @@ No `property:` prefix is needed on positional record parameters. The source gene
 ### Output Types — `partial record` with `[LmpSignature]`
 
 ```csharp
+// C# enum enforces valid categories via JSON Schema (equivalent to DSPy's typing.Literal)
+public enum TicketCategory { Billing, Technical, Account, General }
+
 [LmpSignature("Classify a support ticket by category and urgency")]
 public partial record ClassifyTicket
 {
-    [Description("Category: billing, technical, account")]
-    public required string Category { get; init; }
+    [Description("The ticket category")]
+    public required TicketCategory Category { get; init; }
 
     [Description("Urgency from 1 (low) to 5 (critical)")]
     public required int Urgency { get; init; }
@@ -1274,6 +1277,14 @@ public sealed class MIPROv2 : IOptimizer
     /// <summary>Trial history from the last CompileAsync call. Useful with TraceAnalyzer.</summary>
     public IReadOnlyList<TrialResult>? LastTrialHistory { get; }
 
+    /// <summary>
+    /// The search-space cardinalities used in the last CompileAsync call.
+    /// Keys are "{predictorName}_instr" and "{predictorName}_demos" for each predictor.
+    /// Demo cardinality is numDemoSubsets + 1 (the +1 is the zero-shot / empty-demos option).
+    /// Use with TraceAnalyzer.ComputePosteriors instead of hardcoding cardinality values.
+    /// </summary>
+    public IReadOnlyDictionary<string, int>? LastCardinalities { get; }
+
     public Task<TModule> CompileAsync<TModule>(
         TModule module,
         IReadOnlyList<Example> trainSet,
@@ -1296,7 +1307,10 @@ var optimized = await optimizer.CompileAsync(module, trainSet,
 // Analyze search results
 if (optimizer.LastTrialHistory is { } history)
 {
-    var posteriors = TraceAnalyzer.ComputePosteriors(history);
+    // Use LastCardinalities instead of hardcoding — demo cardinality is numDemoSubsets + 1
+    // due to the always-included zero-shot (empty demos) option.
+    var cardinalities = optimizer.LastCardinalities!.ToDictionary(kv => kv.Key, kv => kv.Value);
+    var posteriors = TraceAnalyzer.ComputePosteriors(history, cardinalities);
     // ... inspect parameter importance
 }
 ```

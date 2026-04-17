@@ -94,10 +94,11 @@ Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
     //   2. Keyword coverage: does it include relevant terms from expected reply?
     //   3. Professional tone: does it open with an appropriate greeting?
 
+    if (prediction is null) return 0f;
     float score = 0f;
 
     // Dimension 1: Category detection via key phrases (0.4 weight)
-    var categoryPhrases = new[] { "billing", "technical", "account", "security", "feature" };
+    var categoryPhrases = new[] { "billing", "technical", "account", "general" };
     var expectedCategory = categoryPhrases.FirstOrDefault(c =>
         label.ReplyText.Contains(c, StringComparison.OrdinalIgnoreCase)) ?? "";
     if (!string.IsNullOrEmpty(expectedCategory) &&
@@ -165,7 +166,7 @@ Console.WriteLine($"  Loaded module score: {loadedScore.AverageScore:P1}");
 Console.WriteLine();
 
 // Clean up
-// File.Delete(artifactPath);
+File.Delete(artifactPath);
 
 Console.WriteLine("╔══════════════════════════════════════════════╗");
 Console.WriteLine("║   Demo Complete!                             ║");

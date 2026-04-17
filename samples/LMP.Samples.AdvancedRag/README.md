@@ -5,7 +5,7 @@
 | **Technique** | Multi-hop RAG with query expansion, LLM reranking, CRAG validation |
 | **Difficulty** | Advanced |
 | **Dataset** | RAG-QA Arena Tech (CC-BY-SA-4.0) |
-| **Expected improvement** | ~42% → ~55% → ~60%+ (no-RAG → RAG → optimized) |
+| **Expected improvement** | ~36% → ~41% → ~40%+ (no-RAG → Multi-Hop → optimized) |
 
 ## What You'll Learn
 
@@ -178,9 +178,9 @@ public partial record ExpandOutput { string Query1, Query2, Query3 }
 public record RerankInput(string Question, string Passage);
 public partial record RerankOutput { int RelevanceScore }  // 0-10
 
-// CRAG validation
+// CRAG validation — enum enforces valid confidence levels via JSON Schema
 public record CragInput(string Question, string Context);
-public partial record CragOutput { string Confidence, string FollowUpQuestion }
+public partial record CragOutput { CragConfidence Confidence, string FollowUpQuestion }
 ```
 
 ### 2. Multi-hop module (`AdvancedRagModule.cs`)
@@ -242,22 +242,22 @@ See the [LMP+MEDI integration spec](https://gist.github.com/lqdev/beca378baf5440
 
 Step 1: Evaluate Baseline (simple RAG, no expansion/reranking)
 ───────────────────────────────────────────────────────────────
-  Answer F1: 42.0%
+  Answer F1: 36.1%
 
 Step 2: Multi-Hop RAG (3 hops, no optimization)
 ─────────────────────────────────────────────────
-  Answer F1: 55.0%
+  Answer F1: 40.8%
 
 Step 3: MIPROv2 Optimization (all 4 predictors)
 ─────────────────────────────────────────────────
-  Answer F1: 62.0%
+  Answer F1: 39.8%
 
 ╔══════════════════════════════════════════════════════╗
 ║   Results — RAG-QA Arena Tech                         ║
 ╠══════════════════════════════════════════════════════╣
-║   Simple RAG (1 hop):        42.0%                ║
-║   Multi-Hop RAG (3 hops):    55.0%                ║
-║   MIPROv2 Optimized:         62.0%                ║
+║   Simple RAG (1 hop):        36.1%                ║
+║   Multi-Hop RAG (3 hops):    40.8%                ║
+║   MIPROv2 Optimized:         39.8%                ║
 ╚══════════════════════════════════════════════════════╝
 ```
 
@@ -265,23 +265,22 @@ Step 3: MIPROv2 Optimization (all 4 predictors)
 
 ## Observed Results (gpt-4o-mini, 100 train / 50 dev / 299 corpus)
 
-> **Important:** The "Expected Output" section above shows idealized numbers.
-> Actual results demonstrate clear multi-hop improvement.
-
 In testing with Azure OpenAI gpt-4o-mini on 100 training + 50 dev + 299 corpus:
 
 | Configuration | Observed F1 | Notes |
 |--------------|-------------|-------|
-| Simple RAG (1 hop) | ~32.4% | Basic retrieval + answer generation |
-| Multi-Hop RAG (3 hops) | ~39.0% | +6.6pp from query expansion + CRAG |
-| MIPROv2 Optimized | ~8.2% | Regressed — small data + few trials |
+| Simple RAG (1 hop) | 36.1% | Basic retrieval + answer generation |
+| Multi-Hop RAG (3 hops) | 40.8% | +4.7pp from query expansion + CRAG |
+| MIPROv2 Optimized | 39.8% | Near-parity with multi-hop — MIPROv2 correctly chose 0 demos for rerank/answer |
 
 **Multi-hop works:** The 3-hop pipeline with query expansion and CRAG validation
-improves over simple RAG by ~6.6 percentage points (32.4% → 39.0%).
+improves over simple RAG by ~4.7 percentage points (36.1% → 40.8%).
 
-**MIPROv2 regression:** With only 50 dev examples and limited optimization trials,
-MIPROv2 finds a worse configuration. The 4-predictor pipeline has many parameters
-to tune, and small data leads to overfitting on the training mini-batches.
+**MIPROv2 near-parity:** With 100 training examples and 50 dev, MIPROv2 achieves
+39.8% — very close to the unoptimized multi-hop baseline (40.8%). The 1pp gap is
+within statistical noise (1 example out of 50). MIPROv2 correctly selected zero
+few-shot demos for the rerank and answer predictors, indicating the base model is
+already strong for those tasks with well-written instructions.
 
 **Corpus construction note:** The full RAG-QA Arena corpus has 28K documents. For
 testing, we constructed a pragmatic 299-passage corpus from the QA answer texts +

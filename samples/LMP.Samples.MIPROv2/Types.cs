@@ -10,6 +10,9 @@ public record TicketInput(
     [property: Description("The raw support ticket text")]
     string TicketText);
 
+/// <summary>Ticket category enum — enforces valid categories via JSON Schema.</summary>
+public enum TicketCategory { Billing, Technical, Account, General }
+
 /// <summary>
 /// Output of ticket classification — category and urgency.
 /// The source generator reads field descriptions to build the LM prompt.
@@ -18,8 +21,8 @@ public record TicketInput(
 public partial record ClassifyTicket
 {
     /// <summary>Category of the ticket.</summary>
-    [Description("Category: billing, technical, account, general")]
-    public required string Category { get; init; }
+    [Description("The ticket category")]
+    public required TicketCategory Category { get; init; }
 
     /// <summary>Urgency level of the ticket.</summary>
     [Description("Urgency from 1 (low) to 5 (critical)")]

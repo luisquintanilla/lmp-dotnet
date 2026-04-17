@@ -102,6 +102,7 @@ var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
 
 Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
 {
+    if (prediction is null) return 0f;
     var keywords = ExtractKeywords(label.ReplyText);
     var matchCount = keywords.Count(kw =>
         prediction.ReplyText.Contains(kw, StringComparison.OrdinalIgnoreCase));

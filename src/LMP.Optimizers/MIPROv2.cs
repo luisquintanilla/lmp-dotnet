@@ -16,6 +16,7 @@ public sealed class MIPROv2 : IOptimizer
     private readonly Func<Dictionary<string, int>, ISampler>? _samplerFactory;
     private readonly int _numTrials;
     private List<TrialResult>? _lastTrialHistory;
+    private Dictionary<string, int>? _lastCardinalities;
     private readonly int _numInstructionCandidates;
     private readonly int _numDemoSubsets;
     private readonly int _maxDemos;
@@ -108,6 +109,17 @@ public sealed class MIPROv2 : IOptimizer
     public IReadOnlyList<TrialResult>? LastTrialHistory => _lastTrialHistory;
 
     /// <summary>
+    /// Parameter cardinalities from the last <see cref="CompileAsync{TModule}"/> call.
+    /// Maps parameter names (e.g. <c>"classify_instr"</c>, <c>"classify_demos"</c>) to
+    /// the number of choices the optimizer evaluated. Use this instead of hardcoding
+    /// cardinality values when constructing a <see cref="TraceAnalyzer"/> posteriors dict
+    /// — the actual demo cardinality is <c>numDemoSubsets + 1</c> because the optimizer
+    /// always includes a zero-shot (no demos) option.
+    /// Returns <c>null</c> if <see cref="CompileAsync{TModule}"/> hasn't been called.
+    /// </summary>
+    public IReadOnlyDictionary<string, int>? LastCardinalities => _lastCardinalities;
+
+    /// <summary>
     /// Optimizes the module using three-phase MIPROv2:
     /// <list type="number">
     /// <item><description>Phase 1 — Bootstrap a pool of demos via <see cref="BootstrapFewShot"/>.</description></item>
@@ -171,6 +183,7 @@ public sealed class MIPROv2 : IOptimizer
 
         var sampler = _samplerFactory?.Invoke(cardinalities)
             ?? new CategoricalTpeSampler(cardinalities, _gamma, _seed);
+        _lastCardinalities = cardinalities;
         TModule bestCandidate = module;
         float bestScore = float.MinValue;
         var trialHistory = new List<TrialResult>(_numTrials);
