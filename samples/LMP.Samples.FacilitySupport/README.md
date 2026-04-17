@@ -211,6 +211,12 @@ Step 3: GEPA Evolutionary Optimization
     Sentiment:  45/100 (45.0%)
     Category:   61/100 (61.0%)
 
+Step 4: Evolved Instructions (after GEPA)
+─────────────────────────────────────────────
+  [urgency]   Instruction (... chars): "Classify the urgency level ..."   Demos: 0
+  [sentiment] Instruction (... chars): "Classify the sentiment ..."        Demos: 0
+  [category]  Instruction (... chars): "Identify the facility service ..." Demos: 0
+
 ╔══════════════════════════════════════════════════════╗
 ║   Results — FacilitySupportAnalyzer                   ║
 ╠══════════════════════════════════════════════════════╣
@@ -220,7 +226,9 @@ Step 3: GEPA Evolutionary Optimization
 ```
 
 *Numbers above are from a real run with Azure OpenAI gpt-4o-mini (100 train / 100 dev).*  
-*DSPy tutorial (stronger model, 66 train/dev) reports 72% → 86%; the +10-12pp improvement magnitude is consistent.*
+*DSPy tutorial (stronger model, 66 train/dev) reports 72% → 86%; the +10-12pp improvement magnitude is consistent.*  
+*`Demos: 0` is expected — GEPA is an instruction-only optimizer. Use `MIPROv2` or `BootstrapRandomSearch` if you want few-shot demo optimization.*  
+*`best=` during optimization is the best individual candidate's training score. The final dev-set score is typically a few points lower due to train/dev gap.*
 
 ## Observed Results (gpt-4o-mini, 100 train / 100 dev)
 
@@ -272,11 +280,13 @@ prompt-level hints + validation + retry.
 
 ## Key Takeaways
 
+- **GEPA evolves instructions only, not few-shot demos** — each predictor's instruction is mutated based on reflective diagnosis of failures. Demo examples are not part of GEPA's optimization surface; use `BootstrapRandomSearch` or `MIPROv2` if few-shot example selection is important for your task
 - **Multi-predictor modules shine with GEPA** — each predictor gets independently evolved instructions
 - **Parallel execution reduces latency** — three LLM calls run concurrently via `Task.WhenAll`
 - **Reflection-based optimization is targeted** — GEPA doesn't randomly mutate; it diagnoses failures
 - **Enterprise tasks need enterprise evaluation** — the combined metric ensures no sub-task is neglected
 - **Real data proves real value** — the FacilitySupportAnalyzer dataset is from Meta's production environment
+- **`best=` in progress output is the best individual candidate's training score** — this is the score you should expect the optimized module to achieve (subject to train/dev gap). It is distinct from the internal Pareto ensemble score which is always higher
 
 ## Dataset Details
 

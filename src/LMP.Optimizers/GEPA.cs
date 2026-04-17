@@ -98,12 +98,14 @@ public sealed class GEPA : IOptimizer
         var rng = _seed.HasValue ? new Random(_seed.Value) : new Random();
         var frontier = new ParetoFrontier<TModule>();
         int componentIndex = 0; // Round-robin predictor index
+        float bestIndividualScore = float.MinValue; // Best single-candidate average score seen so far
 
         // Seed the frontier: evaluate initial module on the FULL trainSet (stable valset)
         var initialScores = await EvaluateOnFullSet(module, trainSet, metric, cancellationToken, _maxConcurrency);
         frontier.Add(module, initialScores);
 
         float baselineAvg = initialScores.Average(s => s.Score);
+        bestIndividualScore = baselineAvg;
 
         for (int iter = 0; iter < _maxIterations; iter++)
         {
@@ -123,7 +125,7 @@ public sealed class GEPA : IOptimizer
                 {
                     _progress?.Report(new GEPAProgressReport(
                         iter + 1, _maxIterations, frontier.Count,
-                        frontier.ParetoFrontScore,
+                        bestIndividualScore,
                         GEPAIterationType.Merge, false));
                     continue;
                 }
@@ -132,9 +134,12 @@ public sealed class GEPA : IOptimizer
                 var mergeScores = await EvaluateOnFullSet(mergeCandidate, trainSet, metric, cancellationToken, _maxConcurrency);
                 frontier.Add(mergeCandidate, mergeScores);
 
+                var mergeAvg = mergeScores.Average(s => s.Score);
+                if (mergeAvg > bestIndividualScore) bestIndividualScore = mergeAvg;
+
                 _progress?.Report(new GEPAProgressReport(
                     iter + 1, _maxIterations, frontier.Count,
-                    frontier.ParetoFrontScore,
+                    bestIndividualScore,
                     GEPAIterationType.Merge, true));
             }
             else
@@ -152,7 +157,7 @@ public sealed class GEPA : IOptimizer
                 {
                     _progress?.Report(new GEPAProgressReport(
                         iter + 1, _maxIterations, frontier.Count,
-                        frontier.ParetoFrontScore,
+                        bestIndividualScore,
                         GEPAIterationType.Mutation, false));
                     continue; // Mini-batch didn't improve — skip expensive full eval
                 }
@@ -161,9 +166,12 @@ public sealed class GEPA : IOptimizer
                 var fullScores = await EvaluateOnFullSet(mutated, trainSet, metric, cancellationToken, _maxConcurrency);
                 frontier.Add(mutated, fullScores);
 
+                var fullAvg = fullScores.Average(s => s.Score);
+                if (fullAvg > bestIndividualScore) bestIndividualScore = fullAvg;
+
                 _progress?.Report(new GEPAProgressReport(
                     iter + 1, _maxIterations, frontier.Count,
-                    frontier.ParetoFrontScore,
+                    bestIndividualScore,
                     GEPAIterationType.Mutation, true));
             }
         }
@@ -511,7 +519,11 @@ public sealed class GEPA : IOptimizer
 /// <param name="Iteration">Current iteration (1-based).</param>
 /// <param name="TotalIterations">Total iterations requested.</param>
 /// <param name="FrontierSize">Number of candidates currently in the Pareto frontier.</param>
-/// <param name="BestScore">Average score of the best candidate so far.</param>
+/// <param name="BestScore">Average training-set score of the best individual candidate seen so far.
+/// This is a monotonically non-decreasing value that tracks the actual score of the single
+/// best module produced by the optimizer — the score a user should expect at final evaluation
+/// (subject to train/dev gap). It is distinct from the Pareto ensemble score, which represents
+/// the theoretical ceiling of an oracle that picks the best candidate per training instance.</param>
 /// <param name="IterationType">Whether this iteration was a mutation or merge.</param>
 /// <param name="Passed">
 /// Whether the gate check passed (<see langword="true"/> = accepted and added to frontier;

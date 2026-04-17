@@ -39,7 +39,7 @@ GEPA closes that gap. It captures the full execution trace of every failed examp
 - **Reflective Mutation** — Run → trace → diagnose → rewrite. This is the core loop.
 - **Pareto Frontier** — A set of candidates where no single candidate beats all others on every example. This keeps diversity: one candidate may excel at billing tickets while another handles security tickets better.
 - **Merge (Crossover)** — Periodically, GEPA picks two diverse Pareto-optimal parents and combines their per-predictor instructions independently — the best `classify` instruction from parent A is paired with the best `draft` instruction from parent B. A merged candidate is only added to the frontier if it is not dominated by both parents.
-- **Progress reporting** — Each iteration is tagged `[PASS]` (improved frontier), `[skip]` (no improvement), or `[MERGE]` (crossover attempt). The displayed `best=` score always reflects the true best score across all frontier candidates.
+- **Progress reporting** — Each iteration is tagged `[PASS]` (improved frontier), `[skip]` (no improvement), or `[MERGE]` (crossover attempt). The `best=` score is the best individual candidate's average training-set score seen so far — the value you should expect at final evaluation (subject to train/dev gap). `Demos: 0` in the final report is expected: GEPA is an instruction-only optimizer.
 
 **GEPA vs. MIPROv2 at a glance:**
 
