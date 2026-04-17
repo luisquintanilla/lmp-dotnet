@@ -60,8 +60,9 @@ var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
 // Structured rubric metric (same as TicketTriage sample)
 Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
 {
+    if (prediction is null) return 0f;
     float score = 0f;
-    var categoryPhrases = new[] { "billing", "technical", "account", "security", "feature" };
+    var categoryPhrases = new[] { "billing", "technical", "account", "general" };
     var expectedCategory = categoryPhrases.FirstOrDefault(c =>
         label.ReplyText.Contains(c, StringComparison.OrdinalIgnoreCase)) ?? "";
     if (!string.IsNullOrEmpty(expectedCategory) &&
@@ -113,6 +114,9 @@ Console.WriteLine();
 Console.WriteLine("Step 3: Original Instructions (before MIPROv2)");
 Console.WriteLine("───────────────────────────────────────────────");
 
+Console.WriteLine("  Cooling down before MIPROv2...");
+await Task.Delay(TimeSpan.FromSeconds(15));
+
 var mipModule = new SupportTriageModule(client);
 foreach (var (name, pred) in mipModule.GetPredictors())
 {
@@ -139,9 +143,13 @@ var mipro = new MIPROv2(
     maxDemos: 4,
     metricThreshold: 0.3f,
     gamma: 0.25,
-    seed: 42);
+    seed: 42,
+    maxConcurrency: 2);
 
 var mipOptimized = await mipro.CompileAsync(mipModule, trainSet, untypedMetric);
+
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
 var mipScore = await Evaluator.EvaluateAsync(mipOptimized, devSet, metric);
 
 Console.WriteLine($"  Score: {mipScore.AverageScore:P1}");

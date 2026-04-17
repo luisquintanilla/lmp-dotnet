@@ -120,6 +120,16 @@ internal static class PromptBuilderEmitter
                   .Append(" (").Append(field.ClrTypeName).Append(')');
                 if (!string.IsNullOrEmpty(field.Description))
                     sb.Append(": ").Append(field.Description);
+                if (field.EnumValues is { Count: > 0 } values)
+                {
+                    sb.Append(" [Valid values: ");
+                    for (int i = 0; i < values.Count; i++)
+                    {
+                        if (i > 0) sb.Append(", ");
+                        sb.Append(values[i]);
+                    }
+                    sb.Append(']');
+                }
                 sb.AppendLine();
             }
         }

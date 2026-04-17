@@ -92,7 +92,7 @@ transfer knowledge from one run to the next.
 
 | Requirement | Details |
 |---|---|
-| .NET 9+ SDK | `dotnet --version` |
+| .NET 10+ SDK | `dotnet --version` |
 | Azure OpenAI resource | A deployed chat model (e.g. `gpt-4.1-nano`) |
 | Authentication | `DefaultAzureCredential` — `az login` locally, or managed identity in Azure |
 
@@ -142,11 +142,14 @@ public record TicketInput(
     [property: Description("The raw support ticket text")]
     string TicketText);
 
+// C# enum enforces valid categories via JSON Schema (equivalent to DSPy's typing.Literal)
+public enum TicketCategory { Billing, Technical, Account, General }
+
 [LmpSignature("Classify a support ticket by category and urgency")]
 public partial record ClassifyTicket
 {
-    [Description("Category: billing, technical, account, general")]
-    public required string Category { get; init; }
+    [Description("The ticket category")]
+    public required TicketCategory Category { get; init; }
 
     [Description("Urgency from 1 (low) to 5 (critical)")]
     public required int Urgency { get; init; }
@@ -218,11 +221,9 @@ var tpeHistory = mipro.LastTrialHistory;
 **Posteriors** — For each parameter value, what was the average score?
 
 ```csharp
-var cardinalities = new Dictionary<string, int>
-{
-    ["classify_instr"] = 4, ["classify_demos"] = 4,
-    ["draft_instr"]    = 4, ["draft_demos"]    = 4
-};
+// LastCardinalities is set after CompileAsync and reflects the actual search-space sizes,
+// including the always-included zero-shot (0 demo) option that MIPROv2 prepends.
+var cardinalities = mipro.LastCardinalities!.ToDictionary(kv => kv.Key, kv => kv.Value);
 
 var posteriors = TraceAnalyzer.ComputePosteriors(tpeHistory, cardinalities);
 // posteriors["classify_instr"][2] => ParameterPosterior(Mean, StandardError, Count)

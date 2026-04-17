@@ -79,10 +79,12 @@ public sealed class LmpGenerator : IIncrementalGenerator
         });
 
         // 2. LmpModule subclasses → GetPredictors()
+        // Uses CreateSyntaxProvider + semantic base-type check (not ForAttributeWithMetadataName)
+        // because modules do not require [LmpModule] — they just inherit LmpModule.
         var modules = context.SyntaxProvider
-            .ForAttributeWithMetadataName(
-                "LMP.LmpModuleAttribute",   // or discovered via base-type check
-                predicate: static (node, _) => node is ClassDeclarationSyntax,
+            .CreateSyntaxProvider(
+                predicate: static (node, _) => node is ClassDeclarationSyntax cls
+                    && cls.BaseList is not null,
                 transform: static (ctx, ct) => ExtractModuleModel(ctx, ct))
             .Where(static m => m is not null)
             .Select(static (m, _) => m!);
@@ -104,7 +106,7 @@ public sealed class LmpGenerator : IIncrementalGenerator
 }
 ```
 
-> **Junior Dev Note:** `ForAttributeWithMetadataName` is the preferred discovery API. Roslyn only calls your transform when a type carries the named attribute — far more efficient than scanning every syntax node.
+> **Junior Dev Note:** `ForAttributeWithMetadataName` is the preferred discovery API for types with a required attribute — Roslyn only calls your transform when a type carries the named attribute. For discovery without a required attribute (like `LmpModule` subclasses), use `CreateSyntaxProvider` with a syntax predicate + semantic base-type check in the transform.
 
 ### Incremental Model Requirements
 
@@ -283,17 +285,25 @@ file static class ClassifyTicketPromptBuilder
         - Urgency (int): Urgency from 1 (low) to 5 (critical)
         """;
 
+    // Public accessor used by GetPredictors() to initialize Instructions
+    // and by the interceptor as a fallback when Instructions is empty.
+    public static string DefaultInstructions => Instructions;
+
+    // Overload 1: used directly by source-generated interceptors.
+    // Accepts the current instructions string (may differ from DefaultInstructions
+    // after optimizer mutation) plus an optional lastError for retry feedback.
     public static IList<ChatMessage> BuildMessages(
+        string instructions,
         TicketInput input,
-        IReadOnlyList<(TicketInput Input, ClassifyTicket Output)>? demos = null)
+        IReadOnlyList<(TicketInput Input, ClassifyTicket Output)>? demos = null,
+        string? lastError = null)
     {
         var messages = new List<ChatMessage>();
 
-        // System message: instructions + field descriptions
-        messages.Add(new ChatMessage(ChatRole.System,
-            Instructions + "\n\n" + FieldDescriptions));
+        var systemContent = (string.IsNullOrEmpty(instructions)
+            ? Instructions : instructions) + "\n\n" + FieldDescriptions;
+        messages.Add(new ChatMessage(ChatRole.System, systemContent));
 
-        // Few-shot demo pairs
         if (demos is not null)
         {
             foreach (var (demoInput, demoOutput) in demos)
@@ -303,11 +313,19 @@ file static class ClassifyTicketPromptBuilder
             }
         }
 
-        // Current input
-        messages.Add(new ChatMessage(ChatRole.User, FormatInput(input)));
+        var userContent = FormatInput(input);
+        if (lastError is not null)
+            userContent += $"\n\nPrevious attempt failed: {lastError}. Please correct.";
+        messages.Add(new ChatMessage(ChatRole.User, userContent));
 
         return messages;
     }
+
+    // Overload 2: convenience overload using DefaultInstructions.
+    public static IList<ChatMessage> BuildMessages(
+        TicketInput input,
+        IReadOnlyList<(TicketInput Input, ClassifyTicket Output)>? demos = null)
+        => BuildMessages(Instructions, input, demos);
 
     private static string FormatInput(TicketInput input)
         => $"""

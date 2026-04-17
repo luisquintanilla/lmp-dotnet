@@ -16,12 +16,14 @@ public sealed class MIPROv2 : IOptimizer
     private readonly Func<Dictionary<string, int>, ISampler>? _samplerFactory;
     private readonly int _numTrials;
     private List<TrialResult>? _lastTrialHistory;
+    private Dictionary<string, int>? _lastCardinalities;
     private readonly int _numInstructionCandidates;
     private readonly int _numDemoSubsets;
     private readonly int _maxDemos;
     private readonly float _metricThreshold;
     private readonly double _gamma;
     private readonly int? _seed;
+    private readonly int _maxConcurrency;
 
     /// <summary>
     /// Creates a new MIPROv2 optimizer.
@@ -50,6 +52,10 @@ public sealed class MIPROv2 : IOptimizer
     /// Only used when <paramref name="samplerFactory"/> is null.
     /// </param>
     /// <param name="seed">Optional random seed for reproducibility.</param>
+    /// <param name="maxConcurrency">
+    /// Maximum number of concurrent evaluation tasks during Phase 3 trial evaluation.
+    /// Lower values reduce API rate-limit pressure. Default is 4.
+    /// </param>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="proposalClient"/> is null.
     /// </exception>
@@ -58,6 +64,7 @@ public sealed class MIPROv2 : IOptimizer
     /// <paramref name="numInstructionCandidates"/> is less than 1,
     /// <paramref name="numDemoSubsets"/> is less than 1,
     /// <paramref name="maxDemos"/> is less than 1,
+    /// <paramref name="maxConcurrency"/> is less than 1,
     /// or <paramref name="gamma"/> is not in (0, 1).
     /// </exception>
     public MIPROv2(
@@ -69,13 +76,15 @@ public sealed class MIPROv2 : IOptimizer
         int maxDemos = 4,
         float metricThreshold = 1.0f,
         double gamma = 0.25,
-        int? seed = null)
+        int? seed = null,
+        int maxConcurrency = 4)
     {
         ArgumentNullException.ThrowIfNull(proposalClient);
         ArgumentOutOfRangeException.ThrowIfLessThan(numTrials, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(numInstructionCandidates, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(numDemoSubsets, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxDemos, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
         if (gamma is <= 0 or >= 1)
             throw new ArgumentOutOfRangeException(nameof(gamma), gamma, "Gamma must be in (0, 1).");
 
@@ -88,6 +97,7 @@ public sealed class MIPROv2 : IOptimizer
         _metricThreshold = metricThreshold;
         _gamma = gamma;
         _seed = seed;
+        _maxConcurrency = maxConcurrency;
     }
 
     /// <summary>
@@ -97,6 +107,17 @@ public sealed class MIPROv2 : IOptimizer
     /// Returns <c>null</c> if <see cref="CompileAsync{TModule}"/> hasn't been called.
     /// </summary>
     public IReadOnlyList<TrialResult>? LastTrialHistory => _lastTrialHistory;
+
+    /// <summary>
+    /// Parameter cardinalities from the last <see cref="CompileAsync{TModule}"/> call.
+    /// Maps parameter names (e.g. <c>"classify_instr"</c>, <c>"classify_demos"</c>) to
+    /// the number of choices the optimizer evaluated. Use this instead of hardcoding
+    /// cardinality values when constructing a <see cref="TraceAnalyzer"/> posteriors dict
+    /// — the actual demo cardinality is <c>numDemoSubsets + 1</c> because the optimizer
+    /// always includes a zero-shot (no demos) option.
+    /// Returns <c>null</c> if <see cref="CompileAsync{TModule}"/> hasn't been called.
+    /// </summary>
+    public IReadOnlyDictionary<string, int>? LastCardinalities => _lastCardinalities;
 
     /// <summary>
     /// Optimizes the module using three-phase MIPROv2:
@@ -162,6 +183,7 @@ public sealed class MIPROv2 : IOptimizer
 
         var sampler = _samplerFactory?.Invoke(cardinalities)
             ?? new CategoricalTpeSampler(cardinalities, _gamma, _seed);
+        _lastCardinalities = cardinalities;
         TModule bestCandidate = module;
         float bestScore = float.MinValue;
         var trialHistory = new List<TrialResult>(_numTrials);
@@ -201,7 +223,7 @@ public sealed class MIPROv2 : IOptimizer
             candidate.Trace = new Trace();
             var stopwatch = Stopwatch.StartNew();
             var result = await Evaluator.EvaluateAsync(
-                candidate, valSplit, metric, cancellationToken: cancellationToken);
+                candidate, valSplit, metric, maxConcurrency: _maxConcurrency, cancellationToken: cancellationToken);
             stopwatch.Stop();
 
             var trace = candidate.Trace;
@@ -386,6 +408,13 @@ public sealed class MIPROv2 : IOptimizer
         {
             var subsets = new List<List<(object Input, object Output)>>();
 
+            // Always include zero-shot (empty demos) as the first option.
+            // This lets the optimizer choose "no demos" when that outperforms few-shot —
+            // which matters for tasks where the base model is already strong or where
+            // bootstrapped demos don't generalize well to the validation split.
+            // This mirrors DSPy's MIPROv2 behavior.
+            subsets.Add([]);
+
             if (demoPool.TryGetValue(name, out var pool) && pool.Count > 0)
             {
                 for (int i = 0; i < _numDemoSubsets; i++)
@@ -403,11 +432,6 @@ public sealed class MIPROv2 : IOptimizer
                         .ToList();
                     subsets.Add(subset);
                 }
-            }
-            else
-            {
-                // No demos available: create one empty subset so the search space is valid
-                subsets.Add([]);
             }
 
             result[name] = subsets;

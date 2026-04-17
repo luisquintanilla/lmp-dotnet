@@ -32,7 +32,7 @@ Concretely, the runtime:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `Instructions` | `string` | System-level instructions (defaults to empty; set by optimizers or `[LmpSignature]`) |
+| `Instructions` | `string` | System-level instructions. Defaults to `string.Empty` at construction. **Initialized to `DefaultInstructions` from `[LmpSignature]` by the source-generated `GetPredictors()` on first call** — ensuring optimizers always start from the authored baseline, not an empty string. Overwritten by optimizers (e.g., GEPA) and persisted by `SaveAsync`. |
 | `Demos` | `List<(TInput Input, TOutput Output)>` | Few-shot examples — filled by optimizers, serialized by `SaveAsync` |
 | `Config` | `ChatOptions` | M.E.AI chat options: temperature, max tokens, stop sequences, etc. |
 | `Client` | `IChatClient` | The LM provider — injected via constructor, never learnable |
@@ -111,14 +111,19 @@ public virtual async Task<TOutput> PredictAsync(
     {
         var messages = BuildMessages(input, lastError);
 
-        var response = await _client.GetResponseAsync<TOutput>(
-            messages, Config, cancellationToken: cancellationToken);
+        // Pass SerializerOptions when available: enforces JSON Schema enum constraints
+        // (required for AOT and for enum types to round-trip correctly).
+        var response = SerializerOptions is not null
+            ? await _client.GetResponseAsync<TOutput>(
+                messages, SerializerOptions, Config, cancellationToken: cancellationToken)
+            : await _client.GetResponseAsync<TOutput>(
+                messages, Config, cancellationToken: cancellationToken);
 
         var result = response.Result
             ?? throw new InvalidOperationException(
                 $"Predictor '{Name}': structured output returned null.");
 
-        trace?.Record(Name, input!, result);
+        trace?.Record(Name, input!, result, response.Usage);
 
         if (validate is null)
             return result;
@@ -141,56 +146,72 @@ public virtual async Task<TOutput> PredictAsync(
 **Key decisions:**
 
 - **`GetResponseAsync<TOutput>()`** — not `GetResponseAsync()` + manual JSON parse. M.E.AI negotiates JSON schema with the provider (tool-use for Anthropic, `response_format` for OpenAI). No `OutputParser`, no `ExtractJson`, no regex fence stripping.
-- **`MessageBuilder` delegate** — set by source-generated interceptor code via `SetPromptBuilder()`. Field names, types, and descriptions are baked in as string constants. No runtime reflection. When `null`, falls back to `BuildDefaultMessages` which uses `ToString()` on inputs and `JsonSerializer` for demo outputs.
+- **`SerializerOptions`** — when set by source-generated `GetPredictors()`, enables AOT-safe JSON Schema enforcement. Enum types require this for correct round-tripping (e.g., `"High"` → `UrgencyLevel.High`).
 - **`validate` parameter** — optional `Action<TOutput>` that throws `LmpAssertionException` on validation failure. The retry loop is built into `PredictAsync` — no external retry pattern needed.
 - **`ChatOptions`** — M.E.AI's native options type. No custom `PredictorConfig` wrapper.
+- **`MessageBuilder` delegate** — fallback for non-intercepted paths. When non-null, used by `BuildMessages()`. The source-generated interceptor approach (below) completely replaces the call site and never uses `MessageBuilder` — so `MessageBuilder` remains null in fully source-generated scenarios.
 
-### 2.2.1 SetPromptBuilder / MessageBuilder — Source Gen Integration
+### 2.2.1 Interceptors — Source Gen Integration
 
-The source generator emits interceptor code that calls `SetPromptBuilder()` once per predictor, wiring a type-specific prompt formatting delegate:
+The source generator uses C# 14 interceptors (`[InterceptsLocation]`) to completely replace each `PredictAsync` call site with inlined logic. This is **not** a delegate wiring — the interceptor replaces the entire call:
 
 ```csharp
-// Source-generated interceptor code (simplified):
-predictor.SetPromptBuilder((instructions, input, demos, lastError) =>
-{
-    var messages = new List<ChatMessage>();
-    // System message with instructions + field schemas
-    if (!string.IsNullOrEmpty(instructions))
-        messages.Add(new ChatMessage(ChatRole.System, instructions + "\n\n" + fieldSchemas));
-    // Demo pairs
-    foreach (var (demoInput, demoOutput) in demos ?? [])
-        // ... format input/output with field-level detail
-    // Current input with optional error feedback
-    return messages;
-});
+// What the developer writes:
+var result = await _classify.PredictAsync(input, trace: Trace);
+
+// What Roslyn actually compiles (source-generated):
+// → Calls the interceptor method instead, which inlines:
+//   1. Build messages via ClassifyTicketPromptBuilder.BuildMessages(self.Instructions, input, ...)
+//   2. GetResponseAsync<ClassifyTicket>(messages, self.SerializerOptions, self.Config, ...)
+//   3. Record trace
+//   4. Validate/retry loop
+// → No virtual dispatch. No delegate. No boxing.
 ```
 
-**`SetPromptBuilder` API:**
+The interceptor for `Predictor<TicketInput, ClassifyTicket>.PredictAsync` looks like:
 
 ```csharp
-[EditorBrowsable(EditorBrowsableState.Never)]
-public void SetPromptBuilder(
-    Func<string, TInput, IReadOnlyList<(TInput Input, TOutput Output)>?,
-         string?, IList<ChatMessage>> builder)
+[InterceptsLocation(version: 1, data: "...base64 location...")]
+internal static async Task<ClassifyTicket> PredictAsync_0(
+    Predictor<TicketInput, ClassifyTicket> self,
+    TicketInput input, Trace? trace, Action<ClassifyTicket>? validate,
+    int maxRetries, CancellationToken cancellationToken)
 {
-    MessageBuilder ??= builder;  // Only sets if not already set
+    // Falls back to virtual dispatch for derived types (e.g., ChainOfThought<,>)
+    if (self.GetType() != typeof(Predictor<TicketInput, ClassifyTicket>))
+        return await ((dynamic)self).PredictAsync(input, trace, validate, maxRetries, cancellationToken);
+
+    string? lastError = null;
+    for (int attempt = 0; attempt <= maxRetries; attempt++)
+    {
+        var effectiveInstructions = string.IsNullOrEmpty(self.Instructions)
+            ? ClassifyTicketPromptBuilder.DefaultInstructions
+            : self.Instructions;
+
+        var messages = ClassifyTicketPromptBuilder.BuildMessages(
+            effectiveInstructions, input, self.Demos, lastError);
+
+        var response = self.SerializerOptions is not null
+            ? await self.Client.GetResponseAsync<ClassifyTicket>(
+                messages, self.SerializerOptions, self.Config, cancellationToken: cancellationToken)
+            : await self.Client.GetResponseAsync<ClassifyTicket>(
+                messages, self.Config, cancellationToken: cancellationToken);
+
+        var result = response.Result ?? throw new InvalidOperationException(...);
+        trace?.Record(self.Name, input!, result, response.Usage);
+        // validate/retry...
+    }
 }
 ```
 
-The `??=` guard ensures the first call wins — if an optimizer or user sets a custom builder before the interceptor runs, it is preserved.
+**Key benefits of the interceptor approach:**
+- **Zero virtual dispatch** — no `MessageBuilder` delegate, no interface call, direct method call
+- **SerializerOptions always flows** — JSON Schema enum constraints enforced at the API level
+- **PromptBuilder called directly** — field names, types, descriptions are compile-time constants
+- **AOT-safe** — no runtime reflection, no delegate allocation per call
+- **`DefaultInstructions` fallback** — interceptor uses `PromptBuilder.DefaultInstructions` when `self.Instructions` is empty (belt-and-suspenders alongside `GetPredictors()` initialization)
 
-When `MessageBuilder` is `null` (no source-gen), `BuildDefaultMessages` provides a simple fallback:
-
-```csharp
-protected virtual IList<ChatMessage> BuildMessages(TInput input, string? lastError)
-{
-    if (MessageBuilder is not null)
-        return MessageBuilder(Instructions, input, Demos, lastError);
-    return BuildDefaultMessages(input, lastError);
-}
-```
-
-The fallback uses `ToString()` for inputs and `JsonSerializer.Serialize(demoOutput, SerializerOptions)` for demo outputs — functional but less detailed than the source-generated version.
+**`MessageBuilder` / `SetPromptBuilder`** still exist on `Predictor<TIn, TOut>` as a fallback for non-intercepted paths (e.g., dynamically constructed predictors, third-party callers). They are `[EditorBrowsable(EditorBrowsableState.Never)]` — not intended for direct use.
 
 ### 2.3 Prompt Format
 
@@ -273,14 +294,17 @@ public virtual async Task<TOutput> PredictAsync(
     {
         var messages = BuildMessages(input, lastError);
 
-        var response = await _client.GetResponseAsync<TOutput>(
-            messages, Config, cancellationToken: cancellationToken);
+        var response = SerializerOptions is not null
+            ? await _client.GetResponseAsync<TOutput>(
+                messages, SerializerOptions, Config, cancellationToken: cancellationToken)
+            : await _client.GetResponseAsync<TOutput>(
+                messages, Config, cancellationToken: cancellationToken);
 
         var result = response.Result
             ?? throw new InvalidOperationException(
                 $"Predictor '{Name}': structured output returned null.");
 
-        trace?.Record(Name, input!, result);
+        trace?.Record(Name, input!, result, response.Usage);
 
         if (validate is null)
             return result;

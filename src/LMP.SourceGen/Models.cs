@@ -46,7 +46,8 @@ internal sealed record OutputFieldModel(
     string? Description,
     bool IsRequired,
     bool IsNonSerializable,
-    LocationInfo Location);
+    LocationInfo Location,
+    EquatableArray<string>? EnumValues = null);
 
 /// <summary>
 /// Metadata for a single field of a <c>TInput</c> type.

@@ -65,7 +65,7 @@ MIPROv2 solves this by treating the problem as a structured search:
 
 | Requirement | Details |
 |---|---|
-| .NET 9+ SDK | [Download](https://dotnet.microsoft.com/download) |
+| .NET 10+ SDK | [Download](https://dotnet.microsoft.com/download) |
 | Azure OpenAI resource | A deployment of `gpt-4o-mini` (or any chat model) |
 | Azure credentials | `DefaultAzureCredential` — Azure CLI login, managed identity, etc. |
 
@@ -109,12 +109,15 @@ public record TicketInput(
     [property: Description("The raw support ticket text")]
     string TicketText);
 
+// C# enum enforces valid categories via JSON Schema (equivalent to DSPy's typing.Literal)
+public enum TicketCategory { Billing, Technical, Account, General }
+
 // Intermediate — classify step output
 [LmpSignature("Classify a support ticket by category and urgency")]
 public partial record ClassifyTicket
 {
-    [Description("Category: billing, technical, account, general")]
-    public required string Category { get; init; }
+    [Description("The ticket category")]
+    public required TicketCategory Category { get; init; }
 
     [Description("Urgency from 1 (low) to 5 (critical)")]
     public required int Urgency { get; init; }
@@ -184,7 +187,7 @@ var mipro = new MIPROv2(
 | `proposalClient` | The LM used in Phase 2 to generate instruction variants. Can be a different (cheaper) model. |
 | `numTrials` | How many (instruction, demo-set) combos to evaluate. More = better but costlier. |
 | `numInstructionCandidates` | Search space width for instructions. The original instruction is always candidate #0. |
-| `numDemoSubsets` | Search space width for demo sets. Each subset is a random sample from the bootstrapped pool. |
+| `numDemoSubsets` | Search space width for demo sets. Each subset is a random sample from the bootstrapped pool. MIPROv2 also always evaluates zero-shot (no demos) as an additional option, letting it select no few-shot examples when the base model is already strong. |
 | `maxDemos` | Upper bound on few-shot examples per predictor per subset. |
 | `metricThreshold` | Only traces scoring ≥ this value during bootstrapping become candidate demos. |
 | `gamma` | TPE split point. Lower = more exploitative; higher = more exploratory. |

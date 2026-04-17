@@ -102,6 +102,7 @@ var devSet = Example.LoadFromJsonl<TicketInput, DraftReply>(
 
 Func<DraftReply, DraftReply, float> metric = (prediction, label) =>
 {
+    if (prediction is null) return 0f;
     var keywords = ExtractKeywords(label.ReplyText);
     var matchCount = keywords.Count(kw =>
         prediction.ReplyText.Contains(kw, StringComparison.OrdinalIgnoreCase));
@@ -128,7 +129,7 @@ var warmResult = await Evaluator.EvaluateAsync(module2, devSet, metric);
 sw.Stop();
 
 Console.WriteLine($"  Score:    {warmResult.AverageScore:P1}");
-Console.WriteLine($"  Duration: {warmResult.Count}ms (warm — cache hits, should be faster)");
+Console.WriteLine($"  Duration: {sw.ElapsedMilliseconds}ms (warm — cache hits, should be faster)");
 Console.WriteLine($"  Speedup:  Cache eliminates redundant LLM calls");
 Console.WriteLine();
 

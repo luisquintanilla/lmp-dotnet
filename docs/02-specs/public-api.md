@@ -140,11 +140,14 @@ No `property:` prefix is needed on positional record parameters. The source gene
 ### Output Types — `partial record` with `[LmpSignature]`
 
 ```csharp
+// C# enum enforces valid categories via JSON Schema (equivalent to DSPy's typing.Literal)
+public enum TicketCategory { Billing, Technical, Account, General }
+
 [LmpSignature("Classify a support ticket by category and urgency")]
 public partial record ClassifyTicket
 {
-    [Description("Category: billing, technical, account")]
-    public required string Category { get; init; }
+    [Description("The ticket category")]
+    public required TicketCategory Category { get; init; }
 
     [Description("Urgency from 1 (low) to 5 (critical)")]
     public required int Urgency { get; init; }
@@ -1274,6 +1277,14 @@ public sealed class MIPROv2 : IOptimizer
     /// <summary>Trial history from the last CompileAsync call. Useful with TraceAnalyzer.</summary>
     public IReadOnlyList<TrialResult>? LastTrialHistory { get; }
 
+    /// <summary>
+    /// The search-space cardinalities used in the last CompileAsync call.
+    /// Keys are "{predictorName}_instr" and "{predictorName}_demos" for each predictor.
+    /// Demo cardinality is numDemoSubsets + 1 (the +1 is the zero-shot / empty-demos option).
+    /// Use with TraceAnalyzer.ComputePosteriors instead of hardcoding cardinality values.
+    /// </summary>
+    public IReadOnlyDictionary<string, int>? LastCardinalities { get; }
+
     public Task<TModule> CompileAsync<TModule>(
         TModule module,
         IReadOnlyList<Example> trainSet,
@@ -1296,7 +1307,10 @@ var optimized = await optimizer.CompileAsync(module, trainSet,
 // Analyze search results
 if (optimizer.LastTrialHistory is { } history)
 {
-    var posteriors = TraceAnalyzer.ComputePosteriors(history);
+    // Use LastCardinalities instead of hardcoding — demo cardinality is numDemoSubsets + 1
+    // due to the always-included zero-shot (empty demos) option.
+    var cardinalities = optimizer.LastCardinalities!.ToDictionary(kv => kv.Key, kv => kv.Value);
+    var posteriors = TraceAnalyzer.ComputePosteriors(history, cardinalities);
     // ... inspect parameter importance
 }
 ```
@@ -1400,7 +1414,106 @@ public static class TraceAnalyzer
 
 ---
 
-### 6.9 `EvaluationBridge` (LMP.Extensions.Evaluation)
+### 6.9 `GEPA`
+
+Gradient-free Evolutionary Prompt Adaptation optimizer. Uses reflection and a Pareto frontier to iteratively improve predictor instructions by diagnosing failures and proposing better instruction candidates.
+
+```csharp
+namespace LMP.Optimizers;
+
+/// <summary>
+/// Gradient-free Evolutionary Prompt Adaptation optimizer.
+/// Iteratively improves predictor Instructions by reflecting on failures
+/// and tracking a per-instance Pareto frontier.
+/// </summary>
+public sealed class GEPA : IOptimizer
+{
+    /// <param name="reflectionClient">IChatClient used for reflection and instruction mutation.</param>
+    /// <param name="maxIterations">Number of optimization iterations (default: 50).</param>
+    /// <param name="miniBatchSize">Examples used per reflection mini-batch (default: 5).</param>
+    /// <param name="mergeEvery">Run a merge crossover every N iterations (default: 5).</param>
+    /// <param name="maxConcurrency">
+    /// Max concurrent ForwardAsync calls during full-set eval (default: 4).
+    /// For modules with M concurrent sub-predictors, effective API concurrency is
+    /// maxConcurrency × M. Reduce if you hit rate limits or HTTP timeouts.
+    /// </param>
+    /// <param name="seed">Optional random seed for reproducibility.</param>
+    /// <param name="progress">Optional IProgress for iteration-by-iteration status.</param>
+    public GEPA(
+        IChatClient reflectionClient,
+        int maxIterations = 50,
+        int miniBatchSize = 5,
+        int mergeEvery = 5,
+        int maxConcurrency = 4,
+        int? seed = null,
+        IProgress<GEPAProgressReport>? progress = null);
+
+    public Task<TModule> CompileAsync<TModule>(
+        TModule module,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken = default)
+        where TModule : LmpModule;
+}
+
+/// <summary>
+/// Progress report emitted after each GEPA iteration.
+/// Useful for real-time monitoring of the optimization process.
+/// </summary>
+public sealed record GEPAProgressReport(
+    /// <summary>Current iteration number (1-based).</summary>
+    int Iteration,
+    /// <summary>Total iterations requested.</summary>
+    int TotalIterations,
+    /// <summary>Number of candidates currently in the Pareto frontier.</summary>
+    int FrontierSize,
+    /// <summary>Average score of the best candidate on the full set so far.</summary>
+    float BestScore,
+    /// <summary>Whether this was a mutation or a merge iteration.</summary>
+    GEPAIterationType IterationType,
+    /// <summary>
+    /// For mutation iterations: true = mini-batch gate check passed (full eval ran),
+    /// false = gate check failed (full eval skipped). Null for merge iterations.
+    /// </summary>
+    bool? Passed);
+
+/// <summary>Classifies the type of GEPA iteration.</summary>
+public enum GEPAIterationType
+{
+    /// <summary>Reflective mutation — one predictor's instructions were mutated via LLM reflection.</summary>
+    Mutation,
+    /// <summary>Merge — instructions were combined from two Pareto-frontier parents.</summary>
+    Merge
+}
+```
+
+**Usage:**
+
+```csharp
+var optimizer = new GEPA(
+    reflectionClient: chatClient,
+    maxIterations: 40,
+    maxConcurrency: 2,  // reduce if module has multiple concurrent sub-predictors
+    progress: new Progress<GEPAProgressReport>(report =>
+    {
+        string status = report.IterationType == GEPAIterationType.Merge
+            ? "MERGE"
+            : report.Passed == true ? "PASS" : "skip";
+        Console.WriteLine(
+            $"[{report.Iteration}/{report.TotalIterations}] " +
+            $"{status} frontier={report.FrontierSize} best={report.BestScore:P1}");
+    }));
+
+var optimized = await optimizer.CompileAsync(module, trainSet,
+    Metric.Create((SupportOutput p, SupportOutput e) =>
+        p.Urgency == e.Urgency && p.Category == e.Category ? 1.0f : 0.0f));
+```
+
+*Inspired by:* [`dspy/teleprompt/gepa.py`](https://github.com/stanfordnlp/dspy/blob/main/dspy/teleprompt/gepa.py) and [https://dspy.ai/tutorials/gepa_facilitysupportanalyzer/](https://dspy.ai/tutorials/gepa_facilitysupportanalyzer/).
+
+---
+
+### 6.10 `EvaluationBridge` (LMP.Extensions.Evaluation)
 
 Bridges `Microsoft.Extensions.AI.Evaluation` evaluators into LMP's metric system.
 

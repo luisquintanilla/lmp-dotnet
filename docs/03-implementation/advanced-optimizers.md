@@ -192,9 +192,9 @@ LMP includes `LMP.Extensions.Evaluation`, a bridge adapter that connects Microso
 
 See `samples/LMP.Samples.Evaluation` for a complete demo.
 
-## Roadmap: Z3 Constraint-Based Demo Selection
+## Z3 Constraint-Based Demo Selection
 
-**Status: Planned** — Separate `LMP.Extensions.Z3` package.
+**Status: ✅ Shipped** — `LMP.Extensions.Z3` package.
 
 Z3 enables constraint-based demo selection: "Select exactly N demos, cover all categories, minimize tokens, maximize quality." Uses `Microsoft.Z3` (MIT, ~8 MB).
 
@@ -206,16 +206,63 @@ var z3 = new Z3ConstrainedDemoSelector(
 var optimized = await z3.CompileAsync(module, trainSet, metric);
 ```
 
-## Roadmap: GEPA (Evolutionary Reflection-Driven Optimization)
+## GEPA (Evolutionary Reflection-Driven Optimization)
 
-**Status: Planned** — In `LMP.Optimizers`.
+**Status: ✅ Shipped** — In `LMP.Optimizers`.
 
 GEPA represents a fundamentally different optimization paradigm:
 
 - **MIPROv2:** "Config scored 0.45. Based on score patterns, try this next config." (Bayesian)
 - **GEPA:** "Config scored 0.45. The classify predictor output 'urgent' when the input was clearly routine. Propose: 'Be more conservative — only classify as urgent when the customer mentions safety or legal issues.'" (Evolutionary + Reflection)
 
-GEPA evolves **instructions only** using LLM-based reflection on execution traces. It captures full `Trace`/`TraceEntry` data (LMP's existing trace system IS what GEPA calls "Actionable Side Information"), sends failures to a reflection LLM for diagnosis, and proposes targeted instruction fixes.
+GEPA evolves **instructions only** using LLM-based reflection on execution traces. It captures full `Trace`/`TraceEntry` data (LMP's existing trace system IS what GEPA calls "Actionable Side Information"), sends failures to a reflection LLM for diagnosis, and proposes targeted instruction fixes per predictor.
+
+### GEPA Algorithm
+
+```
+1. For each iteration:
+   a. Evaluate candidate module on a mini-batch
+   b. For each predictor with failures:
+      - Read actual (input, output) from Trace entries
+      - Ask reflection LLM: "Why did this fail? Propose a better instruction."
+   c. Create mutated candidate with new instructions
+   d. Gate: only accept mutation if mini-batch score > parent
+   e. Add accepted candidate to Pareto frontier
+   f. Every N iterations: merge two Pareto-optimal parents (crossover)
+2. Return module with highest score from Pareto frontier
+```
+
+### Progress Reporting
+
+GEPA emits progress via `IProgress<GEPAProgressReport>` — wire a callback to monitor optimization:
+
+```csharp
+var gepa = new GEPA(
+    reflectionClient: client,
+    maxIterations: 30,
+    miniBatchSize: 5,
+    mergeEvery: 5,
+    seed: 42,
+    progress: new Progress<GEPAProgressReport>(r =>
+    {
+        string status = r.IterationType == GEPAIterationType.Merge ? "MERGE"
+            : r.Passed == true ? "PASS " : "skip ";
+        Console.WriteLine($"  iter {r.Iteration,2}/{r.TotalIterations} [{status}]  frontier={r.FrontierSize,2}  best={r.BestScore:P1}");
+    }));
+
+var optimized = await gepa.CompileAsync(module, trainSet, metric);
+```
+
+**`GEPAProgressReport`** record fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `Iteration` | `int` | Current iteration number (1-based) |
+| `TotalIterations` | `int` | Total iterations configured |
+| `IterationType` | `GEPAIterationType` | `Mutation` or `Merge` |
+| `Passed` | `bool?` | `true` = accepted into frontier, `false` = rejected (null for Merge) |
+| `FrontierSize` | `int` | Current Pareto frontier size |
+| `BestScore` | `float` | Best full dev-set score seen so far |
 
 **Complements MIPROv2:** GEPA for instruction refinement (100-500 evals), then MIPROv2 for joint instruction+demo optimization (20 trials).
 
@@ -227,8 +274,9 @@ LMP.Optimizers      ← CategoricalTpeSampler : ISampler  (TPE, default)
                     ← SmacSampler : ISampler             (SMAC/RF)
                     ← TraceAnalyzer                      (posteriors, interactions, warm-start)
                     ← MIPROv2 : IOptimizer               (accepts ISampler factory)
-                    ← GEPA : IOptimizer                  (planned — reflection + Pareto)
-LMP.Extensions.Z3  ← Z3ConstrainedDemoSelector           (planned — constraint-based demos)
+                    ← GEPA : IOptimizer                  (reflection + Pareto frontier)
+                    ← GEPAProgressReport                 (IProgress<T> callback data)
+LMP.Extensions.Z3  ← Z3ConstrainedDemoSelector           (constraint-based demos)
 ```
 
 ## Summary
@@ -240,5 +288,5 @@ LMP.Extensions.Z3  ← Z3ConstrainedDemoSelector           (planned — constrai
 | SmacSampler | ✅ Shipped | SMAC/RF search | None |
 | TraceAnalyzer | ✅ Shipped | Post-optimization analysis | None |
 | MIPROv2 (history) | ✅ Shipped | Trial history export | None |
-| Z3 Constrained | 🗺️ Planned | Constraint-based demos | Microsoft.Z3 |
-| GEPA | 🗺️ Planned | Reflection-driven evolution | IChatClient |
+| Z3 Constrained | ✅ Shipped | Constraint-based demos | Microsoft.Z3 |
+| GEPA | ✅ Shipped | Reflection-driven evolution | IChatClient |

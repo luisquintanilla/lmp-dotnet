@@ -94,6 +94,7 @@ var devSet = Example.LoadFromJsonl<QuestionInput, AnswerOutput>(
 
 Func<AnswerOutput, AnswerOutput, float> metric = (prediction, label) =>
 {
+    if (prediction is null) return 0f;
     // Score: do predicted keywords overlap with expected answer keywords?
     var expectedWords = ExtractKeywords(label.Answer);
     var matchCount = expectedWords.Count(kw =>

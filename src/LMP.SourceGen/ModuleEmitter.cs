@@ -128,6 +128,24 @@ internal static class ModuleEmitter
               .Append(".SerializerOptions ??= ").Append(jsonOptionsName).AppendLine(".Instance;");
         }
 
+        // Initialize Instructions to DefaultInstructions on first call (if caller hasn't set them).
+        // This ensures GEPA and other tools see the actual effective instruction, not an empty string.
+        foreach (var field in model.PredictorFields)
+        {
+            var promptBuilderFqn = field.OutputTypeFQN + "PromptBuilder";
+            sb.Append("        if (string.IsNullOrEmpty(").Append(field.FieldName).AppendLine(".Instructions))");
+            sb.Append("            ").Append(field.FieldName)
+              .Append(".Instructions = ").Append(promptBuilderFqn).AppendLine(".DefaultInstructions;");
+        }
+        foreach (var pm in model.PredictMethods)
+        {
+            var backingField = PredictBackingFieldName(pm.MethodName);
+            var promptBuilderFqn = pm.OutputTypeFQN + "PromptBuilder";
+            sb.Append("        if (string.IsNullOrEmpty(").Append(backingField).AppendLine(".Instructions))");
+            sb.Append("            ").Append(backingField)
+              .Append(".Instructions = ").Append(promptBuilderFqn).AppendLine(".DefaultInstructions;");
+        }
+
         sb.AppendLine("        return");
         sb.AppendLine("        [");
 

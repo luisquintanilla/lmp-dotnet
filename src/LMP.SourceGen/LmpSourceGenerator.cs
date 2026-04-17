@@ -58,15 +58,15 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
                 JsonContextEmitter.Emit(spc, model);
             });
 
-        // Pipeline 2: Predictor<TIn, TOut> usages → PromptBuilder emission
-        // Scans for GenericNameSyntax nodes matching Predictor<,>, resolves the
+        // Pipeline 2: Predictor<TIn, TOut> and ChainOfThought<TIn, TOut> usages → PromptBuilder emission
+        // Scans for GenericNameSyntax nodes matching Predictor<,> or ChainOfThought<,>, resolves the
         // type pair, and emits a PromptBuilder for each valid (TInput, TOutput) pairing
         // where TOutput has [LmpSignature].
         var predictorPairs = context.SyntaxProvider
             .CreateSyntaxProvider(
                 predicate: static (node, _) =>
                     node is GenericNameSyntax gns &&
-                    gns.Identifier.Text == "Predictor" &&
+                    (gns.Identifier.Text == "Predictor" || gns.Identifier.Text == "ChainOfThought") &&
                     gns.TypeArgumentList.Arguments.Count == 2,
                 transform: static (ctx, ct) => PredictorPairExtractor.Extract(ctx, ct))
             .Where(static m => m is not null)
