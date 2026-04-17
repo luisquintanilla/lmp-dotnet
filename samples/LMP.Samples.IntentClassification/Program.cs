@@ -96,7 +96,10 @@ Console.WriteLine();
 // ── Exact-Match Metric ──────────────────────────────────────
 // Normalize label comparison: trim, lowercase, replace underscores with spaces
 Func<ClassifyOutput, ClassifyOutput, bool> exactMatch = (predicted, expected) =>
-    NormalizeLabel(predicted.Intent) == NormalizeLabel(expected.Intent);
+{
+    if (predicted is null) return false;
+    return NormalizeLabel(predicted.Intent) == NormalizeLabel(expected.Intent);
+};
 
 var untypedMetric = Metric.Create(exactMatch);
 
@@ -105,7 +108,7 @@ Console.WriteLine("Step 1: Evaluate Baseline (zero-shot, no demos)");
 Console.WriteLine("────────────────────────────────────────────────");
 
 var baselineModule = new IntentClassificationModule(client);
-var baseline = await Evaluator.EvaluateAsync(baselineModule, devSet, exactMatch);
+var baseline = await Evaluator.EvaluateAsync(baselineModule, devSet, exactMatch, maxConcurrency: 2);
 
 Console.WriteLine($"  Accuracy: {baseline.AverageScore:P1} ({baseline.AverageScore * devSet.Count:F0}/{devSet.Count} correct)");
 Console.WriteLine();
@@ -118,12 +121,14 @@ Console.WriteLine("  Random search: try different demo subsets → pick the best
 Console.WriteLine();
 
 var optModule = new IntentClassificationModule(client);
-var brs = new BootstrapRandomSearch(numTrials: 10, maxDemos: 6, metricThreshold: 0.3f, seed: 42);
+var brs = new BootstrapRandomSearch(numTrials: 10, maxDemos: 6, metricThreshold: 0.3f, seed: 42, maxConcurrency: 2);
 var optimized = await brs.CompileAsync(optModule, trainSet, untypedMetric);
-var optScore = await Evaluator.EvaluateAsync(optimized, devSet, exactMatch);
+var optScore = await Evaluator.EvaluateAsync(optimized, devSet, exactMatch, maxConcurrency: 2);
 
 Console.WriteLine($"  Accuracy: {optScore.AverageScore:P1} ({optScore.AverageScore * devSet.Count:F0}/{devSet.Count} correct)");
 PrintPredictorState(optimized, "  ");
+Console.WriteLine("  Cooling down before MIPROv2...");
+await Task.Delay(TimeSpan.FromSeconds(15));
 Console.WriteLine();
 
 // ── Step 3: Also try MIPROv2 ────────────────────────────────
@@ -139,10 +144,13 @@ var mipro = new MIPROv2(
     maxDemos: 6,
     metricThreshold: 0.3f,
     gamma: 0.25,
-    seed: 42);
+    seed: 42,
+    maxConcurrency: 2);
 
 var mipOptimized = await mipro.CompileAsync(mipModule, trainSet, untypedMetric);
-var mipScore = await Evaluator.EvaluateAsync(mipOptimized, devSet, exactMatch);
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
+var mipScore = await Evaluator.EvaluateAsync(mipOptimized, devSet, exactMatch, maxConcurrency: 2);
 
 Console.WriteLine($"  Accuracy: {mipScore.AverageScore:P1}");
 Console.WriteLine();

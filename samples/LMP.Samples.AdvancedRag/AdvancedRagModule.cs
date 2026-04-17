@@ -92,7 +92,7 @@ public partial class AdvancedRagModule : LmpModule<QuestionInput, GroundedAnswer
                     validate: r =>
                         LmpAssert.That(r, x => x.RelevanceScore >= 0 && x.RelevanceScore <= 10,
                             "Relevance score must be between 0 and 10"),
-                    maxRetries: 1,
+                    maxRetries: 2,
                     cancellationToken: cancellationToken);
                 reranked.Add((passage, score.RelevanceScore));
             }
@@ -110,17 +110,13 @@ public partial class AdvancedRagModule : LmpModule<QuestionInput, GroundedAnswer
             var crag = await _cragValidate.PredictAsync(
                 new CragInput(input.Question, context),
                 trace: Trace,
-                validate: r =>
-                    LmpAssert.That(r,
-                        x => x.Confidence is "correct" or "ambiguous" or "incorrect",
-                        "Confidence must be 'correct', 'ambiguous', or 'incorrect'"),
                 maxRetries: 1,
                 cancellationToken: cancellationToken);
 
-            if (crag.Confidence == "correct")
+            if (crag.Confidence == CragConfidence.Correct)
                 break;
 
-            if (crag.Confidence == "incorrect")
+            if (crag.Confidence == CragConfidence.Incorrect)
             {
                 // No useful context found — return a graceful fallback
                 return new GroundedAnswer

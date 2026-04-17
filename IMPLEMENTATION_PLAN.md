@@ -1374,7 +1374,7 @@ Fix:
 
 ---
 
-### Task 10.5: Rate-limit protection in IntentClassification sample ❌
+### Task 10.5: Rate-limit protection in IntentClassification sample ✅
 
 **Prerequisite:** Tasks 10.3 and 10.4 must be complete (BRS and MIPROv2 now have maxConcurrency param).
 
@@ -1404,7 +1404,7 @@ Fix — apply FacilitySupport's established pattern:
 
 ---
 
-### Task 10.6: Rate-limit protection in MathReasoning sample ❌
+### Task 10.6: Rate-limit protection in MathReasoning sample ✅
 
 **Prerequisite:** Tasks 10.3 and 10.4 must be complete.
 
@@ -1432,7 +1432,7 @@ Fix — same pattern as Task 10.5:
 
 ---
 
-### Task 10.7: Rate-limit cooldowns in AdvancedRag and AdvancedOptimizers samples ❌
+### Task 10.7: Rate-limit cooldowns in AdvancedRag and AdvancedOptimizers samples ✅
 
 **Files:**
 - `samples/LMP.Samples.AdvancedRag/Program.cs`
@@ -1461,7 +1461,7 @@ await Task.Delay(TimeSpan.FromSeconds(30));
 
 ---
 
-### Task 10.8: AdvancedRag — CragConfidence enum (LMP-idiomatic) ❌
+### Task 10.8: AdvancedRag — CragConfidence enum (LMP-idiomatic) ✅
 
 **Files:**
 - `samples/LMP.Samples.AdvancedRag/Types.cs`
@@ -1497,7 +1497,7 @@ Fix:
 
 ---
 
-### Task 10.9: Add null guards to benchmark sample metrics + increase AdvancedRag reranker retries ❌
+### Task 10.9: Add null guards to benchmark sample metrics + increase AdvancedRag reranker retries ✅
 
 **Files:**
 - `samples/LMP.Samples.IntentClassification/Program.cs`

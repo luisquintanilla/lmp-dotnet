@@ -104,6 +104,8 @@ Console.WriteLine();
 // Combines keyword overlap with citation presence
 Func<GroundedAnswer, GroundedAnswer, float> answerMetric = (predicted, expected) =>
 {
+    if (predicted is null || string.IsNullOrWhiteSpace(predicted.Answer)) return 0f;
+
     // Keyword overlap between predicted and expected answers
     var expectedWords = expected.Answer
         .Split(' ', StringSplitOptions.RemoveEmptyEntries)
@@ -172,6 +174,8 @@ var mipro = new MIPROv2(
     seed: 42);
 
 var optimized = await mipro.CompileAsync(optModule, trainSet, untypedMetric);
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
 var optScore = await Evaluator.EvaluateAsync(optimized, devSet, answerMetric, maxConcurrency: 2);
 
 Console.WriteLine($"  Answer F1: {optScore.AverageScore:P1}");

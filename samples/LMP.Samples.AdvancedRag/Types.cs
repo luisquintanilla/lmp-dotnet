@@ -82,6 +82,9 @@ public partial record RerankOutput
 
 // ── CRAG Validation ─────────────────────────────────────────
 
+/// <summary>CRAG confidence level for retrieved context sufficiency.</summary>
+public enum CragConfidence { Correct, Ambiguous, Incorrect }
+
 /// <summary>
 /// Input for CRAG validation — question + top passages.
 /// </summary>
@@ -100,8 +103,8 @@ public record CragInput(
 public partial record CragOutput
 {
     /// <summary>Confidence level in the retrieved context.</summary>
-    [Description("Confidence: 'correct' (context is sufficient), 'ambiguous' (partially relevant), or 'incorrect' (context doesn't help)")]
-    public required string Confidence { get; init; }
+    [Description("Whether the retrieved context is sufficient: Correct, Ambiguous, or Incorrect")]
+    public required CragConfidence Confidence { get; init; }
 
     /// <summary>If ambiguous, a refined follow-up question to search for more information.</summary>
     [Description("If confidence is 'ambiguous', provide a refined follow-up question to search for missing information. Otherwise empty.")]

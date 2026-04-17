@@ -181,6 +181,8 @@ var miproSmac = new MIPROv2(
     samplerFactory: cards => new SmacSampler(cards, numTrees: 10, seed: 42));
 
 var smacOptimized = await miproSmac.CompileAsync(smacModule, trainSet, untypedMetric);
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
 var smacScore = await Evaluator.EvaluateAsync(smacOptimized, devSet, metric);
 Console.WriteLine($"  Score: {smacScore.AverageScore:P1}");
 
