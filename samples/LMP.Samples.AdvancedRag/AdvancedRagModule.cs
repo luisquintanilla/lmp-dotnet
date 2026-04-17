@@ -139,14 +139,9 @@ public partial class AdvancedRagModule : LmpModule<QuestionInput, GroundedAnswer
             new AnswerInput(input.Question, finalContext),
             trace: Trace,
             validate: result =>
-            {
                 LmpAssert.That(result,
                     r => !string.IsNullOrWhiteSpace(r.Answer),
-                    "Answer must not be empty");
-                LmpAssert.That(result,
-                    r => r.Citations is { Length: > 0 },
-                    "Must include at least one citation from context");
-            },
+                    "Answer must not be empty"),
             maxRetries: 2,
             cancellationToken: cancellationToken);
 

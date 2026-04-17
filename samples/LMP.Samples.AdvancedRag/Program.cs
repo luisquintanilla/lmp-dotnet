@@ -171,11 +171,18 @@ var mipro = new MIPROv2(
     maxDemos: 3,
     metricThreshold: 0.3f,
     gamma: 0.25,
-    seed: 42);
+    seed: 42,
+    maxConcurrency: 2);
 
-var optimized = await mipro.CompileAsync(optModule, trainSet, untypedMetric);
+// Cap to 30 training examples to reduce rate-limit pressure (as in MathReasoning).
+// Bootstrap still finds enough demos (30 × ~35% success rate ≈ 10 demos across 4 predictors).
+var trainForOpt = trainSet.Take(30).ToList();
+Console.WriteLine($"  Using {trainForOpt.Count} examples for optimization");
+Console.WriteLine();
+
+var optimized = await mipro.CompileAsync(optModule, trainForOpt, untypedMetric);
 Console.WriteLine("  Cooling down before final evaluation...");
-await Task.Delay(TimeSpan.FromSeconds(30));
+await Task.Delay(TimeSpan.FromSeconds(90));
 var optScore = await Evaluator.EvaluateAsync(optimized, devSet, answerMetric, maxConcurrency: 2);
 
 Console.WriteLine($"  Answer F1: {optScore.AverageScore:P1}");
