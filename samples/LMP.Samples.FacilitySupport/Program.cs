@@ -15,8 +15,11 @@ using Azure.Identity;
 //   1. Dataset: FacilitySupportAnalyzer (Meta, public)
 //   2. Module:  3 parallel predictors (urgency, sentiment, categories)
 //   3. Metric:  Combined accuracy (arithmetic mean of 3 sub-tasks)
-//   4. Baseline: ~75% combined accuracy
-//   5. GEPA: ~85-87% (+10-12pp)
+//   4. Baseline (gpt-4o-mini): ~50-55% combined accuracy
+//   5. GEPA    (gpt-4o-mini): ~60-65% (+10-12pp)
+//
+// Note: DSPy tutorial (stronger model) achieves 72% → 86% (+14pp).
+// The improvement magnitude is consistent; absolute scores vary by model.
 //
 // GEPA's superpower: it reflects on FAILURES. When a sub-task
 // gets it wrong, the reflection LLM diagnoses WHY and proposes
