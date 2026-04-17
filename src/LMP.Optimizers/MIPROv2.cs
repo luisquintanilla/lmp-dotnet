@@ -119,6 +119,21 @@ public sealed class MIPROv2 : IOptimizer
     /// </summary>
     public IReadOnlyDictionary<string, int>? LastCardinalities => _lastCardinalities;
 
+    /// <inheritdoc />
+    public async Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        var module = ctx.Target.GetService<LmpModule>()
+            ?? throw new NotSupportedException(
+                $"{nameof(MIPROv2)} requires an LmpModule target. Use ModuleTarget.For(module).");
+
+        var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
+            .ConfigureAwait(false);
+
+        if (!ReferenceEquals(best, module))
+            ctx.Target.ApplyState(TargetState.From(best.GetState()));
+    }
+
     /// <summary>
     /// Optimizes the module using three-phase MIPROv2:
     /// <list type="number">

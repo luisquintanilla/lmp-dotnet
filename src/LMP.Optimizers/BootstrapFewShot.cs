@@ -35,6 +35,18 @@ public sealed class BootstrapFewShot : IOptimizer
         _metricThreshold = metricThreshold;
     }
 
+    /// <inheritdoc />
+    public async Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+
+        var module = ctx.Target.GetService<LmpModule>()
+            ?? throw new NotSupportedException(
+                $"{nameof(BootstrapFewShot)} requires an LmpModule target. Use ModuleTarget.For(module).");
+
+        await RunAsync(module, ctx.TrainSet, ctx.Metric, ct).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Optimizes the module by running a teacher copy on the training set,
     /// collecting traces from successful examples, and filling the student's
@@ -61,8 +73,30 @@ public sealed class BootstrapFewShot : IOptimizer
         ArgumentNullException.ThrowIfNull(trainSet);
         ArgumentNullException.ThrowIfNull(metric);
 
+        await RunAsync(module, trainSet, metric, cancellationToken).ConfigureAwait(false);
+
+        // Auto-emit .g.cs artifact
+        string? outputDir = options?.OutputDir;
+        if (outputDir is not null)
+        {
+            var evalResult = await Evaluator.EvaluateAsync(
+                module, trainSet, metric, cancellationToken: cancellationToken);
+            await CSharpArtifactWriter.WriteAsync(
+                module, outputDir, evalResult.AverageScore, nameof(BootstrapFewShot),
+                options?.TrainDataPath, options?.Baseline, cancellationToken);
+        }
+
+        return module;
+    }
+
+    private async Task RunAsync(
+        LmpModule module,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken)
+    {
         if (trainSet.Count == 0)
-            return module;
+            return;
 
         // Successful traces keyed by predictor name
         var successfulTraces = new ConcurrentDictionary<string, ConcurrentBag<TraceEntry>>();
@@ -75,7 +109,7 @@ public sealed class BootstrapFewShot : IOptimizer
         {
             // Clone module to create a teacher for this round.
             // The teacher generates traces; the student receives demos.
-            var teacher = module.Clone<TModule>();
+            var teacher = module.Clone();
 
             // If multi-round, teacher inherits demos from previous rounds.
             if (round > 0)
@@ -128,27 +162,13 @@ public sealed class BootstrapFewShot : IOptimizer
                 }
             }
         }
-
-        // Auto-emit .g.cs artifact
-        string? outputDir = options?.OutputDir;
-        if (outputDir is not null)
-        {
-            var evalResult = await Evaluator.EvaluateAsync(
-                module, trainSet, metric, cancellationToken: cancellationToken);
-            await CSharpArtifactWriter.WriteAsync(
-                module, outputDir, evalResult.AverageScore, nameof(BootstrapFewShot),
-                options?.TrainDataPath, options?.Baseline, cancellationToken);
-        }
-
-        return module;
     }
 
     /// <summary>
     /// Copies demos from source module's predictors to target module's predictors.
     /// Used in multi-round bootstrapping so the teacher inherits previous demos.
     /// </summary>
-    private static void CopyDemos<TModule>(TModule source, TModule target)
-        where TModule : LmpModule
+    private static void CopyDemos(LmpModule source, LmpModule target)
     {
         var sourcePredictors = source.GetPredictors();
         var targetPredictors = target.GetPredictors();

@@ -61,6 +61,22 @@ public abstract class LmpModule
     }
 
     /// <summary>
+    /// Creates a deep copy of this module. The concrete type is preserved at runtime.
+    /// Used by optimizer implementations in <c>OptimizeAsync</c> when the concrete
+    /// module type is not known at compile time.
+    /// </summary>
+    /// <returns>A deep-cloned module with independent learnable parameters.</returns>
+    /// <exception cref="NotSupportedException">
+    /// Thrown when the source generator has not emitted a <c>CloneCore()</c> override.
+    /// </exception>
+    public LmpModule Clone()
+    {
+        var clone = CloneCore();
+        clone.Trace = null;
+        return clone;
+    }
+
+    /// <summary>
     /// Creates a deep copy of this module. Override this in source-generated code
     /// to clone all predictor fields with independent state.
     /// </summary>
