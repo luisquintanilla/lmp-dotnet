@@ -10,14 +10,19 @@ using System.Text.RegularExpressions;
 // ──────────────────────────────────────────────────────────────
 // LMP MathReasoning — ChainOfThought + MIPROv2 on MATH Algebra
 //
-// This benchmark sample proves that LMP optimization delivers
-// real, measurable improvement on a hard academic benchmark:
+// This sample demonstrates LMP optimization (BRS + MIPROv2) on a
+// structured math reasoning task:
 //
 //   1. Dataset: MATH algebra (Hendrycks et al., MIT license)
 //   2. Module:  ChainOfThought forces step-by-step reasoning
 //   3. Metric:  Exact match after normalizing math notation
-//   4. Baseline: ~74% accuracy with no optimization
-//   5. MIPROv2: ~85-88% accuracy (+11-14pp improvement)
+//   4. Optimizers: BootstrapRandomSearch + MIPROv2
+//
+// Note on expected results:
+//   When baseline accuracy is already high (>85%), few-shot demo
+//   optimization may show modest gains or slight variance.
+//   MIPROv2 instruction optimization is most impactful for harder
+//   tasks where the model needs explicit guidance.
 //
 // Prerequisites:
 //   dotnet user-secrets set "AzureOpenAI:Endpoint" "https://YOUR.openai.azure.com/"
@@ -77,7 +82,16 @@ var trainSet = Example.LoadFromJsonl<MathInput, MathAnswer>(
 var devSet = Example.LoadFromJsonl<MathInput, MathAnswer>(
     Path.Combine(dataDir, "dev.jsonl"));
 
+// Use a subset of training examples for optimization to keep demo runtime manageable.
+// Algebra problems require multi-step LLM reasoning; 30 examples is enough to build
+// a good demo pool while keeping BRS + MIPROv2 bootstrap to ~30-40 minutes.
+const int trainSubsetSize = 30;
+var trainForOpt = trainSet.Count > trainSubsetSize
+    ? trainSet.Take(trainSubsetSize).ToList()
+    : trainSet;
+
 Console.WriteLine($"  Loaded {trainSet.Count} training examples, {devSet.Count} dev examples");
+Console.WriteLine($"  Using {trainForOpt.Count} examples for optimization (full {devSet.Count} for eval)");
 Console.WriteLine();
 
 // ── Exact-Match Metric ──────────────────────────────────────
@@ -107,7 +121,7 @@ Console.WriteLine("────────────────────�
 
 var brsModule = new MathReasoningModule(client);
 var brs = new BootstrapRandomSearch(numTrials: 8, maxDemos: 4, metricThreshold: 0.5f, seed: 42, maxConcurrency: 2);
-var brsOptimized = await brs.CompileAsync(brsModule, trainSet, untypedMetric);
+var brsOptimized = await brs.CompileAsync(brsModule, trainForOpt, untypedMetric);
 var brsScore = await Evaluator.EvaluateAsync(brsOptimized, devSet, exactMatch, maxConcurrency: 2);
 
 Console.WriteLine($"  Accuracy: {brsScore.AverageScore:P1}");
@@ -136,7 +150,7 @@ var mipro = new MIPROv2(
     seed: 42,
     maxConcurrency: 2);
 
-var mipOptimized = await mipro.CompileAsync(mipModule, trainSet, untypedMetric);
+var mipOptimized = await mipro.CompileAsync(mipModule, trainForOpt, untypedMetric);
 Console.WriteLine("  Cooling down before final evaluation...");
 await Task.Delay(TimeSpan.FromSeconds(30));
 var mipScore = await Evaluator.EvaluateAsync(mipOptimized, devSet, exactMatch, maxConcurrency: 2);

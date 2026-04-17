@@ -46,7 +46,8 @@ public partial class AdvancedRagModule : LmpModule<QuestionInput, GroundedAnswer
 
         _expand = new Predictor<ExpandInput, ExpandOutput>(client) { Name = "expand" };
         _rerank = new Predictor<RerankInput, RerankOutput>(client) { Name = "rerank" };
-        _cragValidate = new Predictor<CragInput, CragOutput>(client) { Name = "crag_validate" };
+        // Name must match the source-generated GetPredictors() key (field name without underscore).
+        _cragValidate = new Predictor<CragInput, CragOutput>(client) { Name = "cragValidate" };
         _answer = new ChainOfThought<AnswerInput, GroundedAnswer>(client) { Name = "answer" };
     }
 
@@ -87,7 +88,7 @@ public partial class AdvancedRagModule : LmpModule<QuestionInput, GroundedAnswer
             foreach (var passage in passages)
             {
                 var score = await _rerank.PredictAsync(
-                    new RerankInput(input.Question, passage),
+                    new RerankInput(currentQuestion, passage),
                     trace: Trace,
                     validate: r =>
                         LmpAssert.That(r, x => x.RelevanceScore >= 0 && x.RelevanceScore <= 10,
@@ -108,7 +109,7 @@ public partial class AdvancedRagModule : LmpModule<QuestionInput, GroundedAnswer
             // ── Step 4: CRAG Validation ─────────────────────────
             var context = string.Join("\n\n---\n\n", topPassages);
             var crag = await _cragValidate.PredictAsync(
-                new CragInput(input.Question, context),
+                new CragInput(currentQuestion, context),
                 trace: Trace,
                 maxRetries: 1,
                 cancellationToken: cancellationToken);
@@ -118,12 +119,9 @@ public partial class AdvancedRagModule : LmpModule<QuestionInput, GroundedAnswer
 
             if (crag.Confidence == CragConfidence.Incorrect)
             {
-                // No useful context found — return a graceful fallback
-                return new GroundedAnswer
-                {
-                    Answer = "I could not find sufficiently relevant information to answer this question confidently.",
-                    Citations = []
-                };
+                // Context is insufficient — stop hopping and answer from what we have.
+                // Better to attempt a grounded answer than refuse entirely.
+                break;
             }
 
             // "ambiguous" — use the follow-up question for the next hop
