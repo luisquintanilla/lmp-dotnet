@@ -120,3 +120,22 @@ internal sealed record InterceptorCallSiteModel(
     int LocationVersion,
     string LocationData,
     string DisplayLocation);
+
+/// <summary>
+/// Extracted metadata for an <c>LmpModule</c> subclass that has one or more
+/// <c>[Skill]</c>-annotated methods. Used by Pipeline 8 to emit <c>GetSkills()</c>.
+/// </summary>
+internal sealed record SkillModuleModel(
+    string Namespace,
+    string TypeName,
+    EquatableArray<SkillMethodModel> SkillMethods);
+
+/// <summary>
+/// Metadata for a single <c>[Skill]</c>-annotated method on an <c>LmpModule</c> subclass.
+/// </summary>
+internal sealed record SkillMethodModel(
+    string MethodName,
+    string? NameOverride,
+    string? Description,
+    bool IsPublic,
+    LocationInfo Location);

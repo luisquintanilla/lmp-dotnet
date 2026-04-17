@@ -43,6 +43,15 @@ public abstract class LmpModule
         => [];
 
     /// <summary>
+    /// Returns all <see cref="SkillManifest"/> entries declared on this module via
+    /// <see cref="SkillAttribute"/>-annotated methods.
+    /// The source generator (Pipeline 8) emits this method for zero-reflection skill discovery.
+    /// </summary>
+    /// <returns>A list of skill manifests in declaration order.</returns>
+    public virtual IReadOnlyList<SkillManifest> GetSkills()
+        => [];
+
+    /// <summary>
     /// Creates a deep copy of this module with independent predictor state.
     /// The returned module shares the same <c>IChatClient</c> bindings but has
     /// separate <c>Demos</c> and <c>Instructions</c> on every predictor.

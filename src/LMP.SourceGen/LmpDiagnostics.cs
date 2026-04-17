@@ -55,4 +55,17 @@ internal static class LmpDiagnostics
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
         helpLinkUri: "https://github.com/lmp-dotnet/lmp/blob/main/docs/diagnostics.md#lmp004");
+
+    /// <summary>
+    /// LMP030: Warning — <c>[Skill]</c> on a non-public method.
+    /// The method will not appear in <c>GetSkills()</c> because it is not accessible.
+    /// </summary>
+    public static readonly DiagnosticDescriptor SkillMethodNotPublic = new(
+        id: "LMP030",
+        title: "[Skill] on non-public method",
+        messageFormat: "[Skill] on '{0}' will not be included in GetSkills() — the method must be public",
+        category: "LMP.Skills",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/lmp-dotnet/lmp/blob/main/docs/diagnostics.md#lmp030");
 }
