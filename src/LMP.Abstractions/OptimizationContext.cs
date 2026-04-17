@@ -57,7 +57,20 @@ public sealed class OptimizationContext
     public CostBudget Budget { get; set; } = CostBudget.Unlimited;
 
     /// <summary>Reflective observations from GEPA, EvaluationCritique, and similar steps.</summary>
-    public ReflectionLog ReflectionLog { get; set; } = ReflectionLog.Empty;
+    public ReflectionLog ReflectionLog { get; set; } = new ReflectionLog();
+
+    /// <summary>
+    /// Optional multi-objective metric. When set, optimizers that support vector metrics
+    /// use this alongside <see cref="Metric"/> to track cost/quality trade-offs in
+    /// <see cref="ParetoBoundary"/>.
+    /// </summary>
+    public IMetric? VectorMetric { get; set; }
+
+    /// <summary>
+    /// Optional multi-objective Pareto frontier populated by cost-aware optimizer steps
+    /// such as <c>ModelSelector</c> and <c>MultiFidelity</c>.
+    /// </summary>
+    public ParetoFrontier? ParetoBoundary { get; set; }
 
     // ── Multi-turn ──────────────────────────────────────────────────────
 

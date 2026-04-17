@@ -17,12 +17,23 @@ internal static class InstructionReflector
     /// Returns an empty string if no diagnosable failures are provided or if the
     /// LLM call fails.
     /// </summary>
+    /// <param name="reflectionClient">LLM client for reflection.</param>
+    /// <param name="predictorName">Name of the predictor to improve.</param>
+    /// <param name="currentInstruction">The predictor's current instruction.</param>
+    /// <param name="failedTraces">Failure trace data from the mini-batch.</param>
+    /// <param name="externalObservations">
+    /// Optional global critique entries from <see cref="ReflectionLog"/>
+    /// (e.g., produced by <c>EvaluationCritique</c>). These are prepended as additional
+    /// context but don't replace failure-trace analysis.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     internal static async Task<string> ReflectAsync(
         IChatClient reflectionClient,
         string predictorName,
         string currentInstruction,
         IEnumerable<(Example Example, object Output, float Score, Trace Trace)> failedTraces,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<ReflectionEntry>? externalObservations = null)
     {
         var diagnosable = failedTraces
             .Where(r => r.Trace.Entries.Any(e => e.PredictorName == predictorName))
@@ -36,6 +47,22 @@ internal static class InstructionReflector
         prompt.AppendLine($"You are improving the '{predictorName}' predictor in a multi-predictor LM pipeline.");
         prompt.AppendLine($"Current instruction: \"{currentInstruction}\"");
         prompt.AppendLine();
+
+        // Include global critique context (from EvaluationCritique or similar)
+        var relevantObservations = externalObservations?
+            .Where(e => e.Scope == ReflectionScope.Global ||
+                        (e.Scope == ReflectionScope.Predictor && e.PredictorName == predictorName))
+            .Take(3)
+            .ToList();
+
+        if (relevantObservations is { Count: > 0 })
+        {
+            prompt.AppendLine("External evaluation observations:");
+            foreach (var obs in relevantObservations)
+                prompt.AppendLine($"  - {obs.Text}");
+            prompt.AppendLine();
+        }
+
         prompt.AppendLine($"This predictor has ONE specific job: classify the '{predictorName}' of the input.");
         prompt.AppendLine("Other sub-tasks are handled by separate predictors — do NOT include them in this instruction.");
         prompt.AppendLine();

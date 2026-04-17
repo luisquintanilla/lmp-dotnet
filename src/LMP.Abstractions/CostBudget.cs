@@ -34,6 +34,15 @@ public sealed record CostBudget
             return false;
         if (MaxTurns.HasValue && history.TotalApiCalls >= MaxTurns.Value)
             return false;
+        if (MaxWallClock.HasValue &&
+            history.TotalElapsedMs >= (long)MaxWallClock.Value.TotalMilliseconds)
+            return false;
+        if (Custom is not null && history.Trials.Count > 0)
+        {
+            var lastCost = history.Trials[^1].Cost;
+            if (Custom(lastCost))
+                return false;
+        }
         return true;
     }
 

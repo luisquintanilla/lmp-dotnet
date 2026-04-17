@@ -36,4 +36,7 @@ public sealed class TrialHistory
 
     /// <summary>Total API calls across all trials.</summary>
     public int TotalApiCalls => _trials.Sum(t => t.Cost.ApiCalls);
+
+    /// <summary>Total elapsed milliseconds accumulated across all trials.</summary>
+    public long TotalElapsedMs => _trials.Sum(t => t.Cost.ElapsedMilliseconds);
 }

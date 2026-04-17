@@ -95,4 +95,65 @@ public static class Metric
         return async (example, output) =>
             await metric((TPredicted)output, (TExpected)example.GetLabel()) ? 1f : 0f;
     }
+
+    // ── IMetric vector factories ────────────────────────────────
+
+    /// <summary>
+    /// Creates an <see cref="IMetric"/> from a typed synchronous function that returns
+    /// a <see cref="MetricVector"/> (quality + cost dimensions).
+    /// The <see cref="MetricContext"/> carries the execution trace, latency, and example.
+    /// </summary>
+    public static IMetric CreateVector<TPredicted, TExpected>(
+        Func<TPredicted, TExpected, MetricContext, MetricVector> fn)
+    {
+        ArgumentNullException.ThrowIfNull(fn);
+        return new DelegateMetric(ctx =>
+        {
+            var vector = fn(
+                (TPredicted)ctx.Output,
+                (TExpected)ctx.Example.GetLabel(),
+                ctx);
+            return ValueTask.FromResult(vector);
+        });
+    }
+
+    /// <summary>
+    /// Creates an <see cref="IMetric"/> from a typed asynchronous function that returns
+    /// a <see cref="MetricVector"/>.
+    /// </summary>
+    public static IMetric CreateVectorAsync<TPredicted, TExpected>(
+        Func<TPredicted, TExpected, MetricContext, CancellationToken, ValueTask<MetricVector>> fn)
+    {
+        ArgumentNullException.ThrowIfNull(fn);
+        return new DelegateMetric((ctx, ct) =>
+            fn((TPredicted)ctx.Output, (TExpected)ctx.Example.GetLabel(), ctx, ct));
+    }
+
+    /// <summary>
+    /// Wraps a <see cref="Func{Example, Object, Float}"/> as an <see cref="IMetric"/>
+    /// that automatically populates cost dimensions from the execution trace.
+    /// </summary>
+    public static IMetric ToVectorMetric(Func<Example, object, float> metric)
+    {
+        ArgumentNullException.ThrowIfNull(metric);
+        return new DelegateMetric(ctx =>
+        {
+            float score = metric(ctx.Example, ctx.Output);
+            return ValueTask.FromResult(MetricVector.FromTrace(score, ctx.Trace, ctx.ElapsedMs));
+        });
+    }
+
+    private sealed class DelegateMetric : IMetric
+    {
+        private readonly Func<MetricContext, CancellationToken, ValueTask<MetricVector>> _fn;
+
+        internal DelegateMetric(Func<MetricContext, ValueTask<MetricVector>> fn)
+            => _fn = (ctx, _) => fn(ctx);
+
+        internal DelegateMetric(Func<MetricContext, CancellationToken, ValueTask<MetricVector>> fn)
+            => _fn = fn;
+
+        public ValueTask<MetricVector> EvaluateAsync(MetricContext ctx, CancellationToken ct = default)
+            => _fn(ctx, ct);
+    }
 }

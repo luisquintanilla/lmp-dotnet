@@ -33,6 +33,8 @@ public sealed class GEPA : IOptimizer
     private readonly int _maxConcurrency;
     private readonly int? _seed;
     private readonly IProgress<GEPAProgressReport>? _progress;
+    // Per-run external observations from ctx.ReflectionLog, threaded through the call chain
+    private IReadOnlyList<ReflectionEntry> _externalObservations = [];
 
     /// <summary>
     /// Creates a new GEPA optimizer.
@@ -83,6 +85,9 @@ public sealed class GEPA : IOptimizer
         var module = ctx.Target.GetService<LmpModule>()
             ?? throw new NotSupportedException(
                 $"{nameof(GEPA)} requires an LmpModule target. Use ModuleTarget.For(module).");
+
+        // Capture external reflection entries (e.g., from EvaluationCritique) for this run
+        _externalObservations = ctx.ReflectionLog.Entries;
 
         var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
             .ConfigureAwait(false);
@@ -309,7 +314,8 @@ public sealed class GEPA : IOptimizer
         List<(Example Example, object Output, float Score, Trace Trace)> failedTraces,
         CancellationToken cancellationToken)
         => InstructionReflector.ReflectAsync(
-            _reflectionClient, predictorName, currentInstruction, failedTraces, cancellationToken);
+            _reflectionClient, predictorName, currentInstruction, failedTraces,
+            cancellationToken, externalObservations: _externalObservations);
 
     /// <summary>
     /// Per-predictor crossover: combine instructions from two Pareto-optimal parents.
