@@ -136,6 +136,10 @@ var gepa = new LMP.Optimizers.GEPA(
     seed: 42);
 
 var gepaOptimized = await gepa.CompileAsync(gepaModule, trainSet, untypedMetric);
+
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
+
 var gepaScore = await Evaluator.EvaluateAsync(gepaOptimized, devSet, metric);
 Console.WriteLine($"  Score: {gepaScore.AverageScore:P1}");
 Console.WriteLine();
