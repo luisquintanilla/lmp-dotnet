@@ -1289,3 +1289,282 @@ AdvancedOptimizers sample update:
 - Demonstrate dollar pricing, latency, and blended cost functions
 
 **Completion:** All tests pass. Sample builds and runs.
+
+---
+
+## Phase 10: benchmark-samples Branch — Merge Readiness
+
+> **Status:** In progress. GEPA algorithm bugs (3) and SourceGen ChainOfThought fix already committed.
+> **Branch:** benchmark-samples
+> **Context:** 4 benchmark samples (MathReasoning, IntentClassification, FacilitySupport, AdvancedRag)
+> were audited against DSPy/GEPA reference implementations and LMP docs. FacilitySupport verified
+> running (51%→63%). Remaining tasks fix rate-limit reliability, correctness, and LMP-idiomatic patterns.
+> **All 1,061 tests must pass after each task.**
+
+### Task 10.1: Fix wrong duration variable in Middleware sample ✅
+
+**File:** `samples/LMP.Samples.Middleware/Program.cs`
+
+Line 131 prints `{warmResult.Count}ms` as the "warm cache duration". `warmResult.Count` is the
+number of dev examples (e.g., 10), not elapsed milliseconds. This shows "10ms" regardless of actual
+time — a silent lie that defeats the purpose of the cache speedup benchmark.
+
+Fix: Change `{warmResult.Count}ms` to `{sw.ElapsedMilliseconds}ms` on line 131.
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `fix(samples): correct warm cache duration display in Middleware sample`.
+
+---
+
+### Task 10.2: Add cooldown before final eval in GEPA sample ✅
+
+**File:** `samples/LMP.Samples.GEPA/Program.cs`
+
+After `gepa.CompileAsync(...)` on line 138, the sample immediately fires `Evaluator.EvaluateAsync`
+on line 139 without a cooldown. GEPA runs 20 iterations with ~100+ LLM calls. Without a cooldown,
+the final eval fires into a saturated rate-limit window, causing failures counted as 0.0 scores.
+
+FacilitySupport correctly adds a 30s cooldown at lines 159-160. This sample must match that pattern.
+
+Fix: Between lines 138 and 139, add:
+```csharp
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
+```
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `fix(samples): add rate-limit cooldown before final eval in GEPA sample`.
+
+---
+
+### Task 10.3: Add `maxConcurrency` constructor param to BootstrapRandomSearch ✅
+
+**File:** `src/LMP.Optimizers/BootstrapRandomSearch.cs`
+
+DSPy's `BootstrapFewShotWithRandomSearch` exposes `num_threads` for parallel evaluation control.
+LMP's BRS evaluates all N trial candidates in parallel via `Task.WhenAll` (line 89-92) but passes
+no `maxConcurrency` to `Evaluator.EvaluateAsync` (defaults to 4). Users have no way to reduce
+concurrency pressure for multi-predictor modules or high-concurrency environments.
+
+Fix:
+1. Add `int maxConcurrency = 4` parameter to `BootstrapRandomSearch(...)` constructor (after `seed`)
+2. Store as `private readonly int _maxConcurrency`
+3. Pass `maxConcurrency: _maxConcurrency` to `Evaluator.EvaluateAsync(candidate, valSplit, metric, maxConcurrency: _maxConcurrency, ...)` on line 90
+4. Add XML doc comment on the new parameter
+5. Update any existing tests that construct `BootstrapRandomSearch` — parameter is optional with default 4, so most tests won't need changes
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `feat(optimizers): expose maxConcurrency on BootstrapRandomSearch`.
+
+---
+
+### Task 10.4: Add `maxConcurrency` constructor param to MIPROv2 ❌
+
+**File:** `src/LMP.Optimizers/MIPROv2.cs`
+
+DSPy's `MIPROv2` exposes `num_threads` for parallel evaluation control. LMP's MIPROv2 Phase 3
+trial evaluation calls `Evaluator.EvaluateAsync(candidate, subSample, ...)` without passing
+`maxConcurrency` (defaults to 4). Users cannot tune concurrency for rate-limit protection.
+
+Fix:
+1. Add `int maxConcurrency = 4` parameter to `MIPROv2(...)` constructor (after `seed`)
+2. Store as `private readonly int _maxConcurrency`
+3. Find the Phase 3 trial evaluation `Evaluator.EvaluateAsync` call and pass `maxConcurrency: _maxConcurrency`
+4. Add XML doc comment on the new parameter
+5. Run tests — existing callers use named args, new param has default, no breaking changes
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `feat(optimizers): expose maxConcurrency on MIPROv2`.
+
+---
+
+### Task 10.5: Rate-limit protection in IntentClassification sample ❌
+
+**Prerequisite:** Tasks 10.3 and 10.4 must be complete (BRS and MIPROv2 now have maxConcurrency param).
+
+**File:** `samples/LMP.Samples.IntentClassification/Program.cs`
+
+Three issues that will cause rate-limit failures on Azure:
+1. All 3 `Evaluator.EvaluateAsync` calls use default maxConcurrency=4 (lines 108, 123, 145)
+2. No cooldown between BRS completing and MIPROv2 starting
+3. No cooldown between MIPROv2 completing and the final eval
+
+Fix — apply FacilitySupport's established pattern:
+1. Lines 108, 123, 145: add `maxConcurrency: 2` to each `Evaluator.EvaluateAsync` call
+2. After the BRS eval on line 125 (after `PrintPredictorState`), add:
+   ```csharp
+   Console.WriteLine("  Cooling down before MIPROv2...");
+   await Task.Delay(TimeSpan.FromSeconds(15));
+   ```
+3. After `mipro.CompileAsync` on line 144, add:
+   ```csharp
+   Console.WriteLine("  Cooling down before final evaluation...");
+   await Task.Delay(TimeSpan.FromSeconds(30));
+   ```
+4. BRS constructor (line 121): add `maxConcurrency: 2`
+5. MIPROv2 constructor (line 134): add `maxConcurrency: 2`
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `fix(samples): add rate-limit protection to IntentClassification sample`.
+
+---
+
+### Task 10.6: Rate-limit protection in MathReasoning sample ❌
+
+**Prerequisite:** Tasks 10.3 and 10.4 must be complete.
+
+**File:** `samples/LMP.Samples.MathReasoning/Program.cs`
+
+Same root cause as IntentClassification. Three Evaluator calls use default maxConcurrency=4
+(lines 96, 108, 134) and no cooldowns between optimizer stages.
+
+Fix — same pattern as Task 10.5:
+1. Lines 96, 108, 134: add `maxConcurrency: 2` to each `Evaluator.EvaluateAsync` call
+2. After the BRS eval on line 110 (after `PrintPredictorState`), add:
+   ```csharp
+   Console.WriteLine("  Cooling down before MIPROv2...");
+   await Task.Delay(TimeSpan.FromSeconds(15));
+   ```
+3. After `mipro.CompileAsync` on line 133, add:
+   ```csharp
+   Console.WriteLine("  Cooling down before final evaluation...");
+   await Task.Delay(TimeSpan.FromSeconds(30));
+   ```
+4. BRS constructor (line 106): add `maxConcurrency: 2`
+5. MIPROv2 constructor (line 123): add `maxConcurrency: 2`
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `fix(samples): add rate-limit protection to MathReasoning sample`.
+
+---
+
+### Task 10.7: Rate-limit cooldowns in AdvancedRag and AdvancedOptimizers samples ❌
+
+**Files:**
+- `samples/LMP.Samples.AdvancedRag/Program.cs`
+- `samples/LMP.Samples.AdvancedOptimizers/Program.cs`
+
+**AdvancedRag:** Already has `maxConcurrency: 2` on all eval calls. Missing cooldown after MIPROv2
+before final eval (lines 174-175). Fix: add 30s cooldown between them.
+
+**AdvancedOptimizers:** After the last optimizer (`smacOptimized`, around line 183), add 30s cooldown
+before `Evaluator.EvaluateAsync(smacOptimized, ...)` on line 184. With 5 sequential optimizer runs,
+the final eval fires into the most saturated rate-limit window of all samples.
+
+Fix for AdvancedRag — after `mipro.CompileAsync(...)` call, add:
+```csharp
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
+```
+
+Fix for AdvancedOptimizers — after `miproSmac.CompileAsync(...)`, before the final eval call, add:
+```csharp
+Console.WriteLine("  Cooling down before final evaluation...");
+await Task.Delay(TimeSpan.FromSeconds(30));
+```
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `fix(samples): add rate-limit cooldowns to AdvancedRag and AdvancedOptimizers samples`.
+
+---
+
+### Task 10.8: AdvancedRag — CragConfidence enum (LMP-idiomatic) ❌
+
+**Files:**
+- `samples/LMP.Samples.AdvancedRag/Types.cs`
+- `samples/LMP.Samples.AdvancedRag/AdvancedRagModule.cs`
+
+Current code in `CragOutput` uses `string Confidence`. In `AdvancedRagModule.cs`, the validator
+uses case-sensitive string pattern matching (`x.Confidence is "correct" or "ambiguous" or "incorrect"`).
+If the LLM returns "Correct" (capitalized), validation fails and wastes a retry.
+
+LMP natively supports C# enums via `JsonStringEnumConverter` emitted by the source generator.
+This is the idiomatic way to constrain string outputs — equivalent to DSPy's `typing.Literal`.
+
+Fix:
+1. In `Types.cs`, add:
+   ```csharp
+   /// <summary>CRAG confidence level for retrieved context sufficiency.</summary>
+   public enum CragConfidence { Correct, Ambiguous, Incorrect }
+   ```
+2. In `Types.cs`, change `CragOutput.Confidence` from `string` to `CragConfidence`:
+   ```csharp
+   [Description("Whether the retrieved context is sufficient: Correct, Ambiguous, or Incorrect")]
+   public required CragConfidence Confidence { get; init; }
+   ```
+   Remove the old `[Description]` that lists the string literals — the enum values are self-describing.
+3. In `AdvancedRagModule.cs`, update the validator:
+   - Remove string-matching validator entirely (enum constraint in JSON Schema handles it)
+   - Or simplify to: no `validate:` needed since source gen enforces the enum type
+4. Update ForwardAsync logic to use enum comparisons:
+   - `if (crag.Confidence == CragConfidence.Correct) break;`
+   - `if (crag.Confidence == CragConfidence.Incorrect) { ... }`
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `refactor(samples): use CragConfidence enum in AdvancedRag (LMP-idiomatic)`.
+
+---
+
+### Task 10.9: Add null guards to benchmark sample metrics + increase AdvancedRag reranker retries ❌
+
+**Files:**
+- `samples/LMP.Samples.IntentClassification/Program.cs`
+- `samples/LMP.Samples.MathReasoning/Program.cs`
+- `samples/LMP.Samples.AdvancedRag/Program.cs`
+- `samples/LMP.Samples.AdvancedRag/AdvancedRagModule.cs`
+
+**Metric null guards:** If a module's `ForwardAsync` exhausts all retries and the output record
+is null (possible for class types when deserialization produces default), calling the metric on null
+throws NRE. Add defensive null check at the top of each metric:
+
+- IntentClassification `exactMatch` (line ~86): `if (predicted is null) return false;`
+- MathReasoning `exactMatch` (line ~86): `if (predicted is null) return false;`
+- AdvancedRag `answerMetric` (line ~105): `if (predicted is null || string.IsNullOrWhiteSpace(predicted.Answer)) return 0f;`
+  (The current code calls `predicted.Answer.Split(...)` unconditionally — crashes on null predicted)
+
+**AdvancedRag reranker maxRetries:** In `AdvancedRagModule.cs`, the reranker uses `maxRetries: 1`
+(line 95). The relevance score 0-10 range validation can fail on a first malformed response.
+A single retry leaves no margin. Change `maxRetries: 1` to `maxRetries: 2`.
+
+**Completion:** `dotnet build --no-restore && dotnet test` pass. Commit with `fix(samples): add metric null guards and increase reranker retries in benchmark samples`.
+
+---
+
+### Task 10.10: Run all 4 benchmark samples end-to-end and verify improvement ❌
+
+**Prerequisite:** All tasks 10.1–10.9 must be complete and committed.
+
+Run each benchmark sample and verify it completes successfully, showing improvement over baseline.
+User secrets for Azure OpenAI are already configured on this machine.
+
+**Run each sample from the repo root:**
+
+```powershell
+dotnet run --project samples/LMP.Samples.IntentClassification
+dotnet run --project samples/LMP.Samples.MathReasoning
+dotnet run --project samples/LMP.Samples.AdvancedRag
+dotnet run --project samples/LMP.Samples.FacilitySupport
+```
+
+**For each sample, verify:**
+1. Completes without exceptions or unhandled errors
+2. Final score (optimized) > baseline score (meaning optimization actually helped)
+3. No `429 Too Many Requests` / rate-limit failures that produce chains of 0.0 scores
+4. Progress output looks reasonable (no NaN scores, no "frontier= 0" in GEPA)
+
+**FacilitySupport is already known-good (51%→63%). Run it last as a sanity check.**
+
+**If any sample fails:**
+- Rate-limit failures → increase cooldown durations or further reduce maxConcurrency
+- Score regression (optimized < baseline) → investigate and fix, then re-run
+- Build/runtime error → fix the error, recommit, then re-run
+
+**After all 4 samples run successfully**, document results in this plan:
+```
+IntentClassification: baseline=X%, BRS=Y%, MIPROv2=Z%
+MathReasoning:        baseline=X%, BRS=Y%, MIPROv2=Z%
+AdvancedRag:          baseline=X%, multiHop=Y%, MIPROv2=Z%
+FacilitySupport:      baseline=X%, GEPA=Y%
+```
+
+**Completion:** All 4 samples run to completion showing improvement. Update ❌ to ✅.
+Commit with `chore: verify all 4 benchmark samples run successfully`.
+
+---
+
+### Phase 10 Exit Criteria
+
+All tasks 10.1–10.10 complete. `dotnet build --no-restore && dotnet test` passes with 0 errors,
+0 warnings. All 4 benchmark samples verified running with improvement. Branch is ready to merge.
