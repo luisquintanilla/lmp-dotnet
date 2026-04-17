@@ -105,8 +105,10 @@ internal sealed class ParetoFrontier<TModule> where TModule : LmpModule
     /// <summary>
     /// Selects two parents from the frontier for the merge (crossover) operation.
     /// Prefers diverse parents: picks one at random, then picks the most different one.
+    /// Returns both parents along with their aggregate training scores, which are used
+    /// for per-predictor weighted crossover in <see cref="GEPA"/>.
     /// </summary>
-    public (TModule Parent1, TModule Parent2) SelectParents(Random rng)
+    public (TModule Parent1, float AggScore1, TModule Parent2, float AggScore2) SelectParents(Random rng)
     {
         if (_frontierIndices.Count < 2)
             throw new InvalidOperationException("Need at least 2 candidates for parent selection.");
@@ -130,7 +132,9 @@ internal sealed class ParetoFrontier<TModule> where TModule : LmpModule
             }
         }
 
-        return (_candidates[idx1].Candidate, _candidates[idx2].Candidate);
+        float agg1 = _candidates[idx1].Scores.Average(s => s.Score);
+        float agg2 = _candidates[idx2].Scores.Average(s => s.Score);
+        return (_candidates[idx1].Candidate, agg1, _candidates[idx2].Candidate, agg2);
     }
 
     /// <summary>

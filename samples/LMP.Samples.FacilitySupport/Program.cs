@@ -139,7 +139,7 @@ Console.WriteLine();
 var gepaProgress = new Progress<GEPAProgressReport>(r =>
 {
     string status = r.IterationType == GEPAIterationType.Merge
-        ? "MERGE"
+        ? (r.Passed == true ? "MERGE" : "mskip")
         : r.Passed == true ? "PASS " : "skip ";
     Console.WriteLine($"  iter {r.Iteration,2}/{r.TotalIterations} [{status}]  frontier={r.FrontierSize,2}  best={r.BestScore:P1}");
 });

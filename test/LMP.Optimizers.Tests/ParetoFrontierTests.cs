@@ -146,7 +146,7 @@ public sealed class ParetoFrontierTests
         frontier.Add(m1, [Score(0.9f), Score(0.3f)]);
         frontier.Add(m2, [Score(0.3f), Score(0.9f)]);
 
-        var (p1, p2) = frontier.SelectParents(new Random(42));
+        var (p1, _, p2, _) = frontier.SelectParents(new Random(42));
         Assert.NotSame(p1, p2);
     }
 

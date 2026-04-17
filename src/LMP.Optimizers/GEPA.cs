@@ -109,20 +109,33 @@ public sealed class GEPA : IOptimizer
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            TModule candidate;
             if (iter % _mergeEvery == 0 && iter > 0 && frontier.Count >= 2)
             {
-                // Merge: evidence-based crossover from two frontier parents
-                candidate = await MergeAsync(frontier, trainSet, metric, rng, cancellationToken);
+                // Merge: per-predictor crossover of two Pareto-optimal parents
+                var (mergeCandidate, p1MiniBatch, p2MiniBatch, mergeMiniBatch) =
+                    await MergeAsync(frontier, trainSet, metric, rng, cancellationToken);
 
-                // Always evaluate merge candidates on full set (no gate check for merges)
-                var mergeScores = await EvaluateOnFullSet(candidate, trainSet, metric, cancellationToken, _maxConcurrency);
-                frontier.Add(candidate, mergeScores);
+                // Gate check: merge must not be worse than both parents on the same mini-batch
+                float mergeMiniBatchScore = await EvaluateMiniBatchScore(
+                    mergeCandidate, mergeMiniBatch, metric, cancellationToken);
+
+                if (mergeMiniBatchScore < Math.Max(p1MiniBatch, p2MiniBatch))
+                {
+                    _progress?.Report(new GEPAProgressReport(
+                        iter + 1, _maxIterations, frontier.Count,
+                        frontier.ParetoFrontScore,
+                        GEPAIterationType.Merge, false));
+                    continue;
+                }
+
+                // Passed gate: evaluate on the full set and add to frontier
+                var mergeScores = await EvaluateOnFullSet(mergeCandidate, trainSet, metric, cancellationToken, _maxConcurrency);
+                frontier.Add(mergeCandidate, mergeScores);
 
                 _progress?.Report(new GEPAProgressReport(
                     iter + 1, _maxIterations, frontier.Count,
-                    frontier.Best is null ? 0f : mergeScores.Average(s => s.Score),
-                    GEPAIterationType.Merge, null));
+                    frontier.ParetoFrontScore,
+                    GEPAIterationType.Merge, true));
             }
             else
             {
@@ -335,11 +348,14 @@ public sealed class GEPA : IOptimizer
     }
 
     /// <summary>
-    /// Evidence-based merge: combine instructions from two Pareto-optimal parents.
-    /// For each predictor, evaluate both parents on a shared mini-batch and pick
-    /// the instruction from whichever parent scored better.
+    /// Per-predictor crossover: combine instructions from two Pareto-optimal parents.
+    /// For each predictor independently, selects the instruction via weighted random
+    /// using each parent's aggregate training score as the weight. This allows combining
+    /// a strong urgency instruction from one lineage with a strong sentiment instruction
+    /// from another. Returns the merge candidate along with both parents' mini-batch scores
+    /// and the mini-batch used, so the caller can apply a gate check.
     /// </summary>
-    private async Task<TModule> MergeAsync<TModule>(
+    private async Task<(TModule Candidate, float P1MiniBatchScore, float P2MiniBatchScore, List<Example> MiniBatch)> MergeAsync<TModule>(
         ParetoFrontier<TModule> frontier,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
@@ -347,35 +363,34 @@ public sealed class GEPA : IOptimizer
         CancellationToken cancellationToken)
         where TModule : LmpModule
     {
-        var (parent1, parent2) = frontier.SelectParents(rng);
+        var (parent1, aggScore1, parent2, aggScore2) = frontier.SelectParents(rng);
         var child = parent1.Clone<TModule>();
 
-        // Evaluate both parents on the same mini-batch
+        // Evaluate both parents on the same mini-batch (used for gate check by caller)
         var miniBatch = SampleMiniBatch(trainSet, rng);
-        float score1 = await EvaluateMiniBatchScore(parent1, miniBatch, metric, cancellationToken);
-        float score2 = await EvaluateMiniBatchScore(parent2, miniBatch, metric, cancellationToken);
+        float p1Score = await EvaluateMiniBatchScore(parent1, miniBatch, metric, cancellationToken);
+        float p2Score = await EvaluateMiniBatchScore(parent2, miniBatch, metric, cancellationToken);
 
-        // Pick instructions from the better-scoring parent for each predictor
-        var betterParent = score1 >= score2 ? parent1 : parent2;
-        var worseParent = score1 >= score2 ? parent2 : parent1;
+        // Per-predictor weighted random crossover using aggregate training scores.
+        // P(parent1 wins predictor i) = aggScore1 / (aggScore1 + aggScore2)
+        float totalAgg = aggScore1 + aggScore2;
+        double p1Weight = totalAgg > 0f ? (double)aggScore1 / totalAgg : 0.5;
 
-        var betterPredictors = betterParent.GetPredictors().ToDictionary(p => p.Name, p => p.Predictor);
-        var worsePredictors = worseParent.GetPredictors().ToDictionary(p => p.Name, p => p.Predictor);
+        var p2Predictors = parent2.GetPredictors().ToDictionary(p => p.Name, p => p.Predictor);
 
         foreach (var (name, childPredictor) in child.GetPredictors())
         {
-            if (betterPredictors.TryGetValue(name, out var better))
-            {
-                // Default to the better parent's instruction, with 20% chance of using the other
-                // parent's instruction (to maintain diversity)
-                if (rng.NextDouble() < 0.2 && worsePredictors.TryGetValue(name, out var worse))
-                    childPredictor.Instructions = worse.Instructions;
-                else
-                    childPredictor.Instructions = better.Instructions;
-            }
+            if (!p2Predictors.TryGetValue(name, out var pred2)) continue;
+
+            // If both parents have identical instructions, no crossover needed
+            if (childPredictor.Instructions == pred2.Instructions) continue;
+
+            // Weighted random: assign this predictor's instruction from parent2 based on its weight
+            if (rng.NextDouble() >= p1Weight)
+                childPredictor.Instructions = pred2.Instructions;
         }
 
-        return child;
+        return (child, p1Score, p2Score, miniBatch);
     }
 
     /// <summary>
@@ -498,7 +513,10 @@ public sealed class GEPA : IOptimizer
 /// <param name="FrontierSize">Number of candidates currently in the Pareto frontier.</param>
 /// <param name="BestScore">Average score of the best candidate so far.</param>
 /// <param name="IterationType">Whether this iteration was a mutation or merge.</param>
-/// <param name="Passed">Whether the iteration's gate check passed (null for merges).</param>
+/// <param name="Passed">
+/// Whether the gate check passed (<see langword="true"/> = accepted and added to frontier;
+/// <see langword="false"/> = rejected/skipped). Always non-null for both mutation and merge iterations.
+/// </param>
 public sealed record GEPAProgressReport(
     int Iteration,
     int TotalIterations,
