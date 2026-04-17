@@ -5,7 +5,7 @@
 | **Technique** | GEPA evolutionary optimization with LLM reflection |
 | **Difficulty** | Advanced |
 | **Dataset** | FacilitySupportAnalyzer (Meta, public) |
-| **Expected improvement** | ~75% → ~85-87% (+10-12pp combined) |
+| **Expected improvement** | ~51% → ~63% (+11pp combined, gpt-4o-mini) |
 
 ## What You'll Learn
 
@@ -191,62 +191,50 @@ The combined metric is the arithmetic mean of three exact-match sub-scores. This
 ║   GEPA Evolutionary Optimization (3 sub-tasks)        ║
 ╚══════════════════════════════════════════════════════╝
 
-  Loaded 66 training examples, 66 dev examples
+  Loaded 100 training examples, 100 dev examples
 
 Step 1: Baseline Evaluation
 ───────────────────────────
-  Combined Score: 75.0%
-    Urgency:    52/66 (78.8%)
-    Sentiment:  48/66 (72.7%)
-    Category:   49/66 (74.2%)
+  Combined Score: 51.3%
+    Urgency:    48/100 (48.0%)
+    Sentiment:  41/100 (41.0%)
+    Category:   65/100 (65.0%)
 
 Step 3: GEPA Evolutionary Optimization
 ──────────────────────────────────────
-  Combined Score: 86.0%
-    Urgency:    60/66 (90.9%)
-    Sentiment:  54/66 (81.8%)
-    Category:   56/66 (84.8%)
+  iter  5/30 [PASS ]  frontier= 2  best=62.7%
+  ...
+  iter 28/30 [PASS ]  frontier=12  best=70.7%
+  Cooling down before final evaluation...
+  Combined Score: 63.0%
+    Urgency:    83/100 (83.0%)
+    Sentiment:  45/100 (45.0%)
+    Category:   61/100 (61.0%)
 
 ╔══════════════════════════════════════════════════════╗
 ║   Results — FacilitySupportAnalyzer                   ║
 ╠══════════════════════════════════════════════════════╣
-║   Baseline (no opt):     75.0%                    ║
-║   GEPA (evolutionary):   86.0%                    ║
+║   Baseline (no opt):      51.3%                    ║
+║   GEPA (evolutionary):    63.0%                    ║
 ╚══════════════════════════════════════════════════════╝
 ```
 
-*Exact numbers will vary by model and dataset.*
+*Numbers above are from a real run with Azure OpenAI gpt-4o-mini (100 train / 100 dev).*  
+*DSPy tutorial (stronger model, 66 train/dev) reports 72% → 86%; the +10-12pp improvement magnitude is consistent.*
 
 ## Observed Results (gpt-4o-mini, 100 train / 100 dev)
 
-> **Important:** The "Expected Output" section above shows idealized numbers.
-> Actual results with enum types show improved baseline accuracy.
-
-In testing with Azure OpenAI gpt-4o-mini on 100 training + 100 dev FacilitySupport:
-
 | Configuration | Observed Score | Notes |
 |--------------|---------------|-------|
-| Baseline (no opt) | ~52.3% | Urgency 47%, Sentiment 43%, Category 67% |
-| GEPA (evolutionary) | Pending re-test | Bug fix applied — see below |
+| Baseline (no opt) | **51.3%** | Urgency 48%, Sentiment 41%, Category 65% |
+| GEPA (30 iters) | **63.0% (+11.7pp)** | Urgency 83% (+35pp!), Sentiment 45%, Category 61% |
 
-The baseline improved from ~23.3% to ~52.3% after adding C# enum types (commit `712db8c`),
-demonstrating the value of constrained output over free-form string prediction.
+GEPA evolved instructions for 2/3 predictors over 30 iterations:
+- **urgency**: `"Classify the urgency level … based on the immediacy and potential impact of the issues described"` (+35pp)
+- **sentiment**: `"Classify the sentiment … focusing on expressions of positivity, negativity, or neutrality"` (+4pp)
+- **category**: unchanged — round-robin iterations targeting category didn't pass the gate check
 
-### Bug Fix: GEPA 0% with SerializerOptions (commit `506a0e0`)
-
-GEPA was producing 0% on all examples due to a missing `TypeInfoResolver` in the
-source-generated `JsonSerializerOptions`. The root cause:
-
-1. **Baseline worked** (52.3%) because `SerializerOptions` was `null` — MEAI used
-   `AIJsonUtilities.DefaultOptions` which has a proper `TypeInfoResolver`
-2. **GEPA failed** (0%) because `GetPredictors()` sets `SerializerOptions` to the
-   generated options. MEAI's `GetResponseAsync<T>` calls `MakeReadOnly()` on these
-   options, which in .NET 10 **requires** an explicit `TypeInfoResolver`
-3. The `InvalidOperationException` was silently caught by GEPA's catch-all handlers,
-   causing all predictions to fail with no visible error
-
-**Fix:** Added `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` to all 3
-source-gen emitters (ModuleJsonContext, JsonContext, ChainOfThought).
+The urgency improvement (+35pp) is striking: the reflection LLM correctly identified that the default instruction wasn't distinguishing severity levels, and the mutated instruction explicitly calls for impact-based classification.
 
 ### C# Enum Types (Constrained Output)
 
@@ -277,8 +265,10 @@ prompt-level hints + validation + retry.
   iterations is minimal; production use should target 500+ examples
 - **Category accuracy is hardest** — 10 categories with semantically overlapping labels
   (e.g., "Routine Maintenance" vs "Facility Management") is inherently challenging
-- **GEPA needs re-testing** — after the TypeInfoResolver fix, GEPA should produce
-  meaningful optimization results; the 0% score was a framework bug, not an optimizer issue
+- **Rate limits during long runs** — GEPA makes ~1000+ API calls over 30 iterations.
+  The sample uses `maxConcurrency: 1` and a 30s cooldown before the final eval to avoid
+  Azure rate-limit cascades. If you see many failures, reduce your deployment's concurrency
+  or increase the cooldown delay in `Program.cs`.
 
 ## Key Takeaways
 
