@@ -1,6 +1,7 @@
 using System.Collections;
 using LMP.Optimizers;
 using Microsoft.Extensions.AI;
+#pragma warning disable CS0618 // tests obsolete ISampler interface intentionally
 namespace LMP.Tests;
 
 public class MIPROv2Tests

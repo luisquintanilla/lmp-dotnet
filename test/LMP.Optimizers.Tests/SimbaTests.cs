@@ -1,3 +1,4 @@
+using System.Collections;
 using LMP.Optimizers;
 using Microsoft.Extensions.AI;
 
@@ -61,7 +62,7 @@ public sealed class SimbaTests
 
         await simba.OptimizeAsync(ctx);
 
-        Assert.Empty(ctx.TrialHistory);
+        Assert.Equal(0, ctx.TrialHistory.Count);
         Assert.Equal(originalInstruction, module.GetPredictors().First().Predictor.Instructions);
     }
 
@@ -77,7 +78,7 @@ public sealed class SimbaTests
 
         await simba.OptimizeAsync(ctx);
 
-        Assert.Empty(ctx.TrialHistory);
+        Assert.Equal(0, ctx.TrialHistory.Count);
     }
 
     // ── Optimization Behavior ───────────────────────────────────
@@ -101,8 +102,8 @@ public sealed class SimbaTests
 
         // One trial logged per iteration.
         Assert.Equal(4, ctx.TrialHistory.Count);
-        Assert.All(ctx.TrialHistory, t => Assert.InRange(t.Score, 0f, 1f));
-        Assert.All(ctx.TrialHistory, t => Assert.Contains("SIMBA iter", t.Notes));
+        Assert.All(ctx.TrialHistory.Trials, t => Assert.InRange(t.Score, 0f, 1f));
+        Assert.All(ctx.TrialHistory.Trials, t => Assert.Contains("SIMBA iter", t.Notes));
     }
 
     [Fact]
@@ -150,7 +151,7 @@ public sealed class SimbaTests
 
         await simba.OptimizeAsync(ctx);
 
-        Assert.Single(ctx.TrialHistory);
+        Assert.Equal(1, ctx.TrialHistory.Count);
     }
 
     [Fact]
@@ -187,7 +188,7 @@ public sealed class SimbaTests
 
         var ctx = OptimizationContext.For(ModuleTarget.For(module), trainSet, (_, _) => 0.5f);
 
-        await Assert.ThrowsAsync<OperationCanceledException>(
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => simba.OptimizeAsync(ctx, cts.Token));
     }
 

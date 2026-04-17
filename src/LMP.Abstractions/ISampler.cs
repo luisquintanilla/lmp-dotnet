@@ -12,6 +12,11 @@ namespace LMP;
 /// proposes a configuration by selecting one choice index per parameter, then
 /// receives feedback via <see cref="Update"/> after evaluation.
 /// </remarks>
+[Obsolete(
+    "ISampler is limited to categorical parameters. Use ISearchStrategy with TypedParameterSpace " +
+    "for typed parameter spaces (Continuous, Integer, Subset, StringValued). " +
+    "Existing ISampler implementations are bridged by LegacyCategoricalAdapter in LMP.Optimizers. " +
+    "All built-in samplers implement both interfaces for backward compatibility.")]
 public interface ISampler
 {
     /// <summary>

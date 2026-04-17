@@ -1,5 +1,6 @@
 using System.Numerics.Tensors;
 
+#pragma warning disable CS0618 // implements obsolete ISampler intentionally for backward compat
 namespace LMP.Optimizers;
 
 /// <summary>
@@ -7,7 +8,7 @@ namespace LMP.Optimizers;
 /// Maintains frequency-based surrogate models for "good" and "bad" trials,
 /// then proposes configurations that maximize the ratio l(x) / g(x).
 /// </summary>
-public sealed class CategoricalTpeSampler : ISampler
+public sealed class CategoricalTpeSampler : ISampler, ISearchStrategy
 {
     private readonly Dictionary<string, int> _parameterCardinalities;
     private readonly double _gamma;
@@ -169,5 +170,22 @@ public sealed class CategoricalTpeSampler : ISampler
 
         // Fallback (shouldn't reach here due to floating point)
         return cardinality - 1;
+    }
+
+    // ── ISearchStrategy (explicit, thin bridge) ──────────────────────────
+
+    /// <inheritdoc />
+    ParameterAssignment ISearchStrategy.Propose(TypedParameterSpace space)
+    {
+        ArgumentNullException.ThrowIfNull(space);
+        var config = Propose();
+        return ParameterAssignment.FromCategorical(config);
+    }
+
+    /// <inheritdoc />
+    void ISearchStrategy.Update(ParameterAssignment assignment, float score, TrialCost cost)
+    {
+        var config = assignment.ToCategoricalDictionary();
+        Update(config, score);
     }
 }

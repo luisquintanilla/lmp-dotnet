@@ -1,3 +1,4 @@
+#pragma warning disable CS0618 // implements obsolete ISampler intentionally for backward compat
 namespace LMP.Optimizers;
 
 /// <summary>
@@ -6,7 +7,7 @@ namespace LMP.Optimizers;
 /// then selects configurations that maximize Expected Improvement (EI).
 /// Algorithm ported from ML.NET AutoML's SmacTuner, adapted for categorical-only spaces.
 /// </summary>
-public sealed class SmacSampler : ISampler
+public sealed class SmacSampler : ISampler, ISearchStrategy
 {
     private readonly Dictionary<string, int> _parameterCardinalities;
     private readonly int _numTrees;
@@ -224,5 +225,22 @@ public sealed class SmacSampler : ISampler
         double y = 1.0 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * NormalPdf(absZ);
 
         return z < 0 ? 1.0 - y : y;
+    }
+
+    // ── ISearchStrategy (explicit, thin bridge) ──────────────────────────
+
+    /// <inheritdoc />
+    ParameterAssignment ISearchStrategy.Propose(TypedParameterSpace space)
+    {
+        ArgumentNullException.ThrowIfNull(space);
+        var config = Propose();
+        return ParameterAssignment.FromCategorical(config);
+    }
+
+    /// <inheritdoc />
+    void ISearchStrategy.Update(ParameterAssignment assignment, float score, TrialCost cost)
+    {
+        var config = assignment.ToCategoricalDictionary();
+        Update(config, score);
     }
 }

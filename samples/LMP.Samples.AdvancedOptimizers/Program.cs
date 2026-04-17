@@ -4,6 +4,7 @@ using LMP;
 using LMP.Optimizers;
 using LMP.Samples.AdvancedOptimizers;
 using Microsoft.Extensions.AI;
+#pragma warning disable CS0618 // uses ISampler — will migrate to ISearchStrategy in Phase D
 using Microsoft.Extensions.Configuration;
 
 // ──────────────────────────────────────────────────────────────

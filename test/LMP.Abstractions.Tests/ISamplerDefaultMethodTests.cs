@@ -1,3 +1,4 @@
+#pragma warning disable CS0618 // tests obsolete ISampler interface intentionally
 namespace LMP.Tests;
 
 public class ISamplerDefaultMethodTests

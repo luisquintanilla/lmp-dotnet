@@ -175,7 +175,7 @@ public sealed class SIMBA : IOptimizer
             // Log the actual iteration score (current full-set score, not just best).
             ctx.TrialHistory.Add(new Trial(
                 Score: currentFullSetScore,
-                Cost: new TrialCost(0, 0, 0, 0, 0),
+                Cost: new TrialCost(0, 0, 0, 0, 1),
                 Notes: $"SIMBA iter {iter + 1}: {(accepted ? "accepted" : "rejected")}"));
 
             ctx.Progress?.Report(new OptimizationProgress(

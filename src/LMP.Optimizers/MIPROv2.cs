@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Microsoft.Extensions.AI;
 
+#pragma warning disable CS0618 // uses ISampler intentionally for backward compat
 namespace LMP.Optimizers;
 
 /// <summary>
@@ -146,6 +147,11 @@ public sealed class MIPROv2 : IOptimizer
                     Notes: "MIPROv2 trial"));
             }
         }
+
+        // Publish the discovered parameter space to the context so downstream pipeline steps
+        // (e.g., Z3Feasibility in Phase E) can see what MIPROv2 searched over.
+        if (_lastCardinalities is { Count: > 0 } && ctx.SearchSpace.IsEmpty)
+            ctx.SearchSpace = TypedParameterSpace.FromCategorical(_lastCardinalities);
     }
 
     /// <summary>
