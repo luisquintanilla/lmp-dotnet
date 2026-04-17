@@ -10,6 +10,7 @@ public sealed class BootstrapRandomSearch : IOptimizer
     private readonly int _maxDemos;
     private readonly float _metricThreshold;
     private readonly int? _seed;
+    private readonly int _maxConcurrency;
 
     /// <summary>
     /// Creates a new BootstrapRandomSearch optimizer.
@@ -18,6 +19,10 @@ public sealed class BootstrapRandomSearch : IOptimizer
     /// <param name="maxDemos">Maximum number of demos per predictor in each trial. Default is 4.</param>
     /// <param name="metricThreshold">Minimum metric score for a trace to be used as a demo. Default is 1.0.</param>
     /// <param name="seed">Optional random seed for deterministic splitting and shuffling.</param>
+    /// <param name="maxConcurrency">
+    /// Maximum number of examples evaluated concurrently when scoring each trial candidate.
+    /// Lower values reduce API rate-limit pressure. Default is 4.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="numTrials"/> is less than 1 or <paramref name="maxDemos"/> is less than 1.
     /// </exception>
@@ -25,15 +30,18 @@ public sealed class BootstrapRandomSearch : IOptimizer
         int numTrials = 8,
         int maxDemos = 4,
         float metricThreshold = 1.0f,
-        int? seed = null)
+        int? seed = null,
+        int maxConcurrency = 4)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(numTrials, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxDemos, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
 
         _numTrials = numTrials;
         _maxDemos = maxDemos;
         _metricThreshold = metricThreshold;
         _seed = seed;
+        _maxConcurrency = maxConcurrency;
     }
 
     /// <summary>
@@ -88,6 +96,7 @@ public sealed class BootstrapRandomSearch : IOptimizer
         // Evaluate all candidates on validation set in parallel
         var evaluationTasks = candidates.Select(candidate =>
             Evaluator.EvaluateAsync(candidate, valSplit, metric,
+                maxConcurrency: _maxConcurrency,
                 cancellationToken: cancellationToken));
         var results = await Task.WhenAll(evaluationTasks);
 
