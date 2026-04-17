@@ -132,6 +132,20 @@ public sealed class MIPROv2 : IOptimizer
 
         if (!ReferenceEquals(best, module))
             ctx.Target.ApplyState(TargetState.From(best.GetState()));
+
+        // Propagate per-trial results to the shared TrialHistory so the pipeline budget gate
+        // and post-run analysis tools (TraceAnalyzer) can see MIPROv2's search history.
+        // Guard against stale data from a prior run on an empty train set.
+        if (ctx.TrainSet.Count > 0 && _lastTrialHistory is { Count: > 0 })
+        {
+            foreach (var t in _lastTrialHistory)
+            {
+                ctx.TrialHistory.Add(new Trial(
+                    Score: t.Score,
+                    Cost: t.Cost ?? new TrialCost(0, 0, 0, 0, 0),
+                    Notes: "MIPROv2 trial"));
+            }
+        }
     }
 
     /// <summary>
