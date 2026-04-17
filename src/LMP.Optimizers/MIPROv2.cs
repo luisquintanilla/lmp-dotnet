@@ -395,6 +395,13 @@ public sealed class MIPROv2 : IOptimizer
         {
             var subsets = new List<List<(object Input, object Output)>>();
 
+            // Always include zero-shot (empty demos) as the first option.
+            // This lets the optimizer choose "no demos" when that outperforms few-shot —
+            // which matters for tasks where the base model is already strong or where
+            // bootstrapped demos don't generalize well to the validation split.
+            // This mirrors DSPy's MIPROv2 behavior.
+            subsets.Add([]);
+
             if (demoPool.TryGetValue(name, out var pool) && pool.Count > 0)
             {
                 for (int i = 0; i < _numDemoSubsets; i++)
@@ -412,11 +419,6 @@ public sealed class MIPROv2 : IOptimizer
                         .ToList();
                     subsets.Add(subset);
                 }
-            }
-            else
-            {
-                // No demos available: create one empty subset so the search space is valid
-                subsets.Add([]);
             }
 
             result[name] = subsets;

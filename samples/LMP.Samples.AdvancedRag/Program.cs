@@ -174,10 +174,21 @@ var mipro = new MIPROv2(
     seed: 42,
     maxConcurrency: 2);
 
-// Cap to 30 training examples to reduce rate-limit pressure (as in MathReasoning).
-// Bootstrap still finds enough demos (30 × ~35% success rate ≈ 10 demos across 4 predictors).
-var trainForOpt = trainSet.Take(30).ToList();
+// Cap to 50 training examples: 80/20 split gives 40 bootstrap + 10 validation examples for
+// Phase 3 trial scoring. More signal than Take(30) (which yielded only 6 validation examples —
+// essentially random selection). Fewer calls than the full 100-example set.
+var trainForOpt = trainSet.Take(50).ToList();
 Console.WriteLine($"  Using {trainForOpt.Count} examples for optimization");
+
+// Seed the answer predictor with a flexible instruction before MIPROv2.
+// This guides Phase 2 proposals toward non-restrictive variants: the LLM is less likely to
+// generate "only use context" instructions when the base instruction already says "supplement
+// with knowledge when needed." The optimizer can still override this with any candidate.
+foreach (var (name, pred) in optModule.GetPredictors())
+{
+    if (name == "answer")
+        pred.Instructions = "Answer the question using the retrieved context as your primary source. When the context is insufficient, draw on your broader knowledge to provide a helpful response.";
+}
 Console.WriteLine();
 
 var optimized = await mipro.CompileAsync(optModule, trainForOpt, untypedMetric);
