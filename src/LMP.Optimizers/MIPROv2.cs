@@ -22,6 +22,7 @@ public sealed class MIPROv2 : IOptimizer
     private readonly float _metricThreshold;
     private readonly double _gamma;
     private readonly int? _seed;
+    private readonly int _maxConcurrency;
 
     /// <summary>
     /// Creates a new MIPROv2 optimizer.
@@ -50,6 +51,10 @@ public sealed class MIPROv2 : IOptimizer
     /// Only used when <paramref name="samplerFactory"/> is null.
     /// </param>
     /// <param name="seed">Optional random seed for reproducibility.</param>
+    /// <param name="maxConcurrency">
+    /// Maximum number of concurrent evaluation tasks during Phase 3 trial evaluation.
+    /// Lower values reduce API rate-limit pressure. Default is 4.
+    /// </param>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="proposalClient"/> is null.
     /// </exception>
@@ -58,6 +63,7 @@ public sealed class MIPROv2 : IOptimizer
     /// <paramref name="numInstructionCandidates"/> is less than 1,
     /// <paramref name="numDemoSubsets"/> is less than 1,
     /// <paramref name="maxDemos"/> is less than 1,
+    /// <paramref name="maxConcurrency"/> is less than 1,
     /// or <paramref name="gamma"/> is not in (0, 1).
     /// </exception>
     public MIPROv2(
@@ -69,13 +75,15 @@ public sealed class MIPROv2 : IOptimizer
         int maxDemos = 4,
         float metricThreshold = 1.0f,
         double gamma = 0.25,
-        int? seed = null)
+        int? seed = null,
+        int maxConcurrency = 4)
     {
         ArgumentNullException.ThrowIfNull(proposalClient);
         ArgumentOutOfRangeException.ThrowIfLessThan(numTrials, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(numInstructionCandidates, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(numDemoSubsets, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxDemos, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
         if (gamma is <= 0 or >= 1)
             throw new ArgumentOutOfRangeException(nameof(gamma), gamma, "Gamma must be in (0, 1).");
 
@@ -88,6 +96,7 @@ public sealed class MIPROv2 : IOptimizer
         _metricThreshold = metricThreshold;
         _gamma = gamma;
         _seed = seed;
+        _maxConcurrency = maxConcurrency;
     }
 
     /// <summary>
@@ -201,7 +210,7 @@ public sealed class MIPROv2 : IOptimizer
             candidate.Trace = new Trace();
             var stopwatch = Stopwatch.StartNew();
             var result = await Evaluator.EvaluateAsync(
-                candidate, valSplit, metric, cancellationToken: cancellationToken);
+                candidate, valSplit, metric, maxConcurrency: _maxConcurrency, cancellationToken: cancellationToken);
             stopwatch.Stop();
 
             var trace = candidate.Trace;

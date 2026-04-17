@@ -1355,7 +1355,7 @@ Fix:
 
 ---
 
-### Task 10.4: Add `maxConcurrency` constructor param to MIPROv2 ❌
+### Task 10.4: Add `maxConcurrency` constructor param to MIPROv2 ✅
 
 **File:** `src/LMP.Optimizers/MIPROv2.cs`
 
