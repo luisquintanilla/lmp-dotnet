@@ -59,6 +59,14 @@ public sealed class OptimizationContext
     /// <summary>Reflective observations from GEPA, EvaluationCritique, and similar steps.</summary>
     public ReflectionLog ReflectionLog { get; set; } = ReflectionLog.Empty;
 
+    // ── Multi-turn ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Optional metric for evaluating <see cref="Trajectory"/> output.
+    /// Set this when the pipeline includes multi-turn steps that score at the trajectory level.
+    /// </summary>
+    public ITrajectoryMetric? TrajectoryMetric { get; set; }
+
     // ── Observability ───────────────────────────────────────────────────
 
     /// <summary>Optional activity source for OpenTelemetry spans.</summary>

@@ -47,6 +47,27 @@ public interface IOptimizationTarget
     TService? GetService<TService>() where TService : class;
 
     /// <summary>
+    /// Executes the target for a single input and returns the execution as a
+    /// <see cref="Trajectory"/>. Multi-turn targets should override this to provide
+    /// per-step detail. The default implementation wraps <see cref="ExecuteAsync"/> via
+    /// <see cref="Trajectory.FromTrace(Trace, Example?)"/>, producing a single-turn trajectory.
+    /// </summary>
+    /// <param name="input">The input to execute against the target.</param>
+    /// <param name="source">
+    /// Optional dataset example that triggered this execution; stored on the returned
+    /// <see cref="Trajectory"/> as <see cref="Trajectory.Source"/>.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    async Task<Trajectory> ExecuteTrajectoryAsync(
+        object input,
+        Example? source = null,
+        CancellationToken ct = default)
+    {
+        var (_, trace) = await ExecuteAsync(input, ct);
+        return Trajectory.FromTrace(trace, source);
+    }
+
+    /// <summary>
     /// Writes an optimization artifact (e.g., <c>.g.cs</c>) for this target.
     /// Default implementation is a no-op. Override in <c>ModuleTarget</c>.
     /// </summary>
