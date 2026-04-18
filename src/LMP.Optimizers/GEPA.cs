@@ -92,7 +92,14 @@ public sealed class GEPA : IOptimizer
         // Auto-register StringValued description params for AIFunction tools in the search space
         AddToolDescriptionParams(ctx);
 
-        var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
+        // When trajectory metric is set, sample trajectory observations before evolution.
+        // Trajectory content is added to the reflection log so GEPA's instruction reflection
+        // prompts include multi-turn execution context alongside single-turn failure traces.
+        if (ctx.TrajectoryMetric != null && ctx.TrainSet.Count > 0)
+            await SampleTrajectoryObservationsAsync(ctx, ct).ConfigureAwait(false);
+
+        var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct,
+            trajectoryMetric: ctx.TrajectoryMetric)
             .ConfigureAwait(false);
 
         if (!ReferenceEquals(best, module))
@@ -100,12 +107,19 @@ public sealed class GEPA : IOptimizer
     }
 
     /// <inheritdoc />
+    /// <param name="trajectoryMetric">
+    /// Optional trajectory metric. When set, evaluation loops call
+    /// <see cref="IOptimizationTarget.ExecuteTrajectoryAsync"/> and score with
+    /// <see cref="ITrajectoryMetric.ScoreAsync"/> instead of <paramref name="metric"/>.
+    /// Full-set evaluation runs sequentially in trajectory mode to avoid trace races.
+    /// </param>
     public async Task<TModule> CompileAsync<TModule>(
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
         CompileOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        ITrajectoryMetric? trajectoryMetric = null)
         where TModule : LmpModule
     {
         ArgumentNullException.ThrowIfNull(module);
@@ -123,7 +137,7 @@ public sealed class GEPA : IOptimizer
         float bestIndividualScore = float.MinValue; // Best single-candidate average score seen so far
 
         // Seed the frontier: evaluate initial module on the FULL trainSet (stable valset)
-        var initialScores = await EvaluateOnFullSet(module, trainSet, metric, cancellationToken, _maxConcurrency);
+        var initialScores = await EvaluateOnFullSet(module, trainSet, metric, cancellationToken, _maxConcurrency, trajectoryMetric);
         frontier.Add(module, initialScores);
 
         float baselineAvg = initialScores.Average(s => s.Score);
@@ -137,11 +151,11 @@ public sealed class GEPA : IOptimizer
             {
                 // Merge: per-predictor crossover of two Pareto-optimal parents
                 var (mergeCandidate, p1MiniBatch, p2MiniBatch, mergeMiniBatch) =
-                    await MergeAsync(frontier, trainSet, metric, rng, cancellationToken);
+                    await MergeAsync(frontier, trainSet, metric, rng, cancellationToken, trajectoryMetric);
 
                 // Gate check: merge must not be worse than both parents on the same mini-batch
                 float mergeMiniBatchScore = await EvaluateMiniBatchScore(
-                    mergeCandidate, mergeMiniBatch, metric, cancellationToken);
+                    mergeCandidate, mergeMiniBatch, metric, cancellationToken, trajectoryMetric);
 
                 if (mergeMiniBatchScore < Math.Max(p1MiniBatch, p2MiniBatch))
                 {
@@ -153,7 +167,7 @@ public sealed class GEPA : IOptimizer
                 }
 
                 // Passed gate: evaluate on the full set and add to frontier
-                var mergeScores = await EvaluateOnFullSet(mergeCandidate, trainSet, metric, cancellationToken, _maxConcurrency);
+                var mergeScores = await EvaluateOnFullSet(mergeCandidate, trainSet, metric, cancellationToken, _maxConcurrency, trajectoryMetric);
                 frontier.Add(mergeCandidate, mergeScores);
 
                 var mergeAvg = mergeScores.Average(s => s.Score);
@@ -489,6 +503,53 @@ public sealed class GEPA : IOptimizer
                     ctx.SearchSpace = ctx.SearchSpace.Add(descKey, new StringValued(fn.Description));
             }
         }
+    }
+
+    /// <summary>
+    /// Evaluates a sample of training examples via <see cref="IOptimizationTarget.ExecuteTrajectoryAsync"/>
+    /// and adds trajectory observations to <see cref="OptimizationContext.ReflectionLog"/> and
+    /// <see cref="OptimizationContext.TrialHistory"/> so that GEPA's reflection prompts include
+    /// multi-turn execution context. Called only when
+    /// <see cref="OptimizationContext.TrajectoryMetric"/> is non-null.
+    /// </summary>
+    private async Task SampleTrajectoryObservationsAsync(OptimizationContext ctx, CancellationToken ct)
+    {
+        var rng = _seed.HasValue ? new Random(_seed.Value) : Random.Shared;
+        var sampleSize = Math.Min(5, ctx.TrainSet.Count);
+        var sample = InstructionReflector.SampleMiniBatch(ctx.TrainSet, rng, sampleSize);
+
+        foreach (var example in sample)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var trajectory = await ctx.Target
+                    .ExecuteTrajectoryAsync(example.WithInputs(), source: example, ct: ct)
+                    .ConfigureAwait(false);
+                var score = await ctx.TrajectoryMetric!.ScoreAsync(trajectory, ct).ConfigureAwait(false);
+
+                ctx.TrialHistory.Add(new Trial(
+                    Score: score,
+                    Cost: new TrialCost(0, 0, 0, 0, 0),
+                    Notes: "GEPA:trajectory"));
+
+                if (trajectory.TurnCount > 0 && ctx.ReflectionLog != ReflectionLog.Empty)
+                {
+                    var spanText = string.Join("\n", trajectory.Turns
+                        .Select((t, i) => $"[step {i + 1}] {t.Kind}: {t.Input} → {t.Output}"));
+                    ctx.ReflectionLog.Add(
+                        text: $"Trajectory score={score:F2}: {spanText}",
+                        source: nameof(GEPA),
+                        scope: ReflectionScope.Global,
+                        score: score);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { /* Skip failed trajectory samples silently */ }
+        }
+
+        // Refresh external observations to include any newly-added trajectory entries.
+        _externalObservations = ctx.ReflectionLog.Entries;
     }
 }
 

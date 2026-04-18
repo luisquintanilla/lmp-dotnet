@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phases J + K complete — 1,611 tests passing. L, M pending.
+> **Status:** Phases J + K + L complete — 1,616 tests passing. M pending.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-10
@@ -1906,7 +1906,7 @@ Add these in the generator's semantic analysis pass (alongside existing diagnost
 > - `OptimizationContext.TrajectoryMetric` field exists
 > - `GEPA.OptimizeAsync` and `SIMBA.OptimizeAsync` use `ctx.Target.ExecuteAsync(...)` for scoring — they do NOT currently check `ctx.TrajectoryMetric`
 
-### Task L.1: GEPA trajectory-aware optimization ❌
+### Task L.1: GEPA trajectory-aware optimization ✅
 
 **Goal:** When `ctx.TrajectoryMetric != null`, GEPA should score examples using `ExecuteTrajectoryAsync` and `TrajectoryMetric.Evaluate` instead of `ExecuteAsync` and `ctx.Metric`.
 
@@ -1933,7 +1933,7 @@ Add these in the generator's semantic analysis pass (alongside existing diagnost
 
 ---
 
-### Task L.2: SIMBA trajectory-aware optimization ❌
+### Task L.2: SIMBA trajectory-aware optimization ✅
 
 **Goal:** When `ctx.TrajectoryMetric != null`, SIMBA should score mini-batches using trajectory metric.
 
@@ -1956,7 +1956,7 @@ Add these in the generator's semantic analysis pass (alongside existing diagnost
 
 ---
 
-### Task L.3: AgentThread → Trajectory conversion ❌
+### Task L.3: AgentThread → Trajectory conversion ✅ (stub — AgentThread not available in MEAI 10.4.1)
 
 **Goal:** Provide an extension method to convert `AgentThread` (from `Microsoft.Extensions.AI.Agents`) to a `Trajectory`.
 

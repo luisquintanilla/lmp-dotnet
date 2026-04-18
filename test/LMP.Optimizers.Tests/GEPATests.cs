@@ -204,12 +204,82 @@ public sealed class GEPATests
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => gepa.CompileAsync(module, trainSet, (_, _) => 0.5f, options: CompileOptions.RuntimeOnly, cts.Token));
     }
+
+    // ── Trajectory-Aware Tests (Phase L.1) ─────────────────────
+
+    [Fact]
+    public async Task OptimizeAsync_NoTrajectoryMetric_NoTrajectoryTrials()
+    {
+        var gepa = new GEPA(new FakeReflectionClient(), maxIterations: 2, seed: 42);
+        var module = new GEPATestModule(new FakeTaskClient());
+        var trainSet = Enumerable.Range(0, 3)
+            .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
+                new GEPAOutput($"a{i}")))
+            .ToList();
+        var ctx = OptimizationContext.For(ModuleTarget.For(module), trainSet, (_, _) => 0.5f);
+
+        await gepa.OptimizeAsync(ctx);
+
+        var trajectoryTrials = ctx.TrialHistory.Trials
+            .Where(t => t.Notes?.StartsWith("GEPA:trajectory") == true).ToList();
+        Assert.Empty(trajectoryTrials);
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_WithTrajectoryMetric_AddsTrajectoryTrials()
+    {
+        var gepa = new GEPA(new FakeReflectionClient(), maxIterations: 2, seed: 42);
+        var module = new GEPATestModule(new FakeTaskClient());
+        var trainSet = Enumerable.Range(0, 4)
+            .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
+                new GEPAOutput($"a{i}")))
+            .ToList();
+        var ctx = OptimizationContext.For(ModuleTarget.For(module), trainSet, (_, _) => 0.5f);
+        ctx.TrajectoryMetric = new FakeTrajectoryMetric(0.7f);
+
+        await gepa.OptimizeAsync(ctx);
+
+        var trajectoryTrials = ctx.TrialHistory.Trials
+            .Where(t => t.Notes?.StartsWith("GEPA:trajectory") == true).ToList();
+        Assert.NotEmpty(trajectoryTrials);
+        Assert.All(trajectoryTrials, t => Assert.Equal(0.7f, t.Score));
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_WithTrajectoryMetric_AddsObservationsToReflectionLog()
+    {
+        var gepa = new GEPA(new FakeReflectionClient(), maxIterations: 1, seed: 42);
+        var module = new GEPATestModule(new FakeTaskClient());
+        var trainSet = Enumerable.Range(0, 3)
+            .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
+                new GEPAOutput($"a{i}")))
+            .ToList();
+        var reflectionLog = new ReflectionLog();
+        var ctx = OptimizationContext.For(ModuleTarget.For(module), trainSet, (_, _) => 0.5f);
+        ctx.TrajectoryMetric = new FakeTrajectoryMetric(0.8f);
+        ctx.ReflectionLog = reflectionLog;
+
+        await gepa.OptimizeAsync(ctx);
+
+        // Trajectory observations should have been added to the reflection log.
+        Assert.True(reflectionLog.Count > 0);
+        Assert.Contains(reflectionLog.Entries, e => e.Source == nameof(GEPA));
+    }
 }
 
 // ── Test Infrastructure ─────────────────────────────────────
 
 file record GEPAInput(string Text);
 file record GEPAOutput(string Reply);
+
+/// <summary>
+/// Trajectory metric that always returns a fixed score for testing.
+/// </summary>
+file sealed class FakeTrajectoryMetric(float score) : ITrajectoryMetric
+{
+    public ValueTask<float> ScoreAsync(Trajectory trajectory, CancellationToken ct = default)
+        => ValueTask.FromResult(score);
+}
 
 /// <summary>
 /// Reflection LLM that always proposes "Improved: {original instruction}".

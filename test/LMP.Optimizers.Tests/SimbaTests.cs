@@ -261,6 +261,51 @@ public sealed class SimbaTests
         Assert.NotNull(result);
         Assert.IsAssignableFrom<SimbaTestModule>(result);
     }
+
+    // ── Trajectory-Aware Tests (Phase L.2) ─────────────────────
+
+    [Fact]
+    public async Task OptimizeAsync_NoTrajectoryMetric_NoTrajectoryPath()
+    {
+        // Without trajectory metric, SIMBA should use regular EvaluateScoreAsync path.
+        var simba = new SIMBA(new FakeSimbaReflectionClient(), maxIterations: 2, miniBatchSize: 2, seed: 0);
+        var module = new SimbaTestModule(new FakeSimbaTaskClient());
+        var trainSet = Enumerable.Range(0, 4)
+            .Select(i => (Example)new Example<SimbaInput, SimbaOutput>(new SimbaInput($"q{i}"), new SimbaOutput("expected")))
+            .ToList();
+        var ctx = OptimizationContext.For(ModuleTarget.For(module), trainSet, (_, _) => 0.5f);
+        // No TrajectoryMetric — must not throw or produce trajectory-specific behavior.
+
+        await simba.OptimizeAsync(ctx);
+
+        Assert.Equal(2, ctx.TrialHistory.Count);
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_WithTrajectoryMetric_UsesTrajectoryForBaselineScore()
+    {
+        // Trajectory metric returns 0.9; regular metric returns 0.5.
+        // When trajectory metric is set, SIMBA should use 0.9 as the baseline,
+        // so all TrialHistory entries (which record currentFullSetScore starting from baseline)
+        // should reflect the trajectory score.
+        var simba = new SIMBA(new FakeSimbaReflectionClient(), maxIterations: 2, miniBatchSize: 2, seed: 0);
+        var module = new SimbaTestModule(new FakeSimbaTaskClient());
+        var trainSet = Enumerable.Range(0, 4)
+            .Select(i => (Example)new Example<SimbaInput, SimbaOutput>(new SimbaInput($"q{i}"), new SimbaOutput("expected")))
+            .ToList();
+
+        // Regular metric: 0.5; trajectory metric: 0.9.
+        // Since all candidates will score the same as baseline (no real improvement),
+        // currentFullSetScore stays at 0.9 throughout.
+        var ctx = OptimizationContext.For(ModuleTarget.For(module), trainSet, (_, _) => 0.5f);
+        ctx.TrajectoryMetric = new FakeSimbaTrajectoryMetric(0.9f);
+
+        await simba.OptimizeAsync(ctx);
+
+        // All TrialHistory entries should have score 0.9 (from trajectory baseline path).
+        Assert.True(ctx.TrialHistory.Count > 0);
+        Assert.All(ctx.TrialHistory.Trials, t => Assert.Equal(0.9f, t.Score));
+    }
 }
 
 // ── Test Infrastructure ─────────────────────────────────────
@@ -409,4 +454,13 @@ file sealed class FakeSimbaPredictor : IPredictor
             clone.TypedDemos.Add(demo);
         return clone;
     }
+}
+
+/// <summary>
+/// Trajectory metric that always returns a fixed score for SIMBA tests.
+/// </summary>
+file sealed class FakeSimbaTrajectoryMetric(float score) : ITrajectoryMetric
+{
+    public ValueTask<float> ScoreAsync(Trajectory trajectory, CancellationToken ct = default)
+        => ValueTask.FromResult(score);
 }

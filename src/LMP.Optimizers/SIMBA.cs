@@ -95,7 +95,9 @@ public sealed class SIMBA : IOptimizer
         // Reuse pipeline-computed baseline when available; otherwise evaluate now.
         float baselineScore = ctx.Bag.TryGetValue("baseline", out var b) && b is float f
             ? f
-            : await EvaluateScoreAsync(module, evalSet, ctx.Metric, ct).ConfigureAwait(false);
+            : ctx.TrajectoryMetric != null
+                ? await EvaluateTrajectoryScoreAsync(ctx.Target, evalSet, ctx.TrajectoryMetric, ct).ConfigureAwait(false)
+                : await EvaluateScoreAsync(module, evalSet, ctx.Metric, ct).ConfigureAwait(false);
 
         float bestScore = baselineScore;
         var best = module.Clone();
@@ -162,8 +164,18 @@ public sealed class SIMBA : IOptimizer
                 current = candidate;
 
                 // Lazy full-set re-evaluation: only incur the cost on acceptance.
-                currentFullSetScore = await EvaluateScoreAsync(current, evalSet, ctx.Metric, ct)
-                    .ConfigureAwait(false);
+                if (ctx.TrajectoryMetric != null)
+                {
+                    // Apply the accepted candidate's state to the target before trajectory scoring.
+                    ctx.Target.ApplyState(TargetState.From(current.GetState()));
+                    currentFullSetScore = await EvaluateTrajectoryScoreAsync(
+                        ctx.Target, evalSet, ctx.TrajectoryMetric, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    currentFullSetScore = await EvaluateScoreAsync(current, evalSet, ctx.Metric, ct)
+                        .ConfigureAwait(false);
+                }
 
                 if (currentFullSetScore > bestScore)
                 {
@@ -243,6 +255,42 @@ public sealed class SIMBA : IOptimizer
                     break;
                 }
             }
+        }
+
+        return count > 0 ? total / count : 0f;
+    }
+
+    /// <summary>
+    /// Evaluates a set of examples using <see cref="IOptimizationTarget.ExecuteTrajectoryAsync"/>
+    /// and the provided <see cref="ITrajectoryMetric"/>. Used when
+    /// <see cref="OptimizationContext.TrajectoryMetric"/> is set, replacing the standard
+    /// module-based evaluation path.
+    /// </summary>
+    private static async Task<float> EvaluateTrajectoryScoreAsync(
+        IOptimizationTarget target,
+        IReadOnlyList<Example> evalSet,
+        ITrajectoryMetric metric,
+        CancellationToken ct)
+    {
+        if (evalSet.Count == 0)
+            return 0f;
+
+        float total = 0f;
+        int count = 0;
+
+        foreach (var example in evalSet)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var trajectory = await target
+                    .ExecuteTrajectoryAsync(example.WithInputs(), source: example, ct: ct)
+                    .ConfigureAwait(false);
+                total += await metric.ScoreAsync(trajectory, ct).ConfigureAwait(false);
+                count++;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { count++; /* score 0 for failed examples */ }
         }
 
         return count > 0 ? total / count : 0f;
