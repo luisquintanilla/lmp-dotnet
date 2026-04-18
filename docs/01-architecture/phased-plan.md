@@ -5,6 +5,31 @@
 > **Target:** .NET 10 / C# 14
 >
 > **Audience:** Developers implementing the LMP framework, phase by phase.
+>
+> **Current status:** Phases 1–10 (original) + Phases A–L (unified optimization) — all complete.
+> See [IMPLEMENTATION_PLAN.md](../../IMPLEMENTATION_PLAN.md) for task-level tracking.
+
+---
+
+## Unified Optimization Pipeline — Phases A–L ✅
+
+All phases complete as of the `feat/unified-optimization` branch.
+See [optimization-pipeline.md](optimization-pipeline.md) and [optimization-api.md](../02-specs/optimization-api.md) for API reference.
+
+| Phase | Title | Key Deliverables |
+|-------|-------|-----------------|
+| **A** | Seams | `IOptimizer.OptimizeAsync`, `IOptimizationTarget`, `OptimizationContext`, `OptimizationPipeline`, `LmpPipelines.Auto`, `ModuleTarget`, `DelegateTarget` |
+| **B** | Context-ify Algorithms | `SIMBA`, `InstructionReflector`, refactored `GEPA`, `AutoSampler` |
+| **C** | TypedParameterSpace | `TypedParameterSpace`, `ParameterKind` hierarchy, `ISearchStrategy`, `ISampler [Obsolete]` |
+| **D** | Vertical Targets | `ChatClientTarget`, `DelegateTarget`, `.UseOptimized()` MEAI middleware |
+| **E** | Tools Axis | `[Tool]` attribute, `ToolPoolExtensions`, `Z3FeasibilityOptimizer`, `ReActAgent(IEnumerable<AITool>)` |
+| **F** | Trajectory + Multi-turn | `Turn`, `Trajectory`, `ITrajectoryMetric`, `ExecuteTrajectoryAsync` seam, `OptimizationContext.TrajectoryMetric` |
+| **G** | Skills Axis | `[Skill]` attribute, `SkillManifest`, `ContextualBandit` (Thompson Sampling), source-gen Pipeline 8 |
+| **H** | Cost as Metric | `MetricVector`, `IMetric` upgrade, `ParetoFrontier`, `ReflectionLog`, `EvaluationCritique`, `MultiFidelity`, `ModelSelector` |
+| **I** | Deferred Items | `LmpTraceMiddleware`, `ChainTarget`, `LmpPipelines.ForAxis` |
+| **J** | Calibration Unlock | `BayesianCalibration`, `ContinuousDiscretizer`, `ChatClientBuilder.UseLmpTrace`, wired into `LmpPipelines.Auto(Accuracy/Balanced)` |
+| **K** | Source-gen [Tool] | Source-gen Pipeline 7 (`[Tool]` → `GetTools()`), `GEPA` tool description params, `AddToolDescriptionParams` |
+| **L** | Trajectory Wiring | GEPA trajectory observations → `ReflectionLog`, SIMBA trajectory baseline/acceptance scoring, `AgentThreadExtensions` stub |
 
 ---
 

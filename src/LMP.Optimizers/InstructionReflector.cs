@@ -111,27 +111,40 @@ internal static class InstructionReflector
     /// <summary>
     /// Runs a module on a mini-batch sequentially, capturing per-example traces for
     /// failure diagnosis. Sets a fresh <see cref="Trace"/> before each example to
-    /// ensure trace isolation.
+    /// ensure trace isolation. When <paramref name="trajectoryMetric"/> is provided,
+    /// examples are scored using <see cref="ITrajectoryMetric.ScoreAsync"/> instead of
+    /// <paramref name="metric"/>; traces are still captured for reflection.
     /// </summary>
     internal static async Task<List<(Example Example, object Output, float Score, Trace Trace)>> RunWithTracesAsync(
         LmpModule module,
         IEnumerable<Example> batch,
         Func<Example, object, float> metric,
-        CancellationToken ct)
+        CancellationToken ct,
+        ITrajectoryMetric? trajectoryMetric = null)
     {
         var results = new List<(Example, object, float, Trace)>();
 
         foreach (var example in batch)
         {
-            module.Trace = new Trace();
+            var trace = new Trace();
+            module.Trace = trace;
 
             for (int attempt = 0; attempt < 3; attempt++)
             {
                 try
                 {
                     var output = await module.ForwardAsync(example.WithInputs(), ct).ConfigureAwait(false);
-                    var score = metric(example, output);
-                    results.Add((example, output, score, module.Trace));
+                    float score;
+                    if (trajectoryMetric != null)
+                    {
+                        var traj = Trajectory.FromTrace(trace, example);
+                        score = await trajectoryMetric.ScoreAsync(traj, ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        score = metric(example, output);
+                    }
+                    results.Add((example, output, score, trace));
                     break;
                 }
                 catch (OperationCanceledException) { throw; }
@@ -141,7 +154,7 @@ internal static class InstructionReflector
                 }
                 catch
                 {
-                    results.Add((example, "error", 0f, module.Trace));
+                    results.Add((example, "error", 0f, trace));
                     break;
                 }
             }

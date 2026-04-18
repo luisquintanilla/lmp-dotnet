@@ -1,6 +1,6 @@
 # Unified Optimization Pipeline — Architecture
 
-> **Status:** Design (Phase A–H)
+> **Status:** Complete (Phases A–L)
 > **Prior art:** AutoGluon, FLAML, scikit-learn pipelines, Keras-on-TF, Optuna
 > **Research anchors:** DSPy (Khattab 2023), GEPA (arxiv:2507.19457), SIMBA (DSPy 2025),
 >   MIPROv2 (Opsahl-Ong 2024), FrugalGPT (arxiv:2305.05176), OPRO (Google arxiv:2309.09027)
@@ -118,11 +118,11 @@ external API, or a `Func<TIn, TOut>`. The pipeline doesn't care about the target
 
 | Axis | What's Optimized | Key Algorithms | Status |
 |------|-----------------|----------------|--------|
-| **Instructions** | Prompt text, few-shot demos | BootstrapFewShot, GEPA, MIPROv2, SIMBA | Phase A–B |
-| **Tools** | AITool pool, AIFunction descriptions | Z3Feasibility, MIPROv2, GEPA | Phase E |
-| **Skills** | Skill routing, skill manifests | ContextualBandit, Z3Feasibility | Phase G |
-| **Model + Hyperparameters** | Model selection, temperature | MultiFidelity, RouteLLM, CostAwareSampler | Phase H |
-| **Multi-turn / Agent** | Trajectory quality | SIMBA, GEPA-on-trajectories | Phase F |
+| **Instructions** | Prompt text, few-shot demos | BootstrapFewShot, GEPA, MIPROv2, SIMBA | ✅ Phases A–B |
+| **Tools** | AITool pool, AIFunction descriptions | Z3Feasibility, MIPROv2, GEPA | ✅ Phase E |
+| **Skills** | Skill routing, skill manifests | ContextualBandit, Z3Feasibility | ✅ Phase G |
+| **Model + Hyperparameters** | Model selection, temperature | MultiFidelity, RouteLLM, CostAwareSampler | ✅ Phase H |
+| **Multi-turn / Agent** | Trajectory quality | SIMBA, GEPA-on-trajectories | ✅ Phases F + L |
 
 ---
 

@@ -113,7 +113,7 @@ public sealed class SIMBA : IOptimizer
             // Sample mini-batch and run current with trace capture for reflection.
             var miniBatch = InstructionReflector.SampleMiniBatch(ctx.TrainSet, rng, _miniBatchSize);
             var traceResults = await InstructionReflector.RunWithTracesAsync(
-                current, miniBatch, ctx.Metric, ct).ConfigureAwait(false);
+                current, miniBatch, ctx.Metric, ct, ctx.TrajectoryMetric).ConfigureAwait(false);
 
             float currentMiniBatchScore = traceResults.Count > 0
                 ? traceResults.Average(r => r.Score)
@@ -156,7 +156,7 @@ public sealed class SIMBA : IOptimizer
 
             // Gate check: accept if the candidate scores better on the SAME mini-batch.
             float candidateMiniBatchScore = await EvaluateMiniBatchScoreAsync(
-                candidate, miniBatch, ctx.Metric, ct).ConfigureAwait(false);
+                candidate, miniBatch, ctx.Metric, ct, ctx.TrajectoryMetric).ConfigureAwait(false);
 
             bool accepted = candidateMiniBatchScore > currentMiniBatchScore;
             if (accepted)
@@ -223,7 +223,8 @@ public sealed class SIMBA : IOptimizer
         LmpModule module,
         IEnumerable<Example> batch,
         Func<Example, object, float> metric,
-        CancellationToken ct)
+        CancellationToken ct,
+        ITrajectoryMetric? trajectoryMetric = null)
     {
         float total = 0f;
         int count = 0;
@@ -233,14 +234,23 @@ public sealed class SIMBA : IOptimizer
 
         foreach (var ex in batch)
         {
-            evalModule.Trace = new Trace();
+            var trace = new Trace();
+            evalModule.Trace = trace;
 
             for (int attempt = 0; attempt < 3; attempt++)
             {
                 try
                 {
                     var output = await evalModule.ForwardAsync(ex.WithInputs(), ct).ConfigureAwait(false);
-                    total += metric(ex, output);
+                    if (trajectoryMetric != null)
+                    {
+                        var traj = Trajectory.FromTrace(trace, ex);
+                        total += await trajectoryMetric.ScoreAsync(traj, ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        total += metric(ex, output);
+                    }
                     count++;
                     break;
                 }

@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phases J + K + L complete — 1,616 tests passing. M pending.
+> **Status:** ALL TASKS COMPLETE — Phases A–M done. 1,626 tests passing.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-10
@@ -1996,7 +1996,7 @@ Map `AgentThread` messages to `Turn` instances:
 
 > **Baseline state entering Phase M:** All code phases complete. All tests pass.
 
-### Task M.1: Update architecture documentation ❌
+### Task M.1: Update architecture documentation ✅
 
 **Goal:** Bring the architecture docs up to date with the full unified optimization pipeline (Phases A–J).
 
@@ -2023,7 +2023,7 @@ Map `AgentThread` messages to `Turn` instances:
 
 ---
 
-### Task M.2: Invariant + axis acceptance tests ❌
+### Task M.2: Invariant + axis acceptance tests ✅
 
 **Goal:** Write tests verifying the core acceptance criteria from the plan. Use mock/fake targets and clients (no real LLM calls needed).
 
@@ -2047,7 +2047,7 @@ Tests to write:
 
 ---
 
-### Task M.3: Final — mark ALL TASKS COMPLETE ❌
+### Task M.3: Final — mark ALL TASKS COMPLETE ✅
 
 **Goal:** Verify all phases are complete, run the full test suite, and mark completion.
 

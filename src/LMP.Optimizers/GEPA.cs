@@ -182,12 +182,12 @@ public sealed class GEPA : IOptimizer
             {
                 // Reflective mutation with round-robin component selection
                 var (mutated, parentMiniBatchScore, miniBatch) = await ReflectAndMutate(
-                    frontier, trainSet, metric, rng, componentIndex, cancellationToken);
+                    frontier, trainSet, metric, rng, componentIndex, cancellationToken, trajectoryMetric);
                 componentIndex++;
 
                 // Gate check: evaluate mutated on the SAME mini-batch used for reflection
                 float mutatedMiniBatchScore = await EvaluateMiniBatchScore(
-                    mutated, miniBatch, metric, cancellationToken);
+                    mutated, miniBatch, metric, cancellationToken, trajectoryMetric);
 
                 if (mutatedMiniBatchScore <= parentMiniBatchScore)
                 {
@@ -199,7 +199,7 @@ public sealed class GEPA : IOptimizer
                 }
 
                 // Passed gate: evaluate on the FULL trainSet for Pareto tracking
-                var fullScores = await EvaluateOnFullSet(mutated, trainSet, metric, cancellationToken, _maxConcurrency);
+                var fullScores = await EvaluateOnFullSet(mutated, trainSet, metric, cancellationToken, _maxConcurrency, trajectoryMetric);
                 frontier.Add(mutated, fullScores);
 
                 var fullAvg = fullScores.Average(s => s.Score);
@@ -243,7 +243,8 @@ public sealed class GEPA : IOptimizer
         Func<Example, object, float> metric,
         Random rng,
         int componentIndex,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ITrajectoryMetric? trajectoryMetric = null)
         where TModule : LmpModule
     {
         // Select a parent from the frontier
@@ -256,14 +257,24 @@ public sealed class GEPA : IOptimizer
 
         foreach (var example in miniBatch)
         {
-            candidate.Trace = new Trace();
+            var trace = new Trace();
+            candidate.Trace = trace;
             for (int attempt = 0; attempt < 3; attempt++)
             {
                 try
                 {
                     var output = await candidate.ForwardAsync(example.WithInputs(), cancellationToken);
-                    var score = metric(example, output);
-                    traceResults.Add((example, output, score, candidate.Trace));
+                    float score;
+                    if (trajectoryMetric != null)
+                    {
+                        var traj = Trajectory.FromTrace(trace, example);
+                        score = await trajectoryMetric.ScoreAsync(traj, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        score = metric(example, output);
+                    }
+                    traceResults.Add((example, output, score, trace));
                     break;
                 }
                 catch (OperationCanceledException) { throw; }
@@ -274,7 +285,7 @@ public sealed class GEPA : IOptimizer
                 catch
                 {
                     // Score as 0 for failed examples
-                    traceResults.Add((example, "error", 0f, candidate.Trace));
+                    traceResults.Add((example, "error", 0f, trace));
                     break;
                 }
             }
@@ -303,8 +314,25 @@ public sealed class GEPA : IOptimizer
         {
             try
             {
+                // Build trajectory-derived reflection entries for failed examples (trajectory mode only).
+                // These supplement the predictor-level trace analysis with multi-turn execution context.
+                IReadOnlyList<ReflectionEntry>? trajectoryObs = null;
+                if (trajectoryMetric != null)
+                {
+                    trajectoryObs = failedTraces.Select((r, i) =>
+                    {
+                        var turnSummary = string.Join("; ", Trajectory.FromTrace(r.Trace, r.Example)
+                            .Turns.Select(t => $"[{t.Kind}] {t.Output}"));
+                        return new ReflectionEntry(
+                            Text: $"Failed example {i + 1} (trajectory score {r.Score:F2}): {turnSummary}",
+                            Source: "GEPA.trajectory",
+                            Scope: ReflectionScope.Global,
+                            Score: r.Score);
+                    }).ToList();
+                }
+
                 var newInstruction = await ReflectOnPredictor(
-                    targetName, targetPredictor.Instructions, failedTraces, cancellationToken);
+                    targetName, targetPredictor.Instructions, failedTraces, cancellationToken, trajectoryObs);
 
                 if (!string.IsNullOrWhiteSpace(newInstruction))
                     targetPredictor.Instructions = newInstruction;
@@ -329,10 +357,16 @@ public sealed class GEPA : IOptimizer
         string predictorName,
         string currentInstruction,
         List<(Example Example, object Output, float Score, Trace Trace)> failedTraces,
-        CancellationToken cancellationToken)
-        => InstructionReflector.ReflectAsync(
+        CancellationToken cancellationToken,
+        IReadOnlyList<ReflectionEntry>? trajectoryObservations = null)
+    {
+        IReadOnlyList<ReflectionEntry> observations = trajectoryObservations == null
+            ? _externalObservations
+            : [.. _externalObservations, .. trajectoryObservations];
+        return InstructionReflector.ReflectAsync(
             _reflectionClient, predictorName, currentInstruction, failedTraces,
-            cancellationToken, externalObservations: _externalObservations);
+            cancellationToken, externalObservations: observations);
+    }
 
     /// <summary>
     /// Per-predictor crossover: combine instructions from two Pareto-optimal parents.
@@ -347,7 +381,8 @@ public sealed class GEPA : IOptimizer
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
         Random rng,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ITrajectoryMetric? trajectoryMetric = null)
         where TModule : LmpModule
     {
         var (parent1, aggScore1, parent2, aggScore2) = frontier.SelectParents(rng);
@@ -355,8 +390,8 @@ public sealed class GEPA : IOptimizer
 
         // Evaluate both parents on the same mini-batch (used for gate check by caller)
         var miniBatch = SampleMiniBatch(trainSet, rng);
-        float p1Score = await EvaluateMiniBatchScore(parent1, miniBatch, metric, cancellationToken);
-        float p2Score = await EvaluateMiniBatchScore(parent2, miniBatch, metric, cancellationToken);
+        float p1Score = await EvaluateMiniBatchScore(parent1, miniBatch, metric, cancellationToken, trajectoryMetric);
+        float p2Score = await EvaluateMiniBatchScore(parent2, miniBatch, metric, cancellationToken, trajectoryMetric);
 
         // Per-predictor weighted random crossover using aggregate training scores.
         // P(parent1 wins predictor i) = aggScore1 / (aggScore1 + aggScore2)
@@ -384,18 +419,55 @@ public sealed class GEPA : IOptimizer
     /// Evaluates a module on the FULL training set. Returns per-example scores
     /// in a STABLE order (index i always corresponds to trainSet[i]) for Pareto
     /// frontier tracking. All candidates must be evaluated with this same order.
-    /// Runs examples concurrently for performance.
+    /// Runs examples concurrently for performance (sequential in trajectory mode to avoid
+    /// trace races on the shared module).
     /// </summary>
     private static async Task<IReadOnlyList<ExampleResult>> EvaluateOnFullSet<TModule>(
         TModule module,
         IReadOnlyList<Example> trainSet,
         Func<Example, object, float> metric,
         CancellationToken cancellationToken,
-        int maxConcurrency = 4)
+        int maxConcurrency = 4,
+        ITrajectoryMetric? trajectoryMetric = null)
         where TModule : LmpModule
     {
         var results = new ExampleResult[trainSet.Count];
         var evalModule = module.Clone<TModule>();
+
+        if (trajectoryMetric != null)
+        {
+            // Sequential loop: trajectory scoring requires per-example Trace capture.
+            // Concurrent calls on a shared module would race on evalModule.Trace.
+            for (int i = 0; i < trainSet.Count; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var trace = new Trace();
+                evalModule.Trace = trace;
+
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    try
+                    {
+                        var output = await evalModule.ForwardAsync(trainSet[i].WithInputs(), cancellationToken);
+                        var traj = Trajectory.FromTrace(trace, trainSet[i]);
+                        var score = await trajectoryMetric.ScoreAsync(traj, cancellationToken).ConfigureAwait(false);
+                        results[i] = new ExampleResult(trainSet[i], output, score);
+                        break;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch when (attempt < 2)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), cancellationToken);
+                    }
+                    catch
+                    {
+                        results[i] = new ExampleResult(trainSet[i], "error", 0f);
+                    }
+                }
+            }
+
+            return results;
+        }
 
         // Run concurrently but write results by position to maintain stable order.
         // Multiple concurrent ForwardAsync calls share evalModule.Trace — safe because
@@ -444,7 +516,8 @@ public sealed class GEPA : IOptimizer
         TModule module,
         List<Example> miniBatch,
         Func<Example, object, float> metric,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ITrajectoryMetric? trajectoryMetric = null)
         where TModule : LmpModule
     {
         float totalScore = 0f;
@@ -453,14 +526,23 @@ public sealed class GEPA : IOptimizer
 
         foreach (var example in miniBatch)
         {
-            evalModule.Trace = new Trace();
+            var trace = new Trace();
+            evalModule.Trace = trace;
             bool scored = false;
             for (int attempt = 0; attempt < 3; attempt++)
             {
                 try
                 {
                     var output = await evalModule.ForwardAsync(example.WithInputs(), cancellationToken);
-                    totalScore += metric(example, output);
+                    if (trajectoryMetric != null)
+                    {
+                        var traj = Trajectory.FromTrace(trace, example);
+                        totalScore += await trajectoryMetric.ScoreAsync(traj, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        totalScore += metric(example, output);
+                    }
                     count++;
                     scored = true;
                     break;

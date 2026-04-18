@@ -1,6 +1,6 @@
 # Unified Optimization API — Specification
 
-> **Status:** Design (Phase A–H)
+> **Status:** Complete (Phases A–L)
 > **Packages:** `LMP.Abstractions`, `LMP.Core`, `LMP.Optimizers`
 > **See also:** [optimization-pipeline.md](../01-architecture/optimization-pipeline.md)
 
@@ -308,3 +308,128 @@ public interface IMetric
 | A | `IOptimizer.CompileAsync<TModule>` → `OptimizeAsync(OptimizationContext)` | Extension method `OptimizerExtensions.CompileAsync<TModule>()` preserves call sites |
 | C | `ISampler` → `ISearchStrategy` | `[Obsolete]` + `LegacyCategoricalAdapter` for one version window |
 | E | `ReActAgent(IEnumerable<AIFunction>)` → `IEnumerable<AITool>` | `AIFunction IS-A AITool`; call sites unchanged |
+
+---
+
+## `BayesianCalibration` — Hyperparameter Tuning (Phase J)
+
+```csharp
+// src/LMP.Optimizers/BayesianCalibration.cs
+public sealed class BayesianCalibration : IOptimizer
+{
+    // numRefinements=10, continuousSteps=8, seed=null
+    public BayesianCalibration(
+        int numRefinements = 10,
+        int continuousSteps = 8,
+        int? seed = null) { ... }
+
+    // Safe no-op for ModuleTarget (parameter space is empty)
+    // For ChatClientTarget: temperature, top_p, other continuous/integer params
+    public Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default) { ... }
+}
+```
+
+Key properties:
+- Operates on `ctx.Target.GetParameterSpace()`, NOT `ctx.SearchSpace` (which is owned by GEPA/BFS/MIPROv2)
+- Only Continuous, Integer, Categorical params — skips StringValued and Subset
+- Incumbent protection: confirmation eval on full devSet before accepting candidate
+- TPE over a discretized grid (`ContinuousDiscretizer` converts continuous → categorical indices)
+
+---
+
+## Trajectory API (Phase F + L)
+
+```csharp
+// src/LMP.Abstractions/Trajectory.cs
+public sealed class Trajectory
+{
+    public IReadOnlyList<Turn> Turns { get; }
+    public Example? Source { get; }
+    public int TurnCount { get; }
+
+    // Build from a completed trace (single-turn path)
+    public static Trajectory FromTrace(Trace trace, Example? source = null) { ... }
+}
+
+public sealed record Turn(
+    TurnKind Kind,
+    object? Input,
+    object? Output,
+    UsageDetails? Usage = null,
+    string? Attribution = null);
+
+public enum TurnKind { Message, ToolCall, ToolResult, AgentToAgent, UserToAgent, AgentToUser }
+
+// Trajectory metric
+public interface ITrajectoryMetric
+{
+    ValueTask<float> ScoreAsync(Trajectory trajectory, CancellationToken ct = default);
+}
+
+// OptimizationContext trajectory field
+public sealed class OptimizationContext
+{
+    // ... existing fields ...
+    public ITrajectoryMetric? TrajectoryMetric { get; set; }   // Phase F
+}
+
+// Default seam on IOptimizationTarget
+public interface IOptimizationTarget
+{
+    // Default: calls ExecuteAsync → Trajectory.FromTrace(trace, source)
+    virtual Task<Trajectory> ExecuteTrajectoryAsync(
+        object input, Example? source = null, CancellationToken ct = default) { ... }
+}
+```
+
+When `ctx.TrajectoryMetric` is non-null:
+- **GEPA**: samples up to 5 trajectory observations before evolution; adds to `ReflectionLog`
+- **SIMBA**: uses `EvaluateTrajectoryScoreAsync` for baseline scoring and acceptance re-evaluation
+
+---
+
+## `ChatClientBuilder.UseLmpTrace()` (Phase J)
+
+```csharp
+// LMP.Core — ChatClientOptimizationExtensions
+public static class ChatClientOptimizationExtensions
+{
+    // Adds trace-recording middleware to capture per-call token usage and messages.
+    // Composes naturally with UseFunctionInvocation(), UseLogging(), UseRetry().
+    public static ChatClientBuilder UseLmpTrace(this ChatClientBuilder builder, Trace trace) { ... }
+}
+```
+
+---
+
+## `[Tool]` Attribute — Source-gen Tool Registration (Phase K)
+
+```csharp
+// LMP.Abstractions — ToolAttribute
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class ToolAttribute : Attribute
+{
+    public string? Description { get; set; }
+    public string? Name { get; set; }
+}
+
+// Source-gen Pipeline 7: [Tool]-annotated methods → LmpModule.GetTools() override
+// GEPA automatically adds StringValued description params for AIFunction pool items
+```
+
+---
+
+## `[Skill]` Attribute — Source-gen Skill Registration (Phase G)
+
+```csharp
+// LMP.Abstractions — SkillAttribute
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class SkillAttribute : Attribute
+{
+    public required string Name { get; set; }
+    public string? Description { get; set; }
+}
+
+// Source-gen Pipeline 8: [Skill]-annotated methods → LmpModule.GetSkills() override
+// ContextualBandit reads GetSkills() for Thompson Sampling routing
+```
