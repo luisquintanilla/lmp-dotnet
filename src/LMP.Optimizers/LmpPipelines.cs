@@ -39,14 +39,20 @@ public static class LmpPipelines
     /// <see cref="OptimizationPipeline.OptimizeAsync(System.Collections.Generic.IReadOnlyList{Example},System.Collections.Generic.IReadOnlyList{Example}?,System.Func{Example,object,float},System.Threading.CancellationToken)"/>.
     /// </returns>
     /// <remarks>
-    /// Goal → algorithm sequence mapping (Phase B defaults):
+    /// Goal → algorithm sequence mapping (Phase J defaults):
     /// <list type="table">
     /// <listheader><term>Goal</term><description>Pipeline</description></listheader>
-    /// <item><term>Accuracy</term><description>BootstrapFewShot → GEPA → MIPROv2</description></item>
+    /// <item><term>Accuracy</term><description>BootstrapFewShot → GEPA → MIPROv2 → BayesianCalibration</description></item>
     /// <item><term>Speed</term><description>SIMBA</description></item>
     /// <item><term>Cost</term><description>BootstrapFewShot → MIPROv2</description></item>
-    /// <item><term>Balanced</term><description>BootstrapFewShot → GEPA</description></item>
+    /// <item><term>Balanced</term><description>BootstrapFewShot → GEPA → BayesianCalibration</description></item>
     /// </list>
+    /// <para>
+    /// <see cref="BayesianCalibration"/> is a safe no-op for <see cref="ModuleTarget"/> pipelines
+    /// (its parameter space is always empty). It actively calibrates <see cref="Continuous"/> and
+    /// <see cref="Integer"/> hyperparameters when the target is a <c>ChatClientTarget</c>
+    /// (temperature, etc.).
+    /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="module"/> or <paramref name="client"/> is null.
@@ -64,7 +70,8 @@ public static class LmpPipelines
             Goal.Accuracy => module.AsOptimizationPipeline()
                 .Use(new BootstrapFewShot())
                 .Use(new GEPA(client))
-                .Use(new MIPROv2(client)),
+                .Use(new MIPROv2(client))
+                .Use(new BayesianCalibration()),
 
             Goal.Speed => module.AsOptimizationPipeline()
                 .Use(new SIMBA(client)),
@@ -75,7 +82,8 @@ public static class LmpPipelines
 
             Goal.Balanced => module.AsOptimizationPipeline()
                 .Use(new BootstrapFewShot())
-                .Use(new GEPA(client)),
+                .Use(new GEPA(client))
+                .Use(new BayesianCalibration()),
 
             _ => module.AsOptimizationPipeline()
                 .Use(new BootstrapFewShot())

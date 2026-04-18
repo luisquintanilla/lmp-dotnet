@@ -4,10 +4,45 @@ namespace LMP;
 
 /// <summary>
 /// Extension methods for deploying an optimized <see cref="ChatClientTarget"/> state
-/// as an <see cref="IChatClient"/> middleware via the M.E.AI <see cref="ChatClientBuilder"/>.
+/// as an <see cref="IChatClient"/> middleware via the M.E.AI <see cref="ChatClientBuilder"/>,
+/// and for capturing LM call traces as M.E.AI middleware.
 /// </summary>
 public static class ChatClientOptimizationExtensions
 {
+    /// <summary>
+    /// Adds trace-recording middleware that captures per-call token usage and messages
+    /// into <paramref name="trace"/> for every <c>GetResponseAsync</c> call on the built client.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Composes naturally with other M.E.AI middleware (function invocation, logging, retry):
+    /// <code>
+    /// var client = azureClient.AsChatClient()
+    ///     .UseFunctionInvocation()
+    ///     .UseLmpTrace(trace)    // captures token usage automatically
+    ///     .UseLogging();
+    /// </code>
+    /// </para>
+    /// <para>
+    /// <see cref="LmpTraceMiddleware"/> is internal to <c>LMP.Core</c>.
+    /// This extension method is in the same assembly, so the access is valid.
+    /// </para>
+    /// </remarks>
+    /// <param name="builder">The chat client builder to augment.</param>
+    /// <param name="trace">The trace container to append records to. Must not be null.</param>
+    /// <returns>The updated builder for chaining.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="builder"/> or <paramref name="trace"/> is null.
+    /// </exception>
+    public static ChatClientBuilder UseLmpTrace(
+        this ChatClientBuilder builder,
+        Trace trace)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(trace);
+        return builder.Use(inner => new LmpTraceMiddleware(inner, trace));
+    }
+
     /// <summary>
     /// Adds an <see cref="OptimizedChatClient"/> middleware that applies the given
     /// <paramref name="state"/> to every request — injecting the system prompt,

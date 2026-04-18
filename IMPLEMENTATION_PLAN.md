@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase J in progress — 1,565 tests passing. J.1 ✅ ContinuousDiscretizer done. J.2, J.3, K, L, M pending.
+> **Status:** Phases J + K complete — 1,611 tests passing. L, M pending.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-10
@@ -1647,7 +1647,7 @@ Tests (~10):
 
 ---
 
-### Task J.2: BayesianCalibration optimizer ❌
+### Task J.2: BayesianCalibration optimizer ✅
 
 **File to create:** `src/LMP.Optimizers/BayesianCalibration.cs`
 
@@ -1746,7 +1746,7 @@ Use `Moq` or create minimal `FakeOptimizationTarget : IOptimizationTarget` imple
 
 ---
 
-### Task J.3: UseLmpTrace + AutoSampler doc + LmpPipelines update ❌
+### Task J.3: UseLmpTrace + AutoSampler doc + LmpPipelines update ✅
 
 **Three small changes in one commit:**
 
@@ -1829,7 +1829,7 @@ Add to `test/LMP.Optimizers.Tests/LmpPipelinesTests.cs`:
 > - Source-gen project: `src/LMP.SourceGen/LmpSourceGenerator.cs` — `IIncrementalGenerator` with multiple pipelines (Pipeline 1: LmpSignature types, Pipeline 2: Predictor fields, Pipeline 3: [AutoOptimize], Pipeline 4-6: [Skill])
 > - `ILmpModule` source-gen pipeline currently processes `[Skill]` attribute (Pipeline 8) for `GetSkills()` override
 
-### Task K.1: Source-gen Pipeline 7 — [Tool] registration ❌
+### Task K.1: Source-gen Pipeline 7 — [Tool] registration ✅
 
 **Goal:** When a method on an `LmpModule` subclass is decorated with `[Tool]`, the source generator should emit code that calls `AddToolPool(...)` on the module to register the method as an `AIFunction` in the module's parameter space.
 
@@ -1857,7 +1857,7 @@ Add to `test/LMP.Optimizers.Tests/LmpPipelinesTests.cs`:
 
 ---
 
-### Task K.2: GEPA tool description evolution ❌
+### Task K.2: GEPA tool description evolution ✅
 
 **Goal:** When `ctx.SearchSpace` contains a `Subset` parameter whose pool items are `AIFunction` instances, `GEPA` should automatically add `StringValued` parameters for each tool's description, allowing GEPA to evolve tool descriptions as part of instruction optimization.
 
@@ -1878,7 +1878,7 @@ Add to `test/LMP.Optimizers.Tests/LmpPipelinesTests.cs`:
 
 ---
 
-### Task K.3: LMP020–LMP025 diagnostics ❌
+### Task K.3: LMP020–LMP025 diagnostics ✅
 
 **Goal:** Add 6 new Roslyn diagnostics for misuse of the `[Tool]` attribute.
 

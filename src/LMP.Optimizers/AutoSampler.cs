@@ -22,9 +22,15 @@ namespace LMP.Optimizers;
 /// </list>
 /// </para>
 /// <para>
-/// Phase D will add <see cref="SmacSampler"/> selection when the space contains
-/// <see cref="Continuous"/> parameters, once real token-cost tracking is available
-/// via <c>ChatClientBuilder.UseLmpTrace(ctx)</c>.
+/// <b>Architectural note — Continuous/Integer parameters:</b>
+/// <see cref="AutoSampler"/> intentionally stays in the categorical domain.
+/// It serves <see cref="OptimizationContext.SearchSpace"/>, which is populated by
+/// <see cref="BootstrapFewShot"/> and <see cref="GEPA"/> with
+/// <see cref="Categorical"/> and <see cref="StringValued"/> params only.
+/// Callers that need to optimize <see cref="Continuous"/> or <see cref="Integer"/> parameters
+/// (e.g., temperature calibration) should use <see cref="BayesianCalibration"/> directly,
+/// which manages its own <see cref="ContinuousDiscretizer"/> internally and keeps the
+/// sampler in pure categorical index space.
 /// </para>
 /// </remarks>
 public static class AutoSampler

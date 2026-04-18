@@ -154,6 +154,51 @@ public class ChatClientOptimizationExtensionsTests
         Assert.Same(builder, returned);
     }
 
+    // ── UseLmpTrace ───────────────────────────────────────────────────────
+
+    [Fact]
+    public void UseLmpTrace_NullBuilder_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(
+            () => ChatClientOptimizationExtensions.UseLmpTrace(null!, new Trace()));
+    }
+
+    [Fact]
+    public void UseLmpTrace_NullTrace_Throws()
+    {
+        var builder = new ChatClientBuilder(new SpyChatClient("x"));
+        Assert.Throws<ArgumentNullException>(
+            () => builder.UseLmpTrace(null!));
+    }
+
+    [Fact]
+    public void UseLmpTrace_ReturnsSameBuilder()
+    {
+        var trace = new Trace();
+        var builder = new ChatClientBuilder(new SpyChatClient("x"));
+        var returned = builder.UseLmpTrace(trace);
+        Assert.Same(builder, returned);
+    }
+
+    [Fact]
+    public async Task UseLmpTrace_RecordsUsageEntry_WhenResponseHasUsage()
+    {
+        var trace = new Trace();
+        var innerClient = new UsageReportingSpyClient("result",
+            new UsageDetails { InputTokenCount = 10, OutputTokenCount = 20, TotalTokenCount = 30 });
+
+        var client = new ChatClientBuilder(innerClient)
+            .UseLmpTrace(trace)
+            .Build();
+
+        await client.GetResponseAsync([new ChatMessage(ChatRole.User, "hello")]);
+
+        Assert.Single(trace.Entries);
+        Assert.NotNull(trace.Entries[0].Usage);
+        Assert.Equal(10, trace.Entries[0].Usage!.InputTokenCount);
+        Assert.Equal(20, trace.Entries[0].Usage!.OutputTokenCount);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private static OptimizationResult FakeResult(ChatClientState state)
@@ -176,4 +221,28 @@ file sealed class FakeModule : LmpModule
     protected override LmpModule CloneCore() => new FakeModule();
     public override Task<object> ForwardAsync(object input, CancellationToken ct = default)
         => Task.FromResult<object>(string.Empty);
+}
+
+/// <summary>A spy that returns a response with configurable UsageDetails.</summary>
+file sealed class UsageReportingSpyClient : IChatClient
+{
+    private readonly string _text;
+    private readonly UsageDetails _usage;
+    public UsageReportingSpyClient(string text, UsageDetails usage) { _text = text; _usage = usage; }
+    public Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var response = new ChatResponse(new ChatMessage(ChatRole.Assistant, _text))
+        {
+            Usage = _usage
+        };
+        return Task.FromResult(response);
+    }
+    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException();
+    public void Dispose() { }
+    public object? GetService(Type serviceType, object? serviceKey = null) => null;
 }

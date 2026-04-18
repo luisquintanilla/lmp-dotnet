@@ -33,14 +33,15 @@ public sealed class LmpPipelinesTests
     // ── Goal → stage sequences ──────────────────────────────────
 
     [Fact]
-    public void Auto_Accuracy_HasThreeSteps()
+    public void Auto_Accuracy_HasFourSteps()
     {
         var pipeline = LmpPipelines.Auto(new PipelineTestModule(), new FakePipelineClient(), Goal.Accuracy);
-        // BFS → GEPA → MIPROv2
-        Assert.Equal(3, pipeline.Steps.Count);
+        // BFS → GEPA → MIPROv2 → BayesianCalibration
+        Assert.Equal(4, pipeline.Steps.Count);
         Assert.IsType<BootstrapFewShot>(pipeline.Steps[0]);
         Assert.IsType<GEPA>(pipeline.Steps[1]);
         Assert.IsType<MIPROv2>(pipeline.Steps[2]);
+        Assert.IsType<BayesianCalibration>(pipeline.Steps[3]);
     }
 
     [Fact]
@@ -63,13 +64,14 @@ public sealed class LmpPipelinesTests
     }
 
     [Fact]
-    public void Auto_Balanced_HasBootstrapAndGEPA()
+    public void Auto_Balanced_HasThreeSteps()
     {
         var pipeline = LmpPipelines.Auto(new PipelineTestModule(), new FakePipelineClient(), Goal.Balanced);
-        // BFS → GEPA
-        Assert.Equal(2, pipeline.Steps.Count);
+        // BFS → GEPA → BayesianCalibration
+        Assert.Equal(3, pipeline.Steps.Count);
         Assert.IsType<BootstrapFewShot>(pipeline.Steps[0]);
         Assert.IsType<GEPA>(pipeline.Steps[1]);
+        Assert.IsType<BayesianCalibration>(pipeline.Steps[2]);
     }
 
     [Fact]
@@ -99,7 +101,8 @@ public sealed class LmpPipelinesTests
         var tier2 = module.AsOptimizationPipeline()
             .Use(new BootstrapFewShot())
             .Use(new GEPA(client))
-            .Use(new MIPROv2(client));
+            .Use(new MIPROv2(client))
+            .Use(new BayesianCalibration());
 
         Assert.Equal(tier4.Steps.Count, tier2.Steps.Count);
         for (int i = 0; i < tier4.Steps.Count; i++)
