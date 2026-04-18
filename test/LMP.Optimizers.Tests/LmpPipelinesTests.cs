@@ -105,6 +105,87 @@ public sealed class LmpPipelinesTests
         for (int i = 0; i < tier4.Steps.Count; i++)
             Assert.Equal(tier4.Steps[i].GetType(), tier2.Steps[i].GetType());
     }
+
+    // ── ForAxis ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public void ForAxis_NullModule_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            LmpPipelines.ForAxis(null!, new FakePipelineClient(), OptimizationAxis.Instructions));
+    }
+
+    [Fact]
+    public void ForAxis_NullClient_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            LmpPipelines.ForAxis(new PipelineTestModule(), null!, OptimizationAxis.Instructions));
+    }
+
+    [Fact]
+    public void ForAxis_Instructions_SameAsAutoAccuracy()
+    {
+        var module = new PipelineTestModule();
+        var client = new FakePipelineClient();
+
+        var forAxis = LmpPipelines.ForAxis(module, client, OptimizationAxis.Instructions);
+        var auto = LmpPipelines.Auto(module, client, Goal.Accuracy);
+
+        Assert.Equal(auto.Steps.Count, forAxis.Steps.Count);
+        for (int i = 0; i < auto.Steps.Count; i++)
+            Assert.Equal(auto.Steps[i].GetType(), forAxis.Steps[i].GetType());
+    }
+
+    [Fact]
+    public void ForAxis_MultiTurn_HasBootstrapAndSimba()
+    {
+        var pipeline = LmpPipelines.ForAxis(
+            new PipelineTestModule(), new FakePipelineClient(), OptimizationAxis.MultiTurn);
+
+        Assert.Equal(2, pipeline.Steps.Count);
+        Assert.IsType<BootstrapFewShot>(pipeline.Steps[0]);
+        Assert.IsType<SIMBA>(pipeline.Steps[1]);
+    }
+
+    [Fact]
+    public void ForAxis_Tools_HasBootstrapAndMIPROv2()
+    {
+        var pipeline = LmpPipelines.ForAxis(
+            new PipelineTestModule(), new FakePipelineClient(), OptimizationAxis.Tools);
+
+        Assert.Equal(2, pipeline.Steps.Count);
+        Assert.IsType<BootstrapFewShot>(pipeline.Steps[0]);
+        Assert.IsType<MIPROv2>(pipeline.Steps[1]);
+    }
+
+    [Fact]
+    public void ForAxis_Skills_HasBootstrapAndContextualBandit()
+    {
+        var pipeline = LmpPipelines.ForAxis(
+            new PipelineTestModule(), new FakePipelineClient(), OptimizationAxis.Skills);
+
+        Assert.Equal(2, pipeline.Steps.Count);
+        Assert.IsType<BootstrapFewShot>(pipeline.Steps[0]);
+        Assert.IsType<ContextualBandit>(pipeline.Steps[1]);
+    }
+
+    [Fact]
+    public void ForAxis_Model_HasMultiFidelity()
+    {
+        var pipeline = LmpPipelines.ForAxis(
+            new PipelineTestModule(), new FakePipelineClient(), OptimizationAxis.Model);
+
+        Assert.Single(pipeline.Steps);
+        Assert.IsType<MultiFidelity>(pipeline.Steps[0]);
+    }
+
+    [Fact]
+    public void ForAxis_ReturnsOptimizationPipeline()
+    {
+        var pipeline = LmpPipelines.ForAxis(
+            new PipelineTestModule(), new FakePipelineClient(), OptimizationAxis.Tools);
+        Assert.IsType<OptimizationPipeline>(pipeline);
+    }
 }
 
 // ── Test Infrastructure ─────────────────────────────────────

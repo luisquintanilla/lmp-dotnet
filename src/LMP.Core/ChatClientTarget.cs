@@ -87,8 +87,10 @@ public sealed class ChatClientTarget : IOptimizationTarget
         var snapshot = _state;
         var messages = BuildMessages(input, snapshot.SystemPrompt);
         var options = BuildOptions(snapshot);
-        var response = await _client.GetResponseAsync(messages, options, ct).ConfigureAwait(false);
-        return (response.Text ?? string.Empty, new Trace());
+        var trace = new Trace();
+        var tracingClient = new LmpTraceMiddleware(_client, trace);
+        var response = await tracingClient.GetResponseAsync(messages, options, ct).ConfigureAwait(false);
+        return (response.Text ?? string.Empty, trace);
     }
 
     /// <inheritdoc />

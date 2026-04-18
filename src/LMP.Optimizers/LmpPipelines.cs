@@ -81,4 +81,63 @@ public static class LmpPipelines
                 .Use(new BootstrapFewShot())
         };
     }
+
+    /// <summary>
+    /// Creates an <see cref="OptimizationPipeline"/> pre-configured to optimize along
+    /// a single <see cref="OptimizationAxis"/>.
+    /// </summary>
+    /// <param name="module">The module to optimize.</param>
+    /// <param name="client">
+    /// Chat client used by LLM-based optimizers.
+    /// May be the same model as the module's client, or a cheaper model for cost efficiency.
+    /// </param>
+    /// <param name="axis">The optimization axis to target.</param>
+    /// <returns>
+    /// A configured <see cref="OptimizationPipeline"/> ready to call
+    /// <see cref="OptimizationPipeline.OptimizeAsync"/>.
+    /// </returns>
+    /// <remarks>
+    /// Axis → algorithm sequence:
+    /// <list type="table">
+    /// <listheader><term>Axis</term><description>Pipeline</description></listheader>
+    /// <item><term><see cref="OptimizationAxis.Instructions"/></term><description>Delegates to <see cref="Auto"/> with <see cref="Goal.Accuracy"/> (BFS → GEPA → MIPROv2).</description></item>
+    /// <item><term><see cref="OptimizationAxis.MultiTurn"/></term><description>BootstrapFewShot → SIMBA.</description></item>
+    /// <item><term><see cref="OptimizationAxis.Tools"/></term><description>BootstrapFewShot → MIPROv2 (tool-subset search).</description></item>
+    /// <item><term><see cref="OptimizationAxis.Skills"/></term><description>BootstrapFewShot → ContextualBandit on the <c>"skills"</c> parameter. Requires the caller to pre-populate <c>ctx.SearchSpace</c> via <see cref="SkillPoolExtensions.WithSkillPool"/>.</description></item>
+    /// <item><term><see cref="OptimizationAxis.Model"/></term><description>MultiFidelity only. Caller must add a <see cref="ModelSelector"/> with the desired model parameter name for full model-selection support.</description></item>
+    /// </list>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="module"/> or <paramref name="client"/> is null.
+    /// </exception>
+    public static OptimizationPipeline ForAxis(
+        LmpModule module,
+        IChatClient client,
+        OptimizationAxis axis)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+        ArgumentNullException.ThrowIfNull(client);
+
+        return axis switch
+        {
+            OptimizationAxis.Instructions => Auto(module, client, Goal.Accuracy),
+
+            OptimizationAxis.MultiTurn => module.AsOptimizationPipeline()
+                .Use(new BootstrapFewShot())
+                .Use(new SIMBA(client)),
+
+            OptimizationAxis.Tools => module.AsOptimizationPipeline()
+                .Use(new BootstrapFewShot())
+                .Use(new MIPROv2(client)),
+
+            OptimizationAxis.Skills => module.AsOptimizationPipeline()
+                .Use(new BootstrapFewShot())
+                .Use(new ContextualBandit("skills")),
+
+            OptimizationAxis.Model => module.AsOptimizationPipeline()
+                .Use(new MultiFidelity()),
+
+            _ => Auto(module, client)
+        };
+    }
 }
