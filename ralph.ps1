@@ -66,11 +66,18 @@ function Invoke-RalphLoop {
             Write-Host "Copilot exited with code $exitCode" -ForegroundColor Red
         }
 
-        # Exit condition for build: check if plan says all done
+        # Exit condition for build: check FIRST LINE of plan for completion marker
+        # (checking only first line avoids false-trigger on task description text)
+        # Also exit if no ❌ tasks remain in the file.
         if ($LoopMode -eq "build" -and (Test-Path "IMPLEMENTATION_PLAN.md")) {
-            $plan = Get-Content "IMPLEMENTATION_PLAN.md" -Raw
-            if ($plan -match "ALL TASKS COMPLETE") {
+            $firstLine = (Get-Content "IMPLEMENTATION_PLAN.md" -TotalCount 1)
+            if ($firstLine -match "ALL TASKS COMPLETE") {
                 Write-Host "`nAll tasks complete!" -ForegroundColor Green
+                return $true
+            }
+            $remaining = (Select-String -Path "IMPLEMENTATION_PLAN.md" -Pattern " ❌$" | Measure-Object).Count
+            if ($remaining -eq 0) {
+                Write-Host "`nNo ❌ tasks remaining — all done!" -ForegroundColor Green
                 return $true
             }
         }

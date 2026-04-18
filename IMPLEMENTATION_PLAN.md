@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 9 in progress — Doc spec freshness audit + CostAwareSampler. 991 tests passing.
+> **Status:** Phase J in progress — 1,565 tests passing. J.1 ✅ ContinuousDiscretizer done. J.2, J.3, K, L, M pending.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-10
@@ -2054,10 +2054,11 @@ Tests to write:
 Steps:
 1. Run `dotnet build --no-restore` — must pass with 0 errors, 0 warnings.
 2. Run `dotnet test` — must pass with 0 failures.
-3. Update the first line of `IMPLEMENTATION_PLAN.md` to read:
+3. Update the **Status line** (line 3) of `IMPLEMENTATION_PLAN.md` to read:
    ```
    > **Status:** ALL TASKS COMPLETE — Phases A–M done. Tests passing.
    ```
+   (The ralph loop checks the first line for the completion sentinel, but since the status is on line 3, also add `ALL TASKS COMPLETE` as the very first line temporarily — or just update the status line and the next ralph iteration will see 0 ❌ tasks.)
 4. Commit.
 
 **Commit message:** `chore: mark ALL TASKS COMPLETE - Phases A-M implementation done`
