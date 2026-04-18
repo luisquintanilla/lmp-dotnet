@@ -139,3 +139,25 @@ internal sealed record SkillMethodModel(
     string? Description,
     bool IsPublic,
     LocationInfo Location);
+
+/// <summary>
+/// Extracted metadata for an <c>LmpModule</c> subclass that has one or more
+/// <c>[Tool]</c>-annotated methods. Used by Pipeline 7 to emit <c>GetTools()</c>.
+/// </summary>
+internal sealed record ToolModuleModel(
+    string Namespace,
+    string TypeName,
+    EquatableArray<ToolMethodModel> ToolMethods);
+
+/// <summary>
+/// Metadata for a single <c>[Tool]</c>-annotated method on an <c>LmpModule</c> subclass.
+/// </summary>
+internal sealed record ToolMethodModel(
+    string MethodName,
+    string? NameOverride,
+    string? Description,
+    bool IsPublic,
+    bool IsAsync,
+    bool IsStatic,
+    int ParameterCount,
+    LocationInfo Location);

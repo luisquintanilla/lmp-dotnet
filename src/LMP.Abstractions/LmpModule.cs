@@ -52,6 +52,15 @@ public abstract class LmpModule
         => [];
 
     /// <summary>
+    /// Returns all <see cref="Microsoft.Extensions.AI.AIFunction"/> instances registered on this module
+    /// via <see cref="ToolAttribute"/>-annotated methods.
+    /// The source generator (Pipeline 7) emits this method for zero-reflection tool discovery.
+    /// </summary>
+    /// <returns>A read-only list of AI functions in declaration order.</returns>
+    public virtual IReadOnlyList<AIFunction> GetTools()
+        => [];
+
+    /// <summary>
     /// Creates a deep copy of this module with independent predictor state.
     /// The returned module shares the same <c>IChatClient</c> bindings but has
     /// separate <c>Demos</c> and <c>Instructions</c> on every predictor.

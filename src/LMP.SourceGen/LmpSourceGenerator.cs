@@ -146,6 +146,21 @@ public sealed class LmpSourceGenerator : IIncrementalGenerator
 
         context.RegisterSourceOutput(skillModels, static (spc, model) =>
             SkillEmitter.Emit(spc, model));
+
+        // Pipeline 7: LmpModule subclasses with [Tool]-annotated methods → GetTools() emission
+        // Scans for partial class declarations that derive from LmpModule, extracts [Tool]
+        // methods, and emits a GetTools() override.
+        // LMP020 (non-async), LMP021 (static), LMP023 (duplicate name), LMP025 (>10 params)
+        // are reported as appropriate.
+        var toolModels = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                predicate: static (node, ct) => ToolExtractor.IsCandidate(node, ct),
+                transform: static (ctx, ct) => ToolExtractor.Extract(ctx, ct))
+            .Where(static m => m is not null)
+            .Select(static (m, _) => m!);
+
+        context.RegisterSourceOutput(toolModels, static (spc, model) =>
+            ToolEmitter.Emit(spc, model));
     }
 
     /// <summary>

@@ -89,6 +89,9 @@ public sealed class GEPA : IOptimizer
         // Capture external reflection entries (e.g., from EvaluationCritique) for this run
         _externalObservations = ctx.ReflectionLog.Entries;
 
+        // Auto-register StringValued description params for AIFunction tools in the search space
+        AddToolDescriptionParams(ctx);
+
         var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
             .ConfigureAwait(false);
 
@@ -466,6 +469,27 @@ public sealed class GEPA : IOptimizer
     /// </summary>
     private List<Example> SampleMiniBatch(IReadOnlyList<Example> trainSet, Random rng)
         => InstructionReflector.SampleMiniBatch(trainSet, rng, _miniBatchSize);
+
+    /// <summary>
+    /// Scans <see cref="OptimizationContext.SearchSpace"/> for <see cref="Subset"/> parameters
+    /// whose pool contains <see cref="AIFunction"/> entries, and registers a
+    /// <see cref="StringValued"/> description parameter for each discovered function.
+    /// This allows downstream optimizers to evolve tool descriptions alongside the tool selection.
+    /// </summary>
+    private static void AddToolDescriptionParams(OptimizationContext ctx)
+    {
+        foreach (var (paramName, kind) in ctx.SearchSpace.Parameters)
+        {
+            if (kind is not Subset subset) continue;
+            foreach (var poolItem in subset.Pool)
+            {
+                if (poolItem is not AIFunction fn) continue;
+                var descKey = $"{paramName}.{fn.Name}.description";
+                if (!ctx.SearchSpace.Parameters.ContainsKey(descKey))
+                    ctx.SearchSpace = ctx.SearchSpace.Add(descKey, new StringValued(fn.Description));
+            }
+        }
+    }
 }
 
 /// <summary>
