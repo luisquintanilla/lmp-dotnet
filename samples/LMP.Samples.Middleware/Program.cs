@@ -20,8 +20,10 @@ using OpenTelemetry.Trace;
 //   1. DistributedCache — cache identical LLM prompts
 //   2. OpenTelemetry    — trace every LLM call with latency
 //   3. ILogger          — structured logging for requests
+//   4. UseLmpTrace      — capture per-call trace entries (predictor I/O)
 //
-// Shows the timing difference between uncached and cached runs.
+// Shows the timing difference between uncached and cached runs,
+// and how LmpTrace integrates alongside other M.E.AI middleware.
 //
 // Configure via user secrets:
 //   dotnet user-secrets set "AzureOpenAI:Endpoint" "https://YOUR_RESOURCE.openai.azure.com/"
@@ -162,6 +164,55 @@ Console.WriteLine("║   • OTel:  traces show latency per call      ║");
 Console.WriteLine("║   • Logs:  structured request/response logs   ║");
 Console.WriteLine("║   • Pipeline wraps Azure OpenAI seamlessly   ║");
 Console.WriteLine("║   • Optimization reuses cached LLM responses ║");
+Console.WriteLine("╚══════════════════════════════════════════════╝");
+
+// ── Step 4: UseLmpTrace — capture execution trace as middleware ─
+Console.WriteLine();
+Console.WriteLine("Step 4: UseLmpTrace — Execution Trace Capture");
+Console.WriteLine("──────────────────────────────────────────────");
+Console.WriteLine("  UseLmpTrace() adds trace-recording middleware alongside");
+Console.WriteLine("  any other M.E.AI middleware. Traces capture per-call");
+Console.WriteLine("  inputs, outputs, and token usage for use by LMP optimizers.");
+Console.WriteLine();
+
+// Create a new LMP Trace — it will accumulate one entry per LLM call.
+var trace = new LMP.Trace();
+
+// Build a traced client: the trace middleware sits between cache and OTel.
+// Order: Azure OpenAI → Cache → LmpTrace → OpenTelemetry → Logging
+IChatClient tracedClient = new ChatClientBuilder(innerClient)
+    .UseDistributedCache(cache)           // cache (innermost — cache misses hit LmpTrace + OTel)
+    .UseLmpTrace(trace)                   // <-- capture trace entries per call
+    .UseOpenTelemetry(sourceName: sourceName, configure: c =>
+        c.EnableSensitiveData = true)
+    .UseLogging(loggerFactory)
+    .Build();
+
+Console.WriteLine("  Pipeline: Azure OpenAI → Cache → LmpTrace → OTel → Logging");
+Console.WriteLine();
+
+// Run a single forward pass with the traced client (result discarded — just capturing trace)
+var tracedModule = new SupportTriageModule(tracedClient);
+await tracedModule.ForwardAsync(
+    new TicketInput("My account has been charged incorrectly. Please help."));
+
+Console.WriteLine($"  Trace entries after one forward pass: {trace.Entries.Count}");
+foreach (var entry in trace.Entries)
+    Console.WriteLine($"    • {entry.PredictorName}: input={entry.Input?.GetType().Name}, output={entry.Output?.GetType().Name}");
+
+Console.WriteLine();
+Console.WriteLine("  Trace entries are used by LMP optimizers (GEPA, SIMBA, MIPROv2)");
+Console.WriteLine("  to analyze failures and propose instruction improvements.");
+Console.WriteLine();
+
+Console.WriteLine("╔══════════════════════════════════════════════╗");
+Console.WriteLine("║   Updated Key Takeaways                      ║");
+Console.WriteLine("║                                              ║");
+Console.WriteLine("║   • Cache:     identical prompts → instant   ║");
+Console.WriteLine("║   • OTel:      traces show latency per call  ║");
+Console.WriteLine("║   • Logs:      structured request/response   ║");
+Console.WriteLine("║   • LmpTrace:  captures per-call I/O + usage ║");
+Console.WriteLine("║   • All compose with .Use() — order matters  ║");
 Console.WriteLine("╚══════════════════════════════════════════════╝");
 
 // ── Helpers ─────────────────────────────────────────────────

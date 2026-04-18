@@ -49,7 +49,7 @@ Start at the top and work your way down. Each sample builds on concepts from the
 | [**MIPROv2**](LMP.Samples.MIPROv2/) | Bayesian instruction + demo optimization. Proposal LM generates instruction variants, TPE searches over combinations. |
 | [**GEPA**](LMP.Samples.GEPA/) | Evolutionary optimization via LLM reflection. Captures failures → diagnoses → proposes fixes → evolves instructions. |
 | [**Z3**](LMP.Samples.Z3/) | Constraint-based demo selection with the Z3 solver. Enforces category coverage and quality constraints. |
-| [**AdvancedOptimizers**](LMP.Samples.AdvancedOptimizers/) | Pluggable search strategies: ISampler, SmacSampler, CostAwareSampler, TraceAnalyzer, warm-start transfer learning. |
+| [**AdvancedOptimizers**](LMP.Samples.AdvancedOptimizers/) | Pluggable search strategies: `ISearchStrategy`, `SmacSampler`, `CostAwareSampler`, `TraceAnalyzer`, warm-start transfer. **Plus:** unified `LmpPipelines.Auto()` façade — one call runs BFS → GEPA → MIPROv2 → `BayesianCalibration`, or `Goal.Speed` runs `SIMBA`. |
 | [**AutoOptimize**](LMP.Samples.AutoOptimize/) | Build-time auto-optimization. `[AutoOptimize]` → source gen → `.g.cs` artifacts → `dotnet build -p:LmpAutoOptimize=true`. |
 
 ### 📊 Benchmarks (Real Datasets)
@@ -83,12 +83,16 @@ Start at the top and work your way down. Each sample builds on concepts from the
 | LLM Reranking | | | | | | | | | | | | | | ✅ |
 | CRAG Validation | | | | | | | | | | | | | | ✅ |
 | M.E.AI Middleware | | | | ✅ | | | | | | | | | | |
+| UseLmpTrace | | | | ✅ | | | | | | | | | | |
 | BootstrapFewShot | ✅ | | | | | | | | | ✅ | | | | |
 | BootstrapRandomSearch | | | | | | ✅ | | ✅ | ✅ | ✅ | ✅ | ✅ | | |
 | MIPROv2 (Bayesian) | | | | | | ✅ | | | ✅ | ✅ | ✅ | ✅ | | ✅ |
 | GEPA (Evolutionary) | | | | | | | ✅ | | | ✅ | | | ✅ | |
+| SIMBA (Mini-Batch) | | | | | | | | | ✅ | | | | | |
+| BayesianCalibration | | | | | | | | | ✅ | | | | | |
+| LmpPipelines.Auto() | | | | | | | | | ✅ | | | | | |
 | Z3 Constraints | | | | | | | | ✅ | | | | | | |
-| ISampler / SmacSampler | | | | | | | | | ✅ | | | | | |
+| ISearchStrategy / SmacSampler | | | | | | | | | ✅ | | | | | |
 | CostAwareSampler | | | | | | | | | ✅ | | | | | |
 | Evaluator | ✅ | | | | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | M.E.AI Evaluation | | | | | ✅ | | | | | | | | | |

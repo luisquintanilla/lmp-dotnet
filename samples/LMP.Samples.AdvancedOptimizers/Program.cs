@@ -4,7 +4,7 @@ using LMP;
 using LMP.Optimizers;
 using LMP.Samples.AdvancedOptimizers;
 using Microsoft.Extensions.AI;
-#pragma warning disable CS0618 // uses ISampler — will migrate to ISearchStrategy in Phase D
+#pragma warning disable CS0618 // SmacSampler/CostAwareSampler still implement ISampler (backward compat)
 using Microsoft.Extensions.Configuration;
 
 // ──────────────────────────────────────────────────────────────
@@ -17,6 +17,9 @@ using Microsoft.Extensions.Configuration;
 //   4. Warm-start a new optimization from prior posteriors
 //   5. CostAwareSampler — cost-frugal optimization with custom cost functions
 //   6. Compare all strategies side-by-side
+//   7. Unified Pipeline — LmpPipelines.Auto(Goal.Accuracy / Goal.Speed)
+//      One call runs: BFS → GEPA → MIPROv2 → BayesianCalibration  (Accuracy)
+//                  or: SIMBA                                         (Speed)
 //
 // Uses Azure OpenAI with DefaultAzureCredential (managed identity).
 // Prerequisites:
@@ -338,7 +341,42 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine();
 
     // ═══════════════════════════════════════════════════════════
-    // Step 7: Results Comparison
+    // Step 7: Unified Pipeline — LmpPipelines.Auto()
+    // ═══════════════════════════════════════════════════════════
+    Console.WriteLine("Step 7: Unified Pipeline — LmpPipelines.Auto()");
+    Console.WriteLine("─────────────────────────────────────────────────");
+    Console.WriteLine("  Goal.Accuracy: BFS → GEPA → MIPROv2 → BayesianCalibration");
+    Console.WriteLine("  The Tier 4 one-liner is exactly the Tier 2 pipeline with defaults.");
+    Console.WriteLine("  A user can inspect .Steps, copy to Tier 2, swap one optimizer.");
+
+    Console.WriteLine("  Cooling down before unified pipeline run...");
+    await Task.Delay(TimeSpan.FromSeconds(15));
+
+    var autoAccuracyModule = new SupportTriageModule(client);
+    var accuracyPipeline = LmpPipelines.Auto(autoAccuracyModule, client, Goal.Accuracy);
+    Console.WriteLine($"  Pipeline steps: {string.Join(" → ", accuracyPipeline.Steps.Select(s => s.GetType().Name))}");
+
+    var accuracyResult = await accuracyPipeline.OptimizeAsync(trainSet, devSet, untypedMetric);
+    var autoAccuracyScore = await Evaluator.EvaluateAsync(
+        accuracyResult.Target.GetService<LmpModule>()!, devSet, untypedMetric);
+    Console.WriteLine($"  Goal.Accuracy score: {autoAccuracyScore.AverageScore:P1}");
+    Console.WriteLine();
+
+    // Goal.Speed uses SIMBA — fast stochastic mini-batch ascent
+    Console.WriteLine("  Goal.Speed: SIMBA (mini-batch stochastic ascent)");
+    Console.WriteLine("  Cooling down before SIMBA run...");
+    await Task.Delay(TimeSpan.FromSeconds(15));
+
+    var simbaModule = new SupportTriageModule(client);
+    var speedResult = await LmpPipelines.Auto(simbaModule, client, Goal.Speed)
+        .OptimizeAsync(trainSet, devSet, untypedMetric);
+    var simbaScore = await Evaluator.EvaluateAsync(
+        speedResult.Target.GetService<LmpModule>()!, devSet, untypedMetric);
+    Console.WriteLine($"  Goal.Speed score:    {simbaScore.AverageScore:P1}");
+    Console.WriteLine();
+
+    // ═══════════════════════════════════════════════════════════
+    // Step 8: Results Comparison
     // ═══════════════════════════════════════════════════════════
     Console.WriteLine("╔══════════════════════════════════════════════════════════╗");
     Console.WriteLine("║   Results Comparison                                     ║");
@@ -351,6 +389,8 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine($"║   MIPROv2 + CostAware (latency): {latencyScore.AverageScore,6:P1}                ║");
     Console.WriteLine($"║   MIPROv2 + CostAware (blended): {blendedScore.AverageScore,6:P1}                ║");
     Console.WriteLine($"║   MIPROv2 + Warm-Start SMAC:     {warmScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   Auto (Goal.Accuracy):          {autoAccuracyScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   Auto (Goal.Speed / SIMBA):     {simbaScore.AverageScore,6:P1}                ║");
     Console.WriteLine("╠══════════════════════════════════════════════════════════╣");
     Console.WriteLine("║                                                          ║");
     Console.WriteLine("║   ISampler lets you swap search strategies:               ║");
@@ -358,6 +398,7 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine("║   · SMAC — RF surrogate, better for interactions          ║");
     Console.WriteLine("║   · CostAware — FLAML Flow2, balances quality vs. cost    ║");
     Console.WriteLine("║   TraceAnalyzer enables cross-run transfer learning.      ║");
+    Console.WriteLine("║   LmpPipelines.Auto() — one call, full pipeline, any goal ║");
     Console.WriteLine("╚══════════════════════════════════════════════════════════╝");
 }
 
