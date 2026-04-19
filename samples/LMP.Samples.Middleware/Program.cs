@@ -197,12 +197,20 @@ await tracedModule.ForwardAsync(
     new TicketInput("My account has been charged incorrectly. Please help."));
 
 Console.WriteLine($"  Trace entries after one forward pass: {trace.Entries.Count}");
-foreach (var entry in trace.Entries)
-    Console.WriteLine($"    • {entry.PredictorName}: input={entry.Input?.GetType().Name}, output={entry.Output?.GetType().Name}");
+if (trace.Entries.Count == 0)
+{
+    Console.WriteLine("  (no entries — LmpTraceMiddleware only records when the API returns usage data)");
+}
+else
+{
+    foreach (var entry in trace.Entries)
+        Console.WriteLine($"    • {entry.PredictorName}: {entry.Usage?.InputTokenCount ?? 0} in / {entry.Usage?.OutputTokenCount ?? 0} out tokens");
+}
 
 Console.WriteLine();
-Console.WriteLine("  Trace entries are used by LMP optimizers (GEPA, SIMBA, MIPROv2)");
-Console.WriteLine("  to analyze failures and propose instruction improvements.");
+Console.WriteLine("  UseLmpTrace captures raw API-call stats (token counts, prompt text).");
+Console.WriteLine("  Useful for cost monitoring and rate-limit budgeting.");
+Console.WriteLine("  Typed predictor I/O for optimizer few-shot collection comes from LmpModule.Trace.");
 Console.WriteLine();
 
 Console.WriteLine("╔══════════════════════════════════════════════╗");
@@ -211,7 +219,7 @@ Console.WriteLine("║                                              ║");
 Console.WriteLine("║   • Cache:     identical prompts → instant   ║");
 Console.WriteLine("║   • OTel:      traces show latency per call  ║");
 Console.WriteLine("║   • Logs:      structured request/response   ║");
-Console.WriteLine("║   • LmpTrace:  captures per-call I/O + usage ║");
+Console.WriteLine("║   • LmpTrace:  token usage per API call      ║");
 Console.WriteLine("║   • All compose with .Use() — order matters  ║");
 Console.WriteLine("╚══════════════════════════════════════════════╝");
 
