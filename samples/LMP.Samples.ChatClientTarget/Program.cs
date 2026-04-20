@@ -187,18 +187,16 @@ static string FindProjectDir()
 }
 
 var artifactDir = Path.Combine(FindProjectDir(), "Generated");
-var artifactPath = await CSharpArtifactWriter.WriteForChatClientTargetAsync(
-    state: calibState,
-    className: "OptimizedSupportClient",
-    ns: "LMP.Samples.ChatClientTarget",
-    outputDir: artifactDir,
-    score: calibResult.OptimizedScore,
-    optimizerName: "BayesianCalibration",
-    baseline: calibResult.BaselineScore);
+var artifactPath = await calibResult.WriteArtifactAsync(new CompileOptions
+{
+    OutputDir = artifactDir,
+    ArtifactClassName = "OptimizedSupportClient",
+    ArtifactNamespace = "LMP.Samples.ChatClientTarget"
+});
 
 Console.WriteLine($"  Generated: {artifactPath}");
 Console.WriteLine();
-Console.WriteLine(await File.ReadAllTextAsync(artifactPath));
+Console.WriteLine(await File.ReadAllTextAsync(artifactPath!));
 Console.WriteLine();
 Console.WriteLine("  ► Commit Generated/OptimizedSupportClient.g.cs to source control.");
 Console.WriteLine("  ► On next build (dotnet build), this compiles into the assembly:");

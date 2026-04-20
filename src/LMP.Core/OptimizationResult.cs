@@ -20,12 +20,17 @@ public sealed record OptimizationResult
     public required IReadOnlyList<Trial> Trials { get; init; }
 
     /// <summary>
-    /// Writes a <c>.g.cs</c> artifact for the optimized module.
+    /// Writes a <c>.g.cs</c> artifact for the optimized target.
     /// Does nothing when <paramref name="options"/> is <c>null</c> or has no output directory.
     /// </summary>
     /// <param name="options">Compilation options controlling artifact output path and metadata.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The path of the generated file, or <c>null</c> if no file was written.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the target is a <see cref="ChatClientTarget"/> and
+    /// <see cref="CompileOptions.ArtifactClassName"/> is not set, or when the target type
+    /// does not support artifact generation.
+    /// </exception>
     public async Task<string?> WriteArtifactAsync(
         CompileOptions? options,
         CancellationToken ct = default)
@@ -33,18 +38,39 @@ public sealed record OptimizationResult
         if (options?.OutputDir is null)
             return null;
 
-        var module = Target.GetService<LmpModule>()
-            ?? throw new InvalidOperationException(
-                "WriteArtifactAsync requires an LmpModule target (ModuleTarget). " +
-                "Non-module targets must implement WriteArtifactAsync directly.");
+        // LmpModule path
+        var module = Target.GetService<LmpModule>();
+        if (module is not null)
+            return await CSharpArtifactWriter.WriteAsync(
+                module,
+                options.OutputDir,
+                OptimizedScore,
+                "OptimizationPipeline",
+                options.TrainDataPath,
+                BaselineScore,
+                ct);
 
-        return await CSharpArtifactWriter.WriteAsync(
-            module,
-            options.OutputDir,
-            OptimizedScore,
-            "OptimizationPipeline",
-            options.TrainDataPath,
-            BaselineScore,
-            ct);
+        // ChatClientTarget path
+        if (Target is ChatClientTarget)
+        {
+            if (options.ArtifactClassName is null)
+                throw new InvalidOperationException(
+                    "Set CompileOptions.ArtifactClassName when calling WriteArtifactAsync on a ChatClientTarget result.");
+
+            var state = Target.GetState().As<ChatClientState>();
+            return await CSharpArtifactWriter.WriteForChatClientTargetAsync(
+                state,
+                options.ArtifactClassName,
+                options.ArtifactNamespace ?? "",
+                options.OutputDir,
+                OptimizedScore,
+                "OptimizationPipeline",
+                BaselineScore,
+                ct);
+        }
+
+        throw new InvalidOperationException(
+            $"WriteArtifactAsync is not supported for target type '{Target.GetType().Name}'. " +
+            "Override WriteArtifactAsync on your custom target to provide artifact generation.");
     }
 }

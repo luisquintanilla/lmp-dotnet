@@ -76,6 +76,12 @@ public sealed class ChatClientTarget : IOptimizationTarget
         return new ChatClientTarget(client, allTools, state);
     }
 
+    /// <summary>
+    /// The full tool pool this target was created with.
+    /// Used by deployment extensions to reconstruct the selected tool subset at call time.
+    /// </summary>
+    public IReadOnlyList<AITool> AllTools => _allTools;
+
     /// <inheritdoc />
     public TargetShape Shape => TargetShape.SingleTurn;
 

@@ -38,7 +38,7 @@ public class CSharpArtifactWriterChatClientTargetTests
             // Namespace + class structure
             Assert.Contains("namespace MyApp.Generated;", code);
             Assert.Contains("public static class OptimizedSupportClient", code);
-            Assert.Contains("public static IChatClient Build(IChatClient baseClient)", code);
+            Assert.Contains("public static IChatClient Build(IChatClient baseClient, IReadOnlyList<AITool>? tools = null)", code);
             Assert.Contains("new ChatClientBuilder(baseClient)", code);
             Assert.Contains(".UseOptimized(new ChatClientState", code);
             Assert.Contains(".Build();", code);
@@ -84,7 +84,7 @@ public class CSharpArtifactWriterChatClientTargetTests
             Assert.DoesNotContain("Temperature =", code);
             Assert.DoesNotContain("SelectedToolNames", code);
             Assert.Contains("public static class OptimizedClient", code);
-            Assert.Contains("Build(IChatClient baseClient)", code);
+            Assert.Contains("Build(IChatClient baseClient, IReadOnlyList<AITool>? tools = null)", code);
         }
         finally
         {

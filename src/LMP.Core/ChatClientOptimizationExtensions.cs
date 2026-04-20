@@ -50,23 +50,34 @@ public static class ChatClientOptimizationExtensions
     /// </summary>
     /// <param name="builder">The chat client builder to augment.</param>
     /// <param name="state">The optimized state to apply. Must not be null.</param>
+    /// <param name="toolPool">
+    /// Optional pool of <see cref="AITool"/> instances used to resolve
+    /// <see cref="ChatClientState.SelectedToolNames"/> at request time.
+    /// When <see langword="null"/>, tool names in <paramref name="state"/> are ignored.
+    /// </param>
     /// <returns>The updated builder for chaining.</returns>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="builder"/> or <paramref name="state"/> is null.
     /// </exception>
     public static ChatClientBuilder UseOptimized(
         this ChatClientBuilder builder,
-        ChatClientState state)
+        ChatClientState state,
+        IReadOnlyList<AITool>? toolPool = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(state);
-        return builder.Use(inner => new OptimizedChatClient(inner, state));
+        return builder.Use(inner => new OptimizedChatClient(inner, state, toolPool));
     }
 
     /// <summary>
     /// Adds an <see cref="OptimizedChatClient"/> middleware that applies the
     /// optimized state from a <see cref="ChatClientTarget"/> optimization result.
     /// </summary>
+    /// <remarks>
+    /// When the result comes from a <see cref="ChatClientTarget"/> that was created
+    /// with a tool pool, the tool pool is automatically threaded through so that
+    /// <see cref="ChatClientState.SelectedToolNames"/> is honoured at request time.
+    /// </remarks>
     /// <param name="builder">The chat client builder to augment.</param>
     /// <param name="result">
     /// The optimization result. The <see cref="OptimizationResult.Target"/> must be a
@@ -91,6 +102,7 @@ public static class ChatClientOptimizationExtensions
                 $"UseOptimized requires an OptimizationResult from a ChatClientTarget. " +
                 $"The result target holds {result.Target.GetState().StateType.Name}, expected ChatClientState.");
 
-        return UseOptimized(builder, state);
+        var toolPool = result.Target is ChatClientTarget cct ? cct.AllTools : null;
+        return UseOptimized(builder, state, toolPool);
     }
 }

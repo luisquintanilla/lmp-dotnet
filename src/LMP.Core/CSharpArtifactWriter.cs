@@ -198,6 +198,7 @@ public static class CSharpArtifactWriter
         sb.AppendLine();
         sb.AppendLine("using LMP;");
         sb.AppendLine("using Microsoft.Extensions.AI;");
+        sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine();
 
         if (!string.IsNullOrEmpty(ns))
@@ -213,7 +214,12 @@ public static class CSharpArtifactWriter
         sb.AppendLine($"    /// baked in as compile-time constants. Score: {score:P1} ({optimizerName}).");
         sb.AppendLine("    /// Do not edit — re-run the optimizer to refresh.");
         sb.AppendLine("    /// </summary>");
-        sb.AppendLine("    public static IChatClient Build(IChatClient baseClient)");
+        sb.AppendLine("    /// <param name=\"baseClient\">The underlying chat client to wrap.</param>");
+        sb.AppendLine("    /// <param name=\"tools\">");
+        sb.AppendLine("    /// Optional tool pool. When non-null, only tools whose names were selected");
+        sb.AppendLine("    /// during optimization are activated. Pass <see langword=\"null\"/> to skip tool filtering.");
+        sb.AppendLine("    /// </param>");
+        sb.AppendLine("    public static IChatClient Build(IChatClient baseClient, IReadOnlyList<AITool>? tools = null)");
         sb.AppendLine("        => new ChatClientBuilder(baseClient)");
         sb.AppendLine("            .UseOptimized(new ChatClientState");
         sb.AppendLine("            {");
@@ -239,7 +245,7 @@ public static class CSharpArtifactWriter
         // SelectedToolNames is intentionally excluded: AITool instances cannot be
         // represented as C# literals. Pass the tool catalog at the call site if needed.
 
-        sb.AppendLine("            })");
+        sb.AppendLine("            }, tools)");
         sb.AppendLine("            .Build();");
         sb.AppendLine("}");
 

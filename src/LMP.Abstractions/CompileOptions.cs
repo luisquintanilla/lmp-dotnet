@@ -30,4 +30,19 @@ public sealed record CompileOptions
     /// Use in tests or runtime-only scenarios.
     /// </summary>
     public static CompileOptions RuntimeOnly { get; } = new() { OutputDir = null };
+
+    /// <summary>
+    /// Class name for the generated <see cref="ChatClientTarget"/> artifact
+    /// (e.g., <c>"OptimizedSupportClient"</c>).
+    /// Required when calling <see cref="OptimizationResult.WriteArtifactAsync"/> on a
+    /// <see cref="ChatClientTarget"/> result.
+    /// </summary>
+    public string? ArtifactClassName { get; init; }
+
+    /// <summary>
+    /// Namespace for the generated <see cref="ChatClientTarget"/> artifact
+    /// (e.g., <c>"MyApp.Generated"</c>).
+    /// Defaults to the global namespace when <see langword="null"/>.
+    /// </summary>
+    public string? ArtifactNamespace { get; init; }
 }

@@ -78,4 +78,69 @@ public class OptimizationResultTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task WriteArtifactAsync_ChatClientTarget_WithClassName_WritesFactory()
+    {
+        var spy = new SpyChatClient("reply");
+        var target = ChatClientTarget.For(spy, systemPrompt: "Be helpful.", temperature: 0.8f);
+        var result = new OptimizationResult
+        {
+            Target = target,
+            BaselineScore = 0.4f,
+            OptimizedScore = 0.6f,
+            Trials = []
+        };
+
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var options = new CompileOptions
+            {
+                OutputDir = dir,
+                ArtifactClassName = "MyOptimizedClient",
+                ArtifactNamespace = "Test.Ns"
+            };
+            var path = await result.WriteArtifactAsync(options);
+
+            Assert.NotNull(path);
+            Assert.True(File.Exists(path!));
+            var code = await File.ReadAllTextAsync(path!);
+            Assert.Contains("public static class MyOptimizedClient", code);
+            Assert.Contains("namespace Test.Ns;", code);
+            Assert.Contains("Build(IChatClient baseClient", code);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task WriteArtifactAsync_ChatClientTarget_NoClassName_Throws()
+    {
+        var spy = new SpyChatClient("reply");
+        var target = ChatClientTarget.For(spy, systemPrompt: "Hello");
+        var result = new OptimizationResult
+        {
+            Target = target,
+            BaselineScore = 0.4f,
+            OptimizedScore = 0.6f,
+            Trials = []
+        };
+
+        var dir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var options = new CompileOptions { OutputDir = dir }; // No ArtifactClassName
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => result.WriteArtifactAsync(options));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }
