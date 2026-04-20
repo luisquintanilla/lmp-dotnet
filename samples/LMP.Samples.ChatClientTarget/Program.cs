@@ -158,6 +158,54 @@ Console.WriteLine($"  Test ticket: \"{testTicket[..Math.Min(70, testTicket.Lengt
 Console.WriteLine($"  Reply:       \"{(replyText.Length > 100 ? replyText[..100] + "..." : replyText)}\"");
 Console.WriteLine();
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Step 5: Emit compile-time artifact — IChatClient factory
+//
+// LmpModule path:       CLI calls CSharpArtifactWriter.WriteAsync(module, ...) → partial void ApplyOptimizedState()
+// ChatClientTarget path: call WriteForChatClientTargetAsync(state, ...) → static IChatClient Build(baseClient)
+//
+// Both produce .g.cs files you commit to source control. Next build: zero I/O, compile-time constants.
+// ══════════════════════════════════════════════════════════════════════════════
+Console.WriteLine("Step 5: Emit compile-time artifact — IChatClient factory");
+Console.WriteLine("──────────────────────────────────────────────────────────────");
+Console.WriteLine("  For LmpModule, the CLI calls CSharpArtifactWriter.WriteAsync() and emits");
+Console.WriteLine("  a partial void ApplyOptimizedState() implementation. ChatClientTarget has");
+Console.WriteLine("  the same philosophy: emit a static IChatClient Build(baseClient) factory");
+Console.WriteLine("  with the learned state baked in as compile-time constants.");
+Console.WriteLine();
+
+// Walk up from AppContext.BaseDirectory (bin/Debug/net10.0) to find the .csproj — dev-time only.
+static string FindProjectDir()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        if (dir.GetFiles("*.csproj").Length > 0) return dir.FullName;
+        dir = dir.Parent!;
+    }
+    return AppContext.BaseDirectory; // fallback: write alongside the binary
+}
+
+var artifactDir = Path.Combine(FindProjectDir(), "Generated");
+var artifactPath = await CSharpArtifactWriter.WriteForChatClientTargetAsync(
+    state: calibState,
+    className: "OptimizedSupportClient",
+    ns: "LMP.Samples.ChatClientTarget",
+    outputDir: artifactDir,
+    score: calibResult.OptimizedScore,
+    optimizerName: "BayesianCalibration",
+    baseline: calibResult.BaselineScore);
+
+Console.WriteLine($"  Generated: {artifactPath}");
+Console.WriteLine();
+Console.WriteLine(await File.ReadAllTextAsync(artifactPath));
+Console.WriteLine();
+Console.WriteLine("  ► Commit Generated/OptimizedSupportClient.g.cs to source control.");
+Console.WriteLine("  ► On next build (dotnet build), this compiles into the assembly:");
+Console.WriteLine("      IChatClient client = OptimizedSupportClient.Build(rawAzureClient);");
+Console.WriteLine("    Zero I/O. No re-optimization. Compile-time constants only.");
+Console.WriteLine();
+
 // ── Results Summary ───────────────────────────────────────────────────────────
 Console.WriteLine("╔══════════════════════════════════════════════════════════════╗");
 Console.WriteLine("║   ChatClientTarget — Optimization Results                    ║");
@@ -172,6 +220,11 @@ Console.WriteLine("║   • ChatClientTarget — no LmpModule subclass needed  
 Console.WriteLine("║   • BayesianCalibration — tunes Continuous params (temp)     ║");
 Console.WriteLine("║   • ChainTarget — chains targets, each tuned independently   ║");
 Console.WriteLine("║   • UseOptimized — deploys via M.E.AI ChatClientBuilder      ║");
+Console.WriteLine("║                                                              ║");
+Console.WriteLine("║   Compile-time artifact paths:                               ║");
+Console.WriteLine("║   • LmpModule  → CLI emits partial void ApplyOptimizedState()║");
+Console.WriteLine("║   • ChatClient → Step 5 emits static IChatClient Build(...)  ║");
+Console.WriteLine("║     Both: commit the .g.cs → next build uses it, zero I/O   ║");
 Console.WriteLine("╚══════════════════════════════════════════════════════════════╝");
 
 // ── File-local types and helpers ──────────────────────────────────────────────
