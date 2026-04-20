@@ -375,6 +375,48 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine($"  Goal.Speed score:    {simbaScore.AverageScore:P1}");
     Console.WriteLine();
 
+    // Goal.Cost — fast pipeline: BFS → MIPROv2 (skip GEPA + BayesianCalibration)
+    Console.WriteLine("  Goal.Cost: BFS → MIPROv2 (faster, fewer LLM optimizer calls)");
+    Console.WriteLine("  Cooling down before Goal.Cost run...");
+    await Task.Delay(TimeSpan.FromSeconds(15));
+
+    var goalCostModule = new SupportTriageModule(client);
+    var goalCostResult = await LmpPipelines.Auto(goalCostModule, client, Goal.Cost)
+        .OptimizeAsync(trainSet, devSet, untypedMetric);
+    var goalCostScore = await Evaluator.EvaluateAsync(
+        goalCostResult.Target.GetService<LmpModule>()!, devSet, untypedMetric);
+    Console.WriteLine($"  Goal.Cost score:     {goalCostScore.AverageScore:P1}");
+    Console.WriteLine();
+
+    // Goal.Balanced — quality-efficient pipeline: BFS → GEPA → BayesianCalibration
+    Console.WriteLine("  Goal.Balanced: BFS → GEPA → BayesianCalibration");
+    Console.WriteLine("  Cooling down before Goal.Balanced run...");
+    await Task.Delay(TimeSpan.FromSeconds(15));
+
+    var goalBalancedModule = new SupportTriageModule(client);
+    var goalBalancedResult = await LmpPipelines.Auto(goalBalancedModule, client, Goal.Balanced)
+        .OptimizeAsync(trainSet, devSet, untypedMetric);
+    var goalBalancedScore = await Evaluator.EvaluateAsync(
+        goalBalancedResult.Target.GetService<LmpModule>()!, devSet, untypedMetric);
+    Console.WriteLine($"  Goal.Balanced score: {goalBalancedScore.AverageScore:P1}");
+    Console.WriteLine();
+
+    // CostBudget — cap optimization at a token limit
+    Console.WriteLine("  CostBudget: stop pipeline when token budget is reached");
+    Console.WriteLine("  Cooling down before budget-capped run...");
+    await Task.Delay(TimeSpan.FromSeconds(15));
+
+    var goalBudgetModule = new SupportTriageModule(client);
+    // .WithBudget() stops adding new optimizer steps once the token limit is exceeded.
+    // The pipeline returns the best checkpoint found before the budget was hit.
+    var goalBudgetResult = await LmpPipelines.Auto(goalBudgetModule, client, Goal.Accuracy)
+        .WithBudget(b => b.MaxTokens(200_000))
+        .OptimizeAsync(trainSet, devSet, untypedMetric);
+    var goalBudgetScore = await Evaluator.EvaluateAsync(
+        goalBudgetResult.Target.GetService<LmpModule>()!, devSet, untypedMetric);
+    Console.WriteLine($"  Budget-capped score: {goalBudgetScore.AverageScore:P1}  (≤200K tokens)");
+    Console.WriteLine();
+
     // ═══════════════════════════════════════════════════════════
     // Step 8: Results Comparison
     // ═══════════════════════════════════════════════════════════
@@ -391,6 +433,9 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine($"║   MIPROv2 + Warm-Start SMAC:     {warmScore.AverageScore,6:P1}                ║");
     Console.WriteLine($"║   Auto (Goal.Accuracy):          {autoAccuracyScore.AverageScore,6:P1}                ║");
     Console.WriteLine($"║   Auto (Goal.Speed / SIMBA):     {simbaScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   Auto (Goal.Cost / BFS→MIPRO):  {goalCostScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   Auto (Goal.Balanced):          {goalBalancedScore.AverageScore,6:P1}                ║");
+    Console.WriteLine($"║   Auto (Budget ≤200K tokens):    {goalBudgetScore.AverageScore,6:P1}                ║");
     Console.WriteLine("╠══════════════════════════════════════════════════════════╣");
     Console.WriteLine("║                                                          ║");
     Console.WriteLine("║   ISampler lets you swap search strategies:               ║");
@@ -399,6 +444,11 @@ if (tpeHistory is { Count: > 0 })
     Console.WriteLine("║   · CostAware — FLAML Flow2, balances quality vs. cost    ║");
     Console.WriteLine("║   TraceAnalyzer enables cross-run transfer learning.      ║");
     Console.WriteLine("║   LmpPipelines.Auto() — one call, full pipeline, any goal ║");
+    Console.WriteLine("║   · Goal.Accuracy — BFS → GEPA → MIPROv2 → Calibration   ║");
+    Console.WriteLine("║   · Goal.Speed    — SIMBA (stochastic mini-batch)         ║");
+    Console.WriteLine("║   · Goal.Cost     — BFS → MIPROv2 (faster/cheaper)        ║");
+    Console.WriteLine("║   · Goal.Balanced — BFS → GEPA → BayesianCalibration      ║");
+    Console.WriteLine("║   .WithBudget(b => b.MaxTokens(N)) caps token spend.      ║");
     Console.WriteLine("╚══════════════════════════════════════════════════════════╝");
 }
 

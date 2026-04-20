@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LMP.Samples.ChatClientTarget</RootNamespace>
+    <UserSecretsId>f2a9e4b7-3c81-4d5f-a721-9b3e6c0d1e45</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LMP.Core\LMP.Core.csproj" />
+    <ProjectReference Include="..\..\src\LMP.Optimizers\LMP.Optimizers.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
+  </ItemGroup>
+</Project>

@@ -40,7 +40,8 @@ Start at the top and work your way down. Each sample builds on concepts from the
 | [**Agent**](LMP.Samples.Agent/) | ReAct agent with tool-calling. Think → Act → Observe loop. |
 | [**RAG**](LMP.Samples.Rag/) | Retrieval-Augmented Generation. IRetriever, context injection, knowledge grounding. |
 | [**Middleware**](LMP.Samples.Middleware/) | Production observability. Distributed caching, OpenTelemetry tracing, structured logging via M.E.AI middleware. |
-| [**Evaluation**](LMP.Samples.Evaluation/) | Multi-metric evaluation. Keyword metrics → NLP (F1, BLEU) → LLM-as-judge (Coherence, Relevance, Groundedness). |
+| [**Evaluation**](LMP.Samples.Evaluation/) | Multi-metric evaluation. Keyword metrics → NLP (F1, BLEU) → LLM-as-judge (Coherence, Relevance, Groundedness). **Plus:** `EvaluationCritique` feeds M.E.AI evaluator rationale into a GEPA pipeline for targeted instruction improvement. |
+| [**Modules**](LMP.Samples.Modules/) | Inference-time quality modules: `BestOfN` (N parallel, pick best by reward), `Refine` (self-critique loops), `ProgramOfThought` (LM writes + Roslyn executes C#). Plus `LmpSuggest` (soft) vs `LmpAssert` (hard) guardrails. |
 
 ### 🔴 Advanced
 
@@ -49,8 +50,9 @@ Start at the top and work your way down. Each sample builds on concepts from the
 | [**MIPROv2**](LMP.Samples.MIPROv2/) | Bayesian instruction + demo optimization. Proposal LM generates instruction variants, TPE searches over combinations. |
 | [**GEPA**](LMP.Samples.GEPA/) | Evolutionary optimization via LLM reflection. Captures failures → diagnoses → proposes fixes → evolves instructions. |
 | [**Z3**](LMP.Samples.Z3/) | Constraint-based demo selection with the Z3 solver. Enforces category coverage and quality constraints. |
-| [**AdvancedOptimizers**](LMP.Samples.AdvancedOptimizers/) | Pluggable search strategies: `ISearchStrategy`, `SmacSampler`, `CostAwareSampler`, `TraceAnalyzer`, warm-start transfer. **Plus:** unified `LmpPipelines.Auto()` façade — one call runs BFS → GEPA → MIPROv2 → `BayesianCalibration`, or `Goal.Speed` runs `SIMBA`. |
+| [**AdvancedOptimizers**](LMP.Samples.AdvancedOptimizers/) | Pluggable search strategies: `ISearchStrategy`, `SmacSampler`, `CostAwareSampler`, `TraceAnalyzer`, warm-start transfer. **Plus:** unified `LmpPipelines.Auto()` façade — `Goal.Accuracy` (BFS → GEPA → MIPROv2 → Calibration), `Goal.Speed` (SIMBA), `Goal.Cost` (BFS → MIPROv2), `Goal.Balanced` (BFS → GEPA → Calibration). `CostBudget` caps token spend. |
 | [**AutoOptimize**](LMP.Samples.AutoOptimize/) | Build-time auto-optimization. `[AutoOptimize]` → source gen → `.g.cs` artifacts → `dotnet build -p:LmpAutoOptimize=true`. |
+| [**ChatClientTarget**](LMP.Samples.ChatClientTarget/) | Optimize any `IChatClient` without defining an `LmpModule`. `ChatClientTarget.For()` wraps a client with optimizable params (system prompt, temperature, tools). `ChainTarget` chains two targets end-to-end. `UseOptimized()` deploys the learned state as M.E.AI middleware. |
 
 ### 📊 Benchmarks (Real Datasets)
 
@@ -72,35 +74,49 @@ Start at the top and work your way down. Each sample builds on concepts from the
 
 ## Samples × Techniques Matrix
 
-| Technique | TicketTriage | Agent | RAG | Middleware | Evaluation | MIPROv2 | GEPA | Z3 | AdvOpt | AutoOpt | MathReason | IntentClass | FacilSupport | AdvRag |
-|-----------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| LmpModule / Predictor | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Chain of Thought | ✅ | | | ✅ | ✅ | | | | | | ✅ | | | ✅ |
-| Tool Calling / ReAct | | ✅ | | | | | | | | | | | | |
-| Retrieval (RAG) | | | ✅ | | | | | | | | | | | ✅ |
-| Multi-Hop RAG | | | | | | | | | | | | | | ✅ |
-| Query Expansion | | | | | | | | | | | | | | ✅ |
-| LLM Reranking | | | | | | | | | | | | | | ✅ |
-| CRAG Validation | | | | | | | | | | | | | | ✅ |
-| M.E.AI Middleware | | | | ✅ | | | | | | | | | | |
-| UseLmpTrace | | | | ✅ | | | | | | | | | | |
-| BootstrapFewShot | ✅ | | | | | | | | | ✅ | | | | |
-| BootstrapRandomSearch | | | | | | ✅ | | ✅ | ✅ | ✅ | ✅ | ✅ | | |
-| MIPROv2 (Bayesian) | | | | | | ✅ | | | ✅ | ✅ | ✅ | ✅ | | ✅ |
-| GEPA (Evolutionary) | | | | | | | ✅ | | | ✅ | | | ✅ | |
-| SIMBA (Mini-Batch) | | | | | | | | | ✅ | | | | | |
-| BayesianCalibration | | | | | | | | | ✅ | | | | | |
-| LmpPipelines.Auto() | | | | | | | | | ✅ | | | | | |
-| Z3 Constraints | | | | | | | | ✅ | | | | | | |
-| ISearchStrategy / SmacSampler | | | | | | | | | ✅ | | | | | |
-| CostAwareSampler | | | | | | | | | ✅ | | | | | |
-| Evaluator | ✅ | | | | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| M.E.AI Evaluation | | | | | ✅ | | | | | | | | | |
-| Multi-Predictor Module | | | | | | | | | | | | | ✅ | ✅ |
-| Real Benchmark Dataset | | | | | | | | | | | ✅ | ✅ | ✅ | ✅ |
-| C# Enum Output Types | ✅ | | | | | ✅ | ✅ | ✅ | ✅ | | ✅ | | ✅ | ✅ |
-| Source Generation | | | | | | | | | | ✅ | | | | |
-| MSBuild Integration | | | | | | | | | | ✅ | | | | |
+| Technique | TicketTriage | Agent | RAG | Middleware | Evaluation | Modules | MIPROv2 | GEPA | Z3 | AdvOpt | AutoOpt | ChatClientTarget | MathReason | IntentClass | FacilSupport | AdvRag |
+|-----------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| LmpModule / Predictor | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | | ✅ | ✅ | ✅ | ✅ |
+| Chain of Thought | ✅ | | | ✅ | ✅ | | | | | | | | ✅ | | | ✅ |
+| BestOfN | | | | | | ✅ | | | | | | | | | | |
+| Refine | | | | | | ✅ | | | | | | | | | | |
+| ProgramOfThought | | | | | | ✅ | | | | | | | | | | |
+| LmpSuggest (soft) | | | | | | ✅ | | | | | | | | | | |
+| LmpAssert (hard) | ✅ | | | | | ✅ | | ✅ | | | | | | ✅ | | |
+| Tool Calling / ReAct | | ✅ | | | | | | | | | | | | | | |
+| Retrieval (RAG) | | | ✅ | | | | | | | | | | | | | ✅ |
+| Multi-Hop RAG | | | | | | | | | | | | | | | | ✅ |
+| Query Expansion | | | | | | | | | | | | | | | | ✅ |
+| LLM Reranking | | | | | | | | | | | | | | | | ✅ |
+| CRAG Validation | | | | | | | | | | | | | | | | ✅ |
+| M.E.AI Middleware | | | | ✅ | | | | | | | | | | | | |
+| UseLmpTrace | | | | ✅ | | | | | | | | | | | | |
+| ChatClientTarget | | | | | | | | | | | | ✅ | | | | |
+| ChainTarget | | | | | | | | | | | | ✅ | | | | |
+| UseOptimized middleware | | | | | | | | | | | | ✅ | | | | |
+| BootstrapFewShot | ✅ | | | | | | | | | | ✅ | | | | | |
+| BootstrapRandomSearch | | | | | | ✅ | | ✅ | ✅ | ✅ | ✅ | | ✅ | ✅ | | |
+| MIPROv2 (Bayesian) | | | | | | | ✅ | | | ✅ | ✅ | | ✅ | ✅ | | ✅ |
+| GEPA (Evolutionary) | | | | | ✅ | | | ✅ | | | ✅ | | | | ✅ | |
+| SIMBA (Mini-Batch) | | | | | | | | | | ✅ | | | | | | |
+| BayesianCalibration | | | | | | | | | | ✅ | | ✅ | | | | |
+| Goal.Accuracy | | | | | | | | | | ✅ | | | | | | |
+| Goal.Speed | | | | | | | | | | ✅ | | | | | | |
+| Goal.Cost | | | | | | | | | | ✅ | | | | | | |
+| Goal.Balanced | | | | | | | | | | ✅ | | | | | | |
+| CostBudget | | | | | | | | | | ✅ | | | | | | |
+| LmpPipelines.Auto() | | | | | | | | | | ✅ | | | | | | |
+| EvaluationCritique | | | | | ✅ | | | | | | | | | | | |
+| Z3 Constraints | | | | | | | | | ✅ | | | | | | | |
+| ISearchStrategy / SmacSampler | | | | | | | | | | ✅ | | | | | | |
+| CostAwareSampler | | | | | | | | | | ✅ | | | | | | |
+| Evaluator | ✅ | | | | ✅ | | ✅ | ✅ | ✅ | ✅ | ✅ | | ✅ | ✅ | ✅ | ✅ |
+| M.E.AI Evaluation | | | | | ✅ | | | | | | | | | | | |
+| Multi-Predictor Module | | | | | | | | | | | | | | | ✅ | ✅ |
+| Real Benchmark Dataset | | | | | | | | | | | | | ✅ | ✅ | ✅ | ✅ |
+| C# Enum Output Types | ✅ | | | | | | ✅ | ✅ | ✅ | ✅ | | | ✅ | | ✅ | ✅ |
+| Source Generation | | | | | | ✅ | | | | | ✅ | | | | | |
+| MSBuild Integration | | | | | | | | | | | ✅ | | | | | |
 
 ---
 

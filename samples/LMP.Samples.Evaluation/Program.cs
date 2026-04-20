@@ -175,6 +175,40 @@ Console.WriteLine($"  Baseline:  {bridgedResult.AverageScore:P1}");
 Console.WriteLine($"  Optimized: {optimizedResult.AverageScore:P1}");
 Console.WriteLine();
 
+// ── Step 6: EvaluationCritique → GEPA Pipeline ─────────────────────────────
+Console.WriteLine("Step 6: EvaluationCritique → GEPA Pipeline");
+Console.WriteLine("────────────────────────────────────────────");
+Console.WriteLine("  EvaluationCritique runs M.E.AI evaluators against trial outputs,");
+Console.WriteLine("  writing critique rationale into OptimizationContext.ReflectionLog.");
+Console.WriteLine("  GEPA reads this log when proposing instruction mutations — it already");
+Console.WriteLine("  knows *why* each trial failed before making any extra LLM calls.");
+Console.WriteLine();
+Console.WriteLine("  Pipeline: EvaluationCritique → GEPA");
+Console.WriteLine("  · EvaluationCritique evaluates ≤5 training examples, scores each,");
+Console.WriteLine("    and records per-example critique rationale in ReflectionLog.");
+Console.WriteLine("  · GEPA's ReflectOnPredictor prepends those observations when asking");
+Console.WriteLine("    the LLM to propose improved instructions.");
+Console.WriteLine();
+
+Console.WriteLine("  Cooling down (15 s) before EvaluationCritique + GEPA run...");
+await Task.Delay(TimeSpan.FromSeconds(15));
+
+var critiqueModule = new SupportTriageModule(client);
+
+var critiqueResult = await OptimizationPipeline.For(critiqueModule)
+    .Use(new EvaluationCritique(
+        new CoherenceEvaluator(),
+        evalConfig,
+        CoherenceEvaluator.CoherenceMetricName,
+        maxScore: 5.0f,
+        maxExamples: 5))
+    .Use(new GEPA(evalClient, maxIterations: 8, miniBatchSize: 3, maxConcurrency: 2))
+    .OptimizeAsync(trainSet, devSet, syncBridgedMetric);
+
+Console.WriteLine($"  Baseline score:                  {critiqueResult.BaselineScore:P1}");
+Console.WriteLine($"  After EvaluationCritique + GEPA: {critiqueResult.OptimizedScore:P1}");
+Console.WriteLine();
+
 // ── Summary ─────────────────────────────────────────────────
 Console.WriteLine("╔══════════════════════════════════════════════════════╗");
 Console.WriteLine("║   Available M.E.AI Evaluators                        ║");
@@ -192,8 +226,11 @@ Console.WriteLine("║     • CompletenessEvaluator — thoroughness           
 Console.WriteLine("║     • FluencyEvaluator   — grammar & naturalness     ║");
 Console.WriteLine("║     • EquivalenceEvaluator — vs ground truth         ║");
 Console.WriteLine("║                                                      ║");
-Console.WriteLine("║   All bridge seamlessly into LMP via:                 ║");
-Console.WriteLine("║     EvaluationBridge.CreateMetric(evaluator, ...)     ║");
+Console.WriteLine("║   EvaluationCritique bridges evaluators → GEPA:      ║");
+Console.WriteLine("║     OptimizationPipeline.For(module)                  ║");
+Console.WriteLine("║       .Use(new EvaluationCritique(evaluator, ...))    ║");
+Console.WriteLine("║       .Use(new GEPA(reflectionClient))                ║");
+Console.WriteLine("║     GEPA reads ReflectionLog for targeted mutations.  ║");
 Console.WriteLine("╚══════════════════════════════════════════════════════╝");
 
 // ── Custom IEvaluator ────────────────────────────────────────
