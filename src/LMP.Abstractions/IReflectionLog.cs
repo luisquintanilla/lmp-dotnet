@@ -20,21 +20,23 @@ public interface IReflectionLog
     /// <summary>Appends a new reflection entry to the log.</summary>
     /// <param name="text">Observation text.</param>
     /// <param name="source">Optimizer step that produced this entry (optional).</param>
-    /// <param name="predictorName">
-    /// Name of the predictor, if scope is <see cref="ReflectionScope.Predictor"/>.
+    /// <param name="predictorPath">
+    /// Fully-qualified path of the predictor, if scope is
+    /// <see cref="ReflectionScope.Predictor"/>. For composite targets this
+    /// matches the prefixed <see cref="TraceEntry.PredictorName"/>.
     /// </param>
     /// <param name="scope">Global (whole module) or Predictor-specific.</param>
     /// <param name="score">Score of the associated example (optional).</param>
     void Add(
         string text,
         string? source = null,
-        string? predictorName = null,
+        string? predictorPath = null,
         ReflectionScope scope = ReflectionScope.Global,
         float? score = null);
 
     /// <summary>Returns all entries matching the given scope.</summary>
     IReadOnlyList<ReflectionEntry> GetEntries(ReflectionScope scope);
 
-    /// <summary>Returns all entries for a specific predictor name.</summary>
-    IReadOnlyList<ReflectionEntry> GetEntriesForPredictor(string predictorName);
+    /// <summary>Returns all entries for a specific predictor path.</summary>
+    IReadOnlyList<ReflectionEntry> GetEntriesForPredictor(string predictorPath);
 }

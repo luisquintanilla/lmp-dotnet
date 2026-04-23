@@ -40,8 +40,11 @@ public sealed class ReflectionLog : IReflectionLog
     /// </summary>
     /// <param name="text">Observation text.</param>
     /// <param name="source">Optimizer step that produced this entry (optional).</param>
-    /// <param name="predictorName">
-    /// Name of the predictor, if scope is <see cref="ReflectionScope.Predictor"/>.
+    /// <param name="predictorPath">
+    /// Fully-qualified path of the predictor, if scope is
+    /// <see cref="ReflectionScope.Predictor"/>. For composite targets this
+    /// matches the prefixed <see cref="TraceEntry.PredictorName"/> written by
+    /// the target (e.g., <c>"child_0.classify"</c>).
     /// </param>
     /// <param name="scope">Global (whole module) or Predictor-specific.</param>
     /// <param name="score">Score of the associated example (optional).</param>
@@ -51,7 +54,7 @@ public sealed class ReflectionLog : IReflectionLog
     public void Add(
         string text,
         string? source = null,
-        string? predictorName = null,
+        string? predictorPath = null,
         ReflectionScope scope = ReflectionScope.Global,
         float? score = null)
     {
@@ -62,7 +65,7 @@ public sealed class ReflectionLog : IReflectionLog
         ArgumentNullException.ThrowIfNull(text);
 
         var entry = new ReflectionEntry(
-            text, source, predictorName, scope, score, DateTimeOffset.UtcNow);
+            text, source, predictorPath, scope, score, DateTimeOffset.UtcNow);
 
         lock (_lock) _entries.Add(entry);
     }
@@ -79,13 +82,13 @@ public sealed class ReflectionLog : IReflectionLog
     /// <summary>
     /// Returns all entries for a specific predictor name.
     /// </summary>
-    public IReadOnlyList<ReflectionEntry> GetEntriesForPredictor(string predictorName)
+    public IReadOnlyList<ReflectionEntry> GetEntriesForPredictor(string predictorPath)
     {
-        ArgumentNullException.ThrowIfNull(predictorName);
+        ArgumentNullException.ThrowIfNull(predictorPath);
         lock (_lock)
             return _entries
                 .Where(e => e.Scope == ReflectionScope.Predictor &&
-                            e.PredictorName == predictorName)
+                            e.PredictorName == predictorPath)
                 .ToArray();
     }
 }

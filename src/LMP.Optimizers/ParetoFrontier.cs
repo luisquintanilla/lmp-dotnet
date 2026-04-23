@@ -15,8 +15,8 @@ namespace LMP.Optimizers;
 /// candidates on the full training set.
 /// </para>
 /// </remarks>
-/// <typeparam name="TModule">The LMP module type being optimized.</typeparam>
-internal sealed class ParetoFrontier<TModule> where TModule : LmpModule
+/// <typeparam name="TModule">The candidate type being optimized.</typeparam>
+internal sealed class ParetoFrontier<TModule> where TModule : class
 {
     private readonly List<(TModule Candidate, IReadOnlyList<ExampleResult> Scores)> _candidates = [];
 

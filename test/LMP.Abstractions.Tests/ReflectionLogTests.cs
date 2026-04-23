@@ -34,7 +34,7 @@ public class ReflectionLogTests
     public void Add_PredictorScope_SetsNameAndScope()
     {
         var log = new ReflectionLog();
-        log.Add("pred observation", predictorName: "Answer", scope: ReflectionScope.Predictor, score: 0.4f);
+        log.Add("pred observation", predictorPath: "Answer", scope: ReflectionScope.Predictor, score: 0.4f);
         var entry = log.Entries[0];
         Assert.Equal(ReflectionScope.Predictor, entry.Scope);
         Assert.Equal("Answer", entry.PredictorName);
@@ -71,7 +71,7 @@ public class ReflectionLogTests
     {
         var log = new ReflectionLog();
         log.Add("global one", scope: ReflectionScope.Global);
-        log.Add("predictor one", predictorName: "A", scope: ReflectionScope.Predictor);
+        log.Add("predictor one", predictorPath: "A", scope: ReflectionScope.Predictor);
         log.Add("global two", scope: ReflectionScope.Global);
 
         var globals = log.GetEntries(ReflectionScope.Global);
@@ -85,8 +85,8 @@ public class ReflectionLogTests
     public void GetEntriesForPredictor_FiltersByName()
     {
         var log = new ReflectionLog();
-        log.Add("a obs", predictorName: "A", scope: ReflectionScope.Predictor);
-        log.Add("b obs", predictorName: "B", scope: ReflectionScope.Predictor);
+        log.Add("a obs", predictorPath: "A", scope: ReflectionScope.Predictor);
+        log.Add("b obs", predictorPath: "B", scope: ReflectionScope.Predictor);
         log.Add("global", scope: ReflectionScope.Global);
 
         var forA = log.GetEntriesForPredictor("A");

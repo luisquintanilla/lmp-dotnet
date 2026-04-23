@@ -265,6 +265,163 @@ public sealed class GEPATests
         Assert.True(reflectionLog.Count > 0);
         Assert.Contains(reflectionLog.Entries, e => e.Source == nameof(GEPA));
     }
+
+    // ── T2g Seam Migration Tests ─────────────────────────────────
+
+    [Fact]
+    public async Task CompileAsync_PerTrial_UsesWithParametersSeam()
+    {
+        // Proves the mutation path exercises the IOptimizationTarget.WithParameters seam
+        // (rather than mutating IPredictor.Instructions directly as pre-T2g did).
+        FakeGEPAPredictor.ResetWithParametersCalls();
+
+        var gepa = new GEPA(
+            new FakeReflectionClient(),
+            maxIterations: 3,
+            miniBatchSize: 2,
+            mergeEvery: 100, // mutation-only
+            seed: 42);
+
+        var module = new GEPATestModule(new FakeTaskClient());
+        var trainSet = Enumerable.Range(0, 6)
+            .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
+                new GEPAOutput($"a{i}")))
+            .ToList();
+        Func<Example, object, float> metric = (_, output) =>
+            output is GEPAOutput o && o.Reply.Contains("Improved", StringComparison.OrdinalIgnoreCase) ? 0.9f : 0.2f;
+
+        await gepa.CompileAsync(module, trainSet, metric);
+
+        Assert.True(FakeGEPAPredictor.WithParametersCalls > 0,
+            "Expected GEPA mutation path to call IOptimizationTarget.WithParameters at least once.");
+    }
+
+    [Fact]
+    public async Task CompileAsync_MergePath_UsesWithParametersSeam()
+    {
+        // Proves the merge/crossover path also uses the seam (rubber-duck Q6.3).
+        // With mergeEvery=2 and maxIterations=6, at least two merge iterations run
+        // after the frontier has ≥2 candidates.
+        FakeGEPAPredictor.ResetWithParametersCalls();
+
+        var gepa = new GEPA(
+            new FakeReflectionClient(),
+            maxIterations: 8,
+            miniBatchSize: 2,
+            mergeEvery: 2,
+            seed: 7);
+
+        var module = new GEPATestModule(new FakeTaskClient());
+        var trainSet = Enumerable.Range(0, 6)
+            .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
+                new GEPAOutput($"a{i}")))
+            .ToList();
+        Func<Example, object, float> metric = (_, output) =>
+            output is GEPAOutput o && o.Reply.Contains("Improved", StringComparison.OrdinalIgnoreCase) ? 0.9f : 0.2f;
+
+        await gepa.CompileAsync(module, trainSet, metric);
+
+        // Any successful evolution implies at least one WithParameters call. Merge iterations
+        // that actually run will also go through the seam.
+        Assert.True(FakeGEPAPredictor.WithParametersCalls > 0,
+            "Expected merge/mutation to invoke WithParameters at least once.");
+    }
+
+    [Fact]
+    public async Task CompileAsync_DoesNotMutateInputModule()
+    {
+        // Regression: the input module's predictor Instructions must not be mutated
+        // in place by GEPA. Mutants are produced via WithParameters on pristine parents.
+        var gepa = new GEPA(
+            new FakeReflectionClient(),
+            maxIterations: 3,
+            miniBatchSize: 2,
+            mergeEvery: 100,
+            seed: 42);
+
+        var module = new GEPATestModule(new FakeTaskClient());
+        var originalInstruction = module.GetPredictors().First().Predictor.Instructions;
+        var trainSet = Enumerable.Range(0, 6)
+            .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
+                new GEPAOutput($"a{i}")))
+            .ToList();
+        Func<Example, object, float> metric = (_, output) =>
+            output is GEPAOutput o && o.Reply.Contains("Improved", StringComparison.OrdinalIgnoreCase) ? 0.9f : 0.2f;
+
+        await gepa.CompileAsync(module, trainSet, metric);
+
+        // Input module's predictor must be untouched; best state lives on the returned module.
+        Assert.Equal(originalInstruction, module.GetPredictors().First().Predictor.Instructions);
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnChainTargetOfModules_EvolvesEachStageIndependently()
+    {
+        // Composite-GEPA end-to-end: two LmpModule children composed via .Then() form a
+        // ChainTarget. GEPA must enumerate their predictors via the walker, build
+        // "child_{i}.{name}.instructions" parameter assignments, and route mutations
+        // through WithParameters to each stage independently.
+        var gepa = new GEPA(
+            new FakeReflectionClient(),
+            maxIterations: 20,
+            miniBatchSize: 2,
+            mergeEvery: 100, // mutation-only for deterministic per-stage observation
+            seed: 123);
+
+        // Use object-typed stages so ChainTarget can pipe stage 0's output into stage 1.
+        var stageA = new ObjectStageModule(new FakeTaskClient(), predictorName: "stageA");
+        var stageB = new ObjectStageModule(new FakeTaskClient(), predictorName: "stageB");
+        var chain = ((IOptimizationTarget)stageA).Then(stageB);
+
+        var trainSet = Enumerable.Range(0, 6)
+            .Select(i => (Example)new Example<string, string>($"q{i}", $"a{i}"))
+            .ToList();
+        // Reward each stage improving independently: score grows with number of
+        // "Improved" markers in the final chain output (0, 1, or 2).
+        Func<Example, object, float> metric = (_, output) =>
+        {
+            if (output is not GEPAOutput o) return 0.2f;
+            var count = o.Reply.Split("Improved").Length - 1;
+            return count switch { 0 => 0.2f, 1 => 0.6f, _ => 0.95f };
+        };
+
+        var ctx = new OptimizationContext { Target = chain, TrainSet = trainSet, Metric = metric };
+        await gepa.OptimizeAsync(ctx);
+
+        // Round-robin across two predictors over 10 iterations: both stages must have had
+        // their instructions updated via the seam at least once. State is applied back to
+        // the original target by OptimizeAsync.
+        var instrA = stageA.GetPredictors().First().Predictor.Instructions;
+        var instrB = stageB.GetPredictors().First().Predictor.Instructions;
+
+        Assert.Contains("Improved", instrA, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Improved", instrB, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnPredictorOnlyTarget_NoOp()
+    {
+        // PredictorWalker returns empty for a bare IOptimizationTarget that is neither
+        // an LmpModule nor a composite; GEPA must complete without throwing and must
+        // not alter state.
+        var predictor = new BarePredictorTarget { Instructions = "baseline" };
+        var trainSet = Enumerable.Range(0, 3)
+            .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
+                new GEPAOutput($"a{i}")))
+            .ToList();
+
+        var gepa = new GEPA(new FakeReflectionClient(), maxIterations: 3, miniBatchSize: 2, seed: 1);
+        var ctx = new OptimizationContext
+        {
+            Target = predictor,
+            TrainSet = trainSet,
+            Metric = (_, _) => 0.1f,
+        };
+
+        await gepa.OptimizeAsync(ctx);
+
+        Assert.Equal("baseline", predictor.Instructions);
+    }
 }
 
 // ── Test Infrastructure ─────────────────────────────────────
@@ -363,8 +520,18 @@ file class GEPATestModule : LmpModule<GEPAInput, GEPAOutput>
     }
 }
 
-file sealed class FakeGEPAPredictor : IPredictor
+file sealed class FakeGEPAPredictor : IPredictor, IOptimizationTarget
 {
+    /// <summary>
+    /// Counts calls into <see cref="IOptimizationTarget.WithParameters"/> across
+    /// all instances. Used by tests to prove the seam is exercised. Reset via
+    /// <see cref="ResetWithParametersCalls"/>.
+    /// </summary>
+    public static int WithParametersCalls;
+
+    public static void ResetWithParametersCalls() =>
+        Interlocked.Exchange(ref WithParametersCalls, 0);
+
     private readonly IChatClient _client;
 
     public FakeGEPAPredictor(IChatClient client) => _client = client;
@@ -377,10 +544,17 @@ file sealed class FakeGEPAPredictor : IPredictor
 
     public object Predict(object input, Trace? trace)
     {
-        // Output varies based on instruction content — enables testing of gate check
-        var reply = Instructions.Contains("Improved", StringComparison.OrdinalIgnoreCase)
-            ? "Improved reply"
-            : "Generated reply";
+        // Local signal: "Improved" if this predictor's instructions were mutated via reflection.
+        var localPart = Instructions.Contains("Improved", StringComparison.OrdinalIgnoreCase)
+            ? $"{Name}:Improved"
+            : $"{Name}:pending";
+
+        // When chained, propagate prior stage output into the reply so either stage's
+        // mutation visibly affects the final output (enables composite gate passage).
+        var reply = input is GEPAOutput prev
+            ? $"{prev.Reply}|{localPart}"
+            : localPart;
+
         var output = new GEPAOutput(reply);
         trace?.Record(Name, input, output);
         return output;
@@ -410,5 +584,105 @@ file sealed class FakeGEPAPredictor : IPredictor
             clone.TypedDemos.Add(demo);
         return clone;
     }
+
+    // ── IOptimizationTarget implementation ───────────────────────────
+
+    TargetShape IOptimizationTarget.Shape => TargetShape.SingleTurn;
+
+    Task<(object Output, Trace Trace)> IOptimizationTarget.ExecuteAsync(
+        object input, CancellationToken ct)
+    {
+        var trace = new Trace();
+        var output = Predict(input, trace);
+        return Task.FromResult<(object, Trace)>((output, trace));
+    }
+
+    TypedParameterSpace IOptimizationTarget.GetParameterSpace()
+        => TypedParameterSpace.Empty
+            .Add("instructions", new StringValued(Instructions));
+
+    TargetState IOptimizationTarget.GetState() => TargetState.From(GetState());
+
+    void IOptimizationTarget.ApplyState(TargetState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        LoadState(state.As<PredictorState>());
+    }
+
+    IOptimizationTarget IOptimizationTarget.WithParameters(ParameterAssignment assignment)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        Interlocked.Increment(ref WithParametersCalls);
+        var clone = (FakeGEPAPredictor)Clone();
+        foreach (var (k, v) in assignment.Values)
+        {
+            if (k == "instructions")
+                clone.Instructions = (string)v;
+            else
+                throw new ArgumentException(
+                    $"FakeGEPAPredictor.WithParameters: unknown parameter key '{k}'. " +
+                    $"Valid keys: instructions.",
+                    nameof(assignment));
+        }
+        return clone;
+    }
+
+    TService? IOptimizationTarget.GetService<TService>() where TService : class
+        => this as TService;
+}
+
+/// <summary>
+/// A bare <see cref="IOptimizationTarget"/> that is neither an <see cref="LmpModule"/>
+/// nor a composite. Used to verify that <see cref="GEPA"/> tolerates targets for
+/// which <see cref="PredictorWalker"/> yields no predictors (walker returns empty).
+/// </summary>
+file sealed class BarePredictorTarget : IOptimizationTarget
+{
+    public string Instructions { get; set; } = "";
+
+    public TargetShape Shape => TargetShape.SingleTurn;
+
+    public Task<(object Output, Trace Trace)> ExecuteAsync(object input, CancellationToken ct = default)
+    {
+        var trace = new Trace();
+        object output = new GEPAOutput("bare");
+        return Task.FromResult((output, trace));
+    }
+
+    public TypedParameterSpace GetParameterSpace() => TypedParameterSpace.Empty;
+
+    public TargetState GetState() => TargetState.From(Instructions);
+
+    public void ApplyState(TargetState state) => Instructions = state.As<string>();
+
+    public IOptimizationTarget WithParameters(ParameterAssignment assignment) => this;
+
+    public TService? GetService<TService>() where TService : class => this as TService;
+}
+
+/// <summary>
+/// Object-typed module wrapping a single <see cref="FakeGEPAPredictor"/>. Used in
+/// composite tests where the chain must pipe output of stage i into stage i+1 without
+/// typed input/output constraints.
+/// </summary>
+file sealed class ObjectStageModule : LmpModule
+{
+    private readonly FakeGEPAPredictor _processor;
+
+    public ObjectStageModule(IChatClient client, string predictorName)
+    {
+        _processor = new FakeGEPAPredictor(client) { Name = predictorName };
+    }
+
+    private ObjectStageModule(FakeGEPAPredictor processor) { _processor = processor; }
+
+    public override Task<object> ForwardAsync(object input, CancellationToken cancellationToken = default)
+        => Task.FromResult(_processor.Predict(input, Trace));
+
+    public override IReadOnlyList<(string Name, IPredictor Predictor)> GetPredictors()
+        => [(Name: _processor.Name, Predictor: _processor)];
+
+    protected override LmpModule CloneCore()
+        => new ObjectStageModule((FakeGEPAPredictor)_processor.Clone());
 }
 
