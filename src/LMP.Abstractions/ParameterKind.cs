@@ -65,10 +65,42 @@ public sealed record StringValued(string? InitialValue = null) : ParameterKind;
 /// Maximum number of items in a valid subset.
 /// −1 (default) means no upper bound (all pool items are selected).
 /// </param>
-public sealed record Subset(
+public record Subset(
     IReadOnlyList<object> Pool,
     int MinSize = 1,
     int MaxSize = -1) : ParameterKind;
+
+/// <summary>
+/// Typed overlay of <see cref="Subset"/> providing producer-side ergonomics:
+/// pool items retain their compile-time element type <typeparamref name="T"/>,
+/// so call sites can construct a subset without the <c>.Cast&lt;object&gt;()</c> ceremony.
+/// </summary>
+/// <typeparam name="T">Compile-time element type of the pool.</typeparam>
+/// <param name="TypedPool">All candidate items, preserved at their declared type.</param>
+/// <param name="MinSize">Minimum number of items in a valid subset. Default is 1.</param>
+/// <param name="MaxSize">
+/// Maximum number of items in a valid subset.
+/// −1 (default) means no upper bound (all pool items are selected).
+/// </param>
+/// <remarks>
+/// <para>
+/// <see cref="Subset{T}"/> inherits from the non-generic <see cref="Subset"/>, mirroring
+/// <paramref name="TypedPool"/> into the base <see cref="Subset.Pool"/> as boxed
+/// <see cref="object"/> references. This guarantees that existing heterogeneous-kind
+/// walkers (optimizers, samplers, constraint encoders) that pattern-match on
+/// <c>is Subset s</c> continue to work without modification.
+/// </para>
+/// <para>
+/// Record equality uses the runtime <c>EqualityContract</c>: a <c>Subset&lt;string&gt;</c> is
+/// <b>not</b> equal to a base <c>Subset</c> with the same boxed contents, nor to a
+/// <c>Subset&lt;object&gt;</c>.
+/// </para>
+/// </remarks>
+public sealed record Subset<T>(
+    IReadOnlyList<T> TypedPool,
+    int MinSize = 1,
+    int MaxSize = -1)
+    : Subset([.. TypedPool.Cast<object>()], MinSize, MaxSize);
 
 /// <summary>
 /// A composite parameter that groups a nested <see cref="TypedParameterSpace"/>.

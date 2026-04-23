@@ -50,7 +50,7 @@ public sealed class PredictorAsTargetTests
         var instrKind = Assert.IsType<StringValued>(space.Parameters["instructions"]);
         Assert.Equal("You are helpful.", instrKind.InitialValue);
 
-        var demosKind = Assert.IsType<Subset>(space.Parameters["demos"]);
+        var demosKind = Assert.IsAssignableFrom<Subset>(space.Parameters["demos"]);
         Assert.Equal(0, demosKind.MinSize);
         Assert.Equal(2, demosKind.MaxSize);
         Assert.Equal(2, demosKind.Pool.Count);
@@ -65,7 +65,7 @@ public sealed class PredictorAsTargetTests
         var p = NewPredictor();
         var space = ((IOptimizationTarget)p).GetParameterSpace();
 
-        var demosKind = Assert.IsType<Subset>(space.Parameters["demos"]);
+        var demosKind = Assert.IsAssignableFrom<Subset>(space.Parameters["demos"]);
         Assert.Empty(demosKind.Pool);
         Assert.Equal(0, demosKind.MinSize);
         Assert.Equal(0, demosKind.MaxSize);

@@ -47,7 +47,7 @@ public static class SkillPoolExtensions
         if (maxSize != -1)
             ArgumentOutOfRangeException.ThrowIfLessThan(maxSize, 0);
 
-        return space.Add(paramName, new Subset([.. skills.Cast<object>()], minSize, maxSize));
+        return space.Add(paramName, new Subset<SkillManifest>(TypedPool: [.. skills], minSize, maxSize));
     }
 
     /// <summary>

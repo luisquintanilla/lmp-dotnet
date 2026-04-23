@@ -308,10 +308,9 @@ public class Predictor<TInput, TOutput> : IPredictor, IOptimizationTarget
     /// </remarks>
     TypedParameterSpace IOptimizationTarget.GetParameterSpace()
     {
-        var demoPool = Demos.Cast<object>().ToArray();
         return TypedParameterSpace.Empty
             .Add("instructions", new StringValued(InitialValue: Instructions))
-            .Add("demos", new Subset(Pool: demoPool, MinSize: 0, MaxSize: demoPool.Length));
+            .Add("demos", new Subset<(TInput, TOutput)>(TypedPool: [.. Demos], 0, Demos.Count));
     }
 
     /// <inheritdoc />

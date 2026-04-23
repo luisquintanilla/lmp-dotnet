@@ -19,7 +19,7 @@ public class ToolPoolExtensionsTests
         var space = TypedParameterSpace.Empty.AddToolPool([tool]);
 
         Assert.True(space.Parameters.ContainsKey("tools"));
-        var subset = Assert.IsType<Subset>(space.Parameters["tools"]);
+        var subset = Assert.IsAssignableFrom<Subset>(space.Parameters["tools"]);
         Assert.Single(subset.Pool);
     }
 
@@ -46,7 +46,7 @@ public class ToolPoolExtensionsTests
         var tools = new[] { MakeTool("a"), MakeTool("b"), MakeTool("c") };
         var space = TypedParameterSpace.Empty.AddToolPool(tools, minSize: 2, maxSize: 3);
 
-        var subset = Assert.IsType<Subset>(space.Parameters["tools"]);
+        var subset = Assert.IsAssignableFrom<Subset>(space.Parameters["tools"]);
         Assert.Equal(2, subset.MinSize);
         Assert.Equal(3, subset.MaxSize);
     }
@@ -56,7 +56,7 @@ public class ToolPoolExtensionsTests
     {
         var tool = MakeTool("x");
         var space = TypedParameterSpace.Empty.AddToolPool([tool]);
-        var subset = Assert.IsType<Subset>(space.Parameters["tools"]);
+        var subset = Assert.IsAssignableFrom<Subset>(space.Parameters["tools"]);
         Assert.Equal(-1, subset.MaxSize);
     }
 
@@ -73,7 +73,7 @@ public class ToolPoolExtensionsTests
         var tools = new[] { MakeTool("a"), MakeTool("b"), MakeTool("c") };
         var space = TypedParameterSpace.Empty.AddToolPool(tools);
 
-        var subset = Assert.IsType<Subset>(space.Parameters["tools"]);
+        var subset = Assert.IsAssignableFrom<Subset>(space.Parameters["tools"]);
         Assert.Equal(3, subset.Pool.Count);
         Assert.All(subset.Pool, item => Assert.IsAssignableFrom<AITool>(item));
     }

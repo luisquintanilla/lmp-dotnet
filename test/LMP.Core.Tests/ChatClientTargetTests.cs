@@ -146,7 +146,7 @@ public class ChatClientTargetTests
         var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithTools([t1]));
         var space = target.GetParameterSpace();
         Assert.True(space.Parameters.ContainsKey("tools"));
-        Assert.IsType<Subset>(space.Parameters["tools"]);
+        Assert.IsAssignableFrom<Subset>(space.Parameters["tools"]);
     }
 
     // ── GetState / ApplyState round-trip ──────────────────────────────────

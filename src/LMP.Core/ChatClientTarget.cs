@@ -104,7 +104,7 @@ public sealed class ChatClientTarget : IOptimizationTarget
             space = space.Add("temperature", new Continuous(0.0, 2.0));
 
         if (_allTools.Count > 0)
-            space = space.Add("tools", new Subset([.. _allTools.Cast<object>()], 0, _allTools.Count));
+            space = space.Add("tools", new Subset<AITool>(TypedPool: [.. _allTools], 0, _allTools.Count));
 
         return space;
     }
