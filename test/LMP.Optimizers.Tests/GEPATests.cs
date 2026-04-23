@@ -216,7 +216,7 @@ public sealed class GEPATests
             .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
                 new GEPAOutput($"a{i}")))
             .ToList();
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
 
         await gepa.OptimizeAsync(ctx);
 
@@ -234,7 +234,7 @@ public sealed class GEPATests
             .Select(i => (Example)new Example<GEPAInput, GEPAOutput>(new GEPAInput($"q{i}"),
                 new GEPAOutput($"a{i}")))
             .ToList();
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
         ctx.TrajectoryMetric = new FakeTrajectoryMetric(0.7f);
 
         await gepa.OptimizeAsync(ctx);
@@ -255,7 +255,7 @@ public sealed class GEPATests
                 new GEPAOutput($"a{i}")))
             .ToList();
         var reflectionLog = new ReflectionLog();
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
         ctx.TrajectoryMetric = new FakeTrajectoryMetric(0.8f);
         ctx.ReflectionLog = reflectionLog;
 

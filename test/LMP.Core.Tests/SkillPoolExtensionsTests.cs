@@ -83,7 +83,7 @@ public class SkillPoolExtensionsTests
     private static OptimizationContext MakeContext()
     {
         var target = new StubTarget();
-        return OptimizationContext.For(target, [new Example<string, string>("q", "a")], (_, _) => 1f);
+        return new OptimizationContext { Target = target, TrainSet = [new Example<string, string>("q", "a")], Metric = (_, _) => 1f };
     }
 
     [Fact]

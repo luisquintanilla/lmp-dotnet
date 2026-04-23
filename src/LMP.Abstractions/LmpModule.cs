@@ -21,11 +21,23 @@ public abstract class LmpModule : IOptimizationTarget
     /// </summary>
     protected IChatClient? Client { get; set; }
 
+    private AsyncLocal<Trace?> _asyncTrace = new();
+
     /// <summary>
     /// Active trace for recording predictor invocations during execution.
     /// Set by optimizers before running training examples.
     /// </summary>
-    public Trace? Trace { get; set; }
+    /// <remarks>
+    /// Trace is scoped to the current async control flow (backed by
+    /// <see cref="AsyncLocal{T}"/>). Concurrent <see cref="ExecuteAsync"/> calls on the
+    /// same module instance receive isolated traces. External setters
+    /// (<c>module.Trace = trace</c>) affect only the current async context.
+    /// </remarks>
+    public Trace? Trace
+    {
+        get => _asyncTrace.Value;
+        set => _asyncTrace.Value = value;
+    }
 
     /// <summary>
     /// Defines the module's execution logic. Override this to compose
@@ -78,7 +90,7 @@ public abstract class LmpModule : IOptimizationTarget
     public TModule Clone<TModule>() where TModule : LmpModule
     {
         var clone = CloneCore();
-        clone.Trace = null;
+        clone._asyncTrace = new AsyncLocal<Trace?>();
         return (TModule)clone;
     }
 
@@ -94,7 +106,7 @@ public abstract class LmpModule : IOptimizationTarget
     public LmpModule Clone()
     {
         var clone = CloneCore();
-        clone.Trace = null;
+        clone._asyncTrace = new AsyncLocal<Trace?>();
         return clone;
     }
 
@@ -181,13 +193,17 @@ public abstract class LmpModule : IOptimizationTarget
 
     /// <inheritdoc />
     /// <remarks>
-    /// Sets <see cref="Trace"/> for the duration of the call so that <c>[Predict]</c>-decorated
-    /// methods record into a fresh trace, then resets it in a finally block.
+    /// Saves the outer-scope <see cref="Trace"/>, installs a fresh trace for the duration
+    /// of the call so that <c>[Predict]</c>-decorated methods record into it, then restores
+    /// the previous value. Because <see cref="Trace"/> is <see cref="AsyncLocal{T}"/>-backed,
+    /// concurrent calls on the same instance and nested calls on different instances are
+    /// isolated.
     /// </remarks>
     public async Task<(object Output, Trace Trace)> ExecuteAsync(
         object input,
         CancellationToken ct = default)
     {
+        var prev = Trace;
         var trace = new Trace();
         Trace = trace;
         try
@@ -197,7 +213,7 @@ public abstract class LmpModule : IOptimizationTarget
         }
         finally
         {
-            Trace = null;
+            Trace = prev;
         }
     }
 

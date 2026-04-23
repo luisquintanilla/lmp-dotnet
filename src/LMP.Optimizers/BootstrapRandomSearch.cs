@@ -90,7 +90,7 @@ public sealed class BootstrapRandomSearch : IOptimizer
             var shuffled = trainSplit.OrderBy(_ => rng.Next()).ToList();
             // Empty-assignment clone idiom (per IOT XML doc).
             var candidate = target.WithParameters(ParameterAssignment.Empty);
-            var subCtx = OptimizationContext.For(candidate, shuffled, metric);
+            var subCtx = new OptimizationContext { Target = candidate, TrainSet = shuffled, Metric = metric };
             var bfs = new BootstrapFewShot(_maxDemos, metricThreshold: _metricThreshold);
             await bfs.OptimizeAsync(subCtx, ct).ConfigureAwait(false);
             candidates.Add(candidate);

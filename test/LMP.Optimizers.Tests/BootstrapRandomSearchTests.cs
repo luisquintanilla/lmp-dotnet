@@ -619,7 +619,7 @@ public class BootstrapRandomSearchTests
             .Select(i => (Example)new Example<string, string>($"item_{i}", $"item_{i}"))
             .ToList();
 
-        var ctx = OptimizationContext.For(target, trainSet, ExactMatchMetric());
+        var ctx = new OptimizationContext { Target = target, TrainSet = trainSet, Metric = ExactMatchMetric() };
         var optimizer = new BootstrapRandomSearch(numTrials: 3, maxDemos: 4, seed: 42);
 
         await optimizer.OptimizeAsync(ctx);
@@ -652,7 +652,7 @@ public class BootstrapRandomSearchTests
             new Example<string, string>("epsilon", "epsilon"),
         };
 
-        var ctx = OptimizationContext.For(chain, trainSet, ExactMatchMetric());
+        var ctx = new OptimizationContext { Target = chain, TrainSet = trainSet, Metric = ExactMatchMetric() };
         var optimizer = new BootstrapRandomSearch(numTrials: 2, maxDemos: 4, seed: 7);
 
         await optimizer.OptimizeAsync(ctx);
@@ -678,7 +678,7 @@ public class BootstrapRandomSearchTests
             new Example<string, string>("y", "y"),
         };
 
-        var ctx = OptimizationContext.For(target, trainSet, ExactMatchMetric());
+        var ctx = new OptimizationContext { Target = target, TrainSet = trainSet, Metric = ExactMatchMetric() };
         var optimizer = new BootstrapRandomSearch(numTrials: 2, maxDemos: 2, seed: 1);
 
         // Must not throw NotSupportedException (or any other exception in this happy path).

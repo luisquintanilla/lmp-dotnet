@@ -860,7 +860,7 @@ public class BootstrapFewShotTests
             new Example<string, string>("q", "q"),
         };
 
-        var ctx = OptimizationContext.For(target, trainSet, ExactMatchMetric());
+        var ctx = new OptimizationContext { Target = target, TrainSet = trainSet, Metric = ExactMatchMetric() };
         var optimizer = new BootstrapFewShot(maxDemos: 4, metricThreshold: 1.0f);
 
         await optimizer.OptimizeAsync(ctx);

@@ -146,10 +146,7 @@ public sealed class ContextualBanditTests
     {
         var bandit = new ContextualBandit("choice", numTrials: 5, seed: 0);
         var space = TypedParameterSpace.Empty.Add("choice", new Categorical(3));
-        var ctx = OptimizationContext.For(
-            new ScorableTarget(score: 0.8f),
-            [MakeExample()],
-            (_, _) => 0.8f);
+        var ctx = new OptimizationContext { Target = new ScorableTarget(score: 0.8f), TrainSet = [MakeExample()], Metric = (_, _) => 0.8f };
         ctx.SearchSpace = space;
 
         await bandit.OptimizeAsync(ctx);
@@ -164,10 +161,7 @@ public sealed class ContextualBanditTests
     public async Task OptimizeAsync_WithParameters_ThrowsNotSupported_BreaksGracefully()
     {
         var bandit = new ContextualBandit("skills", numTrials: 5, seed: 1);
-        var ctx = OptimizationContext.For(
-            new NotSupportedTarget(),
-            [MakeExample(), MakeExample()],
-            (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = new NotSupportedTarget(), TrainSet = [MakeExample(), MakeExample()], Metric = (_, _) => 0.5f };
         ctx.SearchSpace = TypedParameterSpace.Empty.AddSkillPool(
             [SkillManifest.For("a"), SkillManifest.For("b")]);
 
@@ -239,7 +233,7 @@ public sealed class ContextualBanditTests
         int minSize = 1, int maxSize = -1)
     {
         var target = new ScorableTarget(score: 0.8f);
-        var ctx = OptimizationContext.For(target, trainSet, (_, _) => 0.8f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = trainSet, Metric = (_, _) => 0.8f };
         if (skills.Count > 0)
             ctx.SearchSpace = TypedParameterSpace.Empty.AddSkillPool(skills, minSize: minSize, maxSize: maxSize);
         return ctx;

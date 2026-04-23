@@ -15,7 +15,7 @@ public sealed class Z3FeasibilityOptimizerTests
     private static OptimizationContext MakeCtx(TypedParameterSpace? space = null)
     {
         var target = DelegateTarget.For(_ => Task.FromResult<object>("ok"));
-        var ctx = OptimizationContext.For(target, [], (_, _) => 1f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [], Metric = (_, _) => 1f };
         if (space is not null)
             ctx.SearchSpace = space;
         return ctx;

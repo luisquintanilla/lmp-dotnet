@@ -7,40 +7,44 @@ namespace LMP;
 /// Carries all state shared among the steps of an <c>OptimizationPipeline</c> run.
 /// Each step reads from and writes to the context fields that belong to its axis.
 /// </summary>
+/// <remarks>
+/// Construct via object initializer:
+/// <code>
+/// var ctx = new OptimizationContext { Target = target, TrainSet = train, Metric = metric };
+/// </code>
+/// The three required properties validate non-null on set and throw
+/// <see cref="ArgumentNullException"/> eagerly.
+/// </remarks>
 public sealed class OptimizationContext
 {
-    /// <summary>
-    /// Creates a context bound to an existing <see cref="IOptimizationTarget"/>.
-    /// </summary>
-    public static OptimizationContext For(
-        IOptimizationTarget target,
-        IReadOnlyList<Example> trainSet,
-        Func<Example, object, float> metric,
-        IReadOnlyList<Example>? devSet = null)
-    {
-        ArgumentNullException.ThrowIfNull(target);
-        ArgumentNullException.ThrowIfNull(trainSet);
-        ArgumentNullException.ThrowIfNull(metric);
-
-        return new OptimizationContext
-        {
-            Target = target,
-            TrainSet = trainSet,
-            Metric = metric,
-            DevSet = devSet ?? []
-        };
-    }
-
     // ── Required ────────────────────────────────────────────────────────
 
+    private IOptimizationTarget _target = null!;
+
     /// <summary>The target being optimized.</summary>
-    public required IOptimizationTarget Target { get; set; }
+    public required IOptimizationTarget Target
+    {
+        get => _target;
+        set => _target = value ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    private IReadOnlyList<Example> _trainSet = null!;
 
     /// <summary>Training examples used by optimizer steps.</summary>
-    public required IReadOnlyList<Example> TrainSet { get; set; }
+    public required IReadOnlyList<Example> TrainSet
+    {
+        get => _trainSet;
+        set => _trainSet = value ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    private Func<Example, object, float> _metric = null!;
 
     /// <summary>Scoring function: (example, actual output) → score in [0, 1].</summary>
-    public required Func<Example, object, float> Metric { get; set; }
+    public required Func<Example, object, float> Metric
+    {
+        get => _metric;
+        set => _metric = value ?? throw new ArgumentNullException(nameof(value));
+    }
 
     // ── Passed between steps ────────────────────────────────────────────
 

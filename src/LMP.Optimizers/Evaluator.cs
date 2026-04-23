@@ -91,13 +91,8 @@ public static class Evaluator
     /// <paramref name="maxConcurrency"/>.
     /// </summary>
     /// <remarks>
-    /// When <paramref name="target"/> is an <see cref="LmpModule"/>, the call is routed
-    /// to the typed <c>EvaluateAsync&lt;TModule&gt;</c> overload (which calls
-    /// <c>module.ForwardAsync</c> directly) to preserve existing concurrency semantics.
-    /// Composite targets containing <see cref="LmpModule"/> children may exhibit trace
-    /// tearing under high concurrency due to the module's instance <c>Trace</c> property;
-    /// behavior matches the existing <see cref="EvaluateAsync{TModule}(TModule, IReadOnlyList{Example}, Func{Example, object, float}, int, CancellationToken)"/>
-    /// overload semantics.
+    /// Trace is scoped to the current async control flow (see <see cref="LmpModule.Trace"/>);
+    /// the target's own <c>ExecuteAsync</c> path is used for all examples.
     /// </remarks>
     /// <param name="target">The optimization target to evaluate.</param>
     /// <param name="devSet">The set of examples to evaluate against.</param>
@@ -118,12 +113,6 @@ public static class Evaluator
         ArgumentNullException.ThrowIfNull(devSet);
         ArgumentNullException.ThrowIfNull(metric);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
-
-        // LmpModule.ExecuteAsync mutates instance Trace property — route to the
-        // module overload (calls ForwardAsync directly) to preserve existing
-        // concurrency semantics. Pure-IOT path is safe per IOT.ExecuteAsync contract.
-        if (target is LmpModule module)
-            return EvaluateAsync(module, devSet, metric, maxConcurrency, cancellationToken);
 
         return EvaluateTargetAsync(target, devSet, metric, maxConcurrency, cancellationToken);
     }

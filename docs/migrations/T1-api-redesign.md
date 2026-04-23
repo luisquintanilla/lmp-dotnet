@@ -27,11 +27,11 @@ replaced by typed `Diagnostics`.
 
 ```csharp
 // Before
-var ctx = OptimizationContext.For(ModuleTarget.For(module), trainSet, metric);
+var ctx = new OptimizationContext { Target = ModuleTarget.For(module), TrainSet = trainSet, Metric = metric };
 await new BootstrapFewShot().OptimizeAsync(ctx);
 
 // After
-var ctx = OptimizationContext.For(module, trainSet, metric);
+var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = metric };
 await new BootstrapFewShot().OptimizeAsync(ctx);
 ```
 

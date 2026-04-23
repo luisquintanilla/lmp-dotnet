@@ -38,6 +38,12 @@ public static class LmpModuleOptimizationExtensions
         IReadOnlyList<Example>? devSet = null)
     {
         ArgumentNullException.ThrowIfNull(module);
-        return OptimizationContext.For(module, trainSet, metric, devSet);
+        return new OptimizationContext
+        {
+            Target = module,
+            TrainSet = trainSet,
+            Metric = metric,
+            DevSet = devSet ?? [],
+        };
     }
 }

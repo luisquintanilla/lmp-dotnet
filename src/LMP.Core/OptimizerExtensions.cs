@@ -41,10 +41,12 @@ public static class OptimizerExtensions
         ArgumentNullException.ThrowIfNull(trainSet);
         ArgumentNullException.ThrowIfNull(metric);
 
-        var ctx = OptimizationContext.For(
-            module,
-            trainSet,
-            metric);
+        var ctx = new OptimizationContext
+        {
+            Target = module,
+            TrainSet = trainSet,
+            Metric = metric,
+        };
 
         await optimizer.OptimizeAsync(ctx, ct).ConfigureAwait(false);
 

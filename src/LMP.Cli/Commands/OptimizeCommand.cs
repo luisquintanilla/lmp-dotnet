@@ -180,7 +180,7 @@ internal static class OptimizeCommand
 
         try
         {
-            var optCtx = OptimizationContext.For(module, trainSet, metric);
+            var optCtx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = metric };
             await opt.OptimizeAsync(optCtx, cancellationToken);
         }
         catch (Exception ex)

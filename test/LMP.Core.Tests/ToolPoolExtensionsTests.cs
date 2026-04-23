@@ -107,7 +107,7 @@ public class ToolPoolExtensionsTests
     {
         var tool = MakeTool("search");
         var target = DelegateTarget.For(_ => Task.FromResult<object>("ok"));
-        var ctx = OptimizationContext.For(target, [], (_, _) => 1f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [], Metric = (_, _) => 1f };
 
         ctx.WithToolPool([tool]);
 
@@ -119,7 +119,7 @@ public class ToolPoolExtensionsTests
     {
         var tool = MakeTool("search");
         var target = DelegateTarget.For(_ => Task.FromResult<object>("ok"));
-        var ctx = OptimizationContext.For(target, [], (_, _) => 1f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [], Metric = (_, _) => 1f };
 
         var returned = ctx.WithToolPool([tool]);
 
@@ -139,7 +139,7 @@ public class ToolPoolExtensionsTests
     {
         var tool = MakeTool("calc");
         var target = DelegateTarget.For(_ => Task.FromResult<object>("ok"));
-        var ctx = OptimizationContext.For(target, [], (_, _) => 1f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [], Metric = (_, _) => 1f };
 
         ctx.WithToolPool([tool], paramName: "calc_tools");
 

@@ -8,9 +8,9 @@ public class OptimizationContextTests
     private static readonly Func<Example, object, float> AlwaysOne = (_, _) => 1.0f;
 
     [Fact]
-    public void For_SetsRequiredProperties()
+    public void Construction_SetsRequiredProperties()
     {
-        var ctx = OptimizationContext.For(StubTarget, OneExample, AlwaysOne);
+        var ctx = new OptimizationContext { Target = StubTarget, TrainSet = OneExample, Metric = AlwaysOne };
 
         Assert.Same(StubTarget, ctx.Target);
         Assert.Same(OneExample, ctx.TrainSet);
@@ -18,61 +18,61 @@ public class OptimizationContextTests
     }
 
     [Fact]
-    public void For_DefaultDevSet_IsEmpty()
+    public void Construction_DefaultDevSet_IsEmpty()
     {
-        var ctx = OptimizationContext.For(StubTarget, OneExample, AlwaysOne);
+        var ctx = new OptimizationContext { Target = StubTarget, TrainSet = OneExample, Metric = AlwaysOne };
         Assert.Empty(ctx.DevSet);
     }
 
     [Fact]
-    public void For_WithDevSet_SetsDevSet()
+    public void Construction_WithDevSet_SetsDevSet()
     {
         var devSet = new List<Example> { new Example<string, string>("d", "d") };
-        var ctx = OptimizationContext.For(StubTarget, OneExample, AlwaysOne, devSet);
+        var ctx = new OptimizationContext { Target = StubTarget, TrainSet = OneExample, Metric = AlwaysOne, DevSet = devSet };
         Assert.Same(devSet, ctx.DevSet);
     }
 
     [Fact]
-    public void For_DefaultBudget_IsUnlimited()
+    public void Construction_DefaultBudget_IsUnlimited()
     {
-        var ctx = OptimizationContext.For(StubTarget, OneExample, AlwaysOne);
+        var ctx = new OptimizationContext { Target = StubTarget, TrainSet = OneExample, Metric = AlwaysOne };
         Assert.Same(CostBudget.Unlimited, ctx.Budget);
     }
 
     [Fact]
-    public void For_DefaultSearchSpace_IsEmpty()
+    public void Construction_DefaultSearchSpace_IsEmpty()
     {
-        var ctx = OptimizationContext.For(StubTarget, OneExample, AlwaysOne);
+        var ctx = new OptimizationContext { Target = StubTarget, TrainSet = OneExample, Metric = AlwaysOne };
         Assert.Same(TypedParameterSpace.Empty, ctx.SearchSpace);
     }
 
     [Fact]
-    public void For_TrialHistory_IsNewInstance()
+    public void Construction_TrialHistory_IsNewInstance()
     {
-        var ctx = OptimizationContext.For(StubTarget, OneExample, AlwaysOne);
+        var ctx = new OptimizationContext { Target = StubTarget, TrainSet = OneExample, Metric = AlwaysOne };
         Assert.NotNull(ctx.TrialHistory);
         Assert.Equal(0, ctx.TrialHistory.Count);
     }
 
     [Fact]
-    public void For_NullTarget_ThrowsArgumentNullException()
+    public void Target_SetNull_ThrowsArgumentNullException()
         => Assert.Throws<ArgumentNullException>(()
-            => OptimizationContext.For(null!, OneExample, AlwaysOne));
+            => new OptimizationContext { Target = null!, TrainSet = OneExample, Metric = AlwaysOne });
 
     [Fact]
-    public void For_NullTrainSet_ThrowsArgumentNullException()
+    public void TrainSet_SetNull_ThrowsArgumentNullException()
         => Assert.Throws<ArgumentNullException>(()
-            => OptimizationContext.For(StubTarget, null!, AlwaysOne));
+            => new OptimizationContext { Target = StubTarget, TrainSet = null!, Metric = AlwaysOne });
 
     [Fact]
-    public void For_NullMetric_ThrowsArgumentNullException()
+    public void Metric_SetNull_ThrowsArgumentNullException()
         => Assert.Throws<ArgumentNullException>(()
-            => OptimizationContext.For(StubTarget, OneExample, null!));
+            => new OptimizationContext { Target = StubTarget, TrainSet = OneExample, Metric = null! });
 
     [Fact]
     public void Diagnostics_SnapshotsCanStoreAndRetrieveArbitraryValues()
     {
-        var ctx = OptimizationContext.For(StubTarget, OneExample, AlwaysOne);
+        var ctx = new OptimizationContext { Target = StubTarget, TrainSet = OneExample, Metric = AlwaysOne };
         ctx.Diagnostics.Snapshots["test:key"] = 42;
         Assert.Equal(42, ctx.Diagnostics.Snapshots["test:key"]);
     }

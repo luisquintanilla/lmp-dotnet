@@ -47,10 +47,7 @@ public sealed class BayesianCalibrationTests
         // ModuleTarget always returns TypedParameterSpace.Empty → no trials.
         var bc = new BayesianCalibration(numRefinements: 5, seed: 0);
         var module = new BcFakeModule();
-        var ctx = OptimizationContext.For(
-            module,
-            [MakeExample()],
-            (_, _) => 1f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = [MakeExample()], Metric = (_, _) => 1f };
 
         await bc.OptimizeAsync(ctx);
 
@@ -67,7 +64,7 @@ public sealed class BayesianCalibrationTests
             .Add("tools", new Subset(new List<object> { "tool1" }, 1, -1));
 
         var target = new StaticSpaceTarget(space, score: 0.5f);
-        var ctx = OptimizationContext.For(target, [MakeExample()], (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, _) => 0.5f };
 
         await bc.OptimizeAsync(ctx);
 
@@ -102,7 +99,7 @@ public sealed class BayesianCalibrationTests
         int n = 7;
         var bc = new BayesianCalibration(numRefinements: n, seed: 0);
         var target = new TempTarget(_ => 1.0f);
-        var ctx = OptimizationContext.For(target, [MakeExample()], (_, _) => 1.0f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, _) => 1.0f };
 
         await bc.OptimizeAsync(ctx);
 
@@ -117,8 +114,7 @@ public sealed class BayesianCalibrationTests
         int n = 3;
         var bc = new BayesianCalibration(numRefinements: n, seed: 0);
         var target = new ControlledTarget(incumbentScore: 0.0f, candidateScore: 1.0f);
-        var ctx = OptimizationContext.For(
-            target, [MakeExample()], (_, out_) => out_ is float f ? f : 0f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, out_) => out_ is float f ? f : 0f };
 
         await bc.OptimizeAsync(ctx);
 
@@ -134,7 +130,7 @@ public sealed class BayesianCalibrationTests
         int n = 4;
         var bc = new BayesianCalibration(numRefinements: n, seed: 1);
         var target = new TempTarget(_ => 0.5f);
-        var ctx = OptimizationContext.For(target, [MakeExample()], (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, _) => 0.5f };
 
         await bc.OptimizeAsync(ctx);
 
@@ -149,8 +145,7 @@ public sealed class BayesianCalibrationTests
     {
         var bc = new BayesianCalibration(numRefinements: 3, seed: 0);
         var target = new ControlledTarget(incumbentScore: 0.0f, candidateScore: 1.0f);
-        var ctx = OptimizationContext.For(
-            target, [MakeExample()], (_, out_) => out_ is float f ? f : 0f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, out_) => out_ is float f ? f : 0f };
 
         await bc.OptimizeAsync(ctx);
 
@@ -163,8 +158,7 @@ public sealed class BayesianCalibrationTests
         // Incumbent scores 1.0 → no candidate can beat it → ApplyState never called.
         var bc = new BayesianCalibration(numRefinements: 3, seed: 0);
         var target = new ControlledTarget(incumbentScore: 1.0f, candidateScore: 0.0f);
-        var ctx = OptimizationContext.For(
-            target, [MakeExample()], (_, out_) => out_ is float f ? f : 0f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, out_) => out_ is float f ? f : 0f };
 
         await bc.OptimizeAsync(ctx);
 
@@ -246,7 +240,7 @@ public sealed class BayesianCalibrationTests
         var target = new ParameterCapturingTarget(
             TypedParameterSpace.Empty.Add("temperature", new Continuous(0.0, 2.0)));
 
-        var ctx = OptimizationContext.For(target, [MakeExample()], (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, _) => 0.5f };
         await bc.OptimizeAsync(ctx);
 
         Assert.True(target.CapturedAssignments.Count > 0);
@@ -268,7 +262,7 @@ public sealed class BayesianCalibrationTests
         var target = new ParameterCapturingTarget(
             TypedParameterSpace.Empty.Add("numShots", new Integer(1, 10)));
 
-        var ctx = OptimizationContext.For(target, [MakeExample()], (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, _) => 0.5f };
         await bc.OptimizeAsync(ctx);
 
         Assert.True(target.CapturedAssignments.Count > 0);
@@ -313,7 +307,7 @@ public sealed class BayesianCalibrationTests
     {
         var bc = new BayesianCalibration(numRefinements: 2, seed: 0);
         var target = new TempTarget(_ => 0.5f);
-        var ctx = OptimizationContext.For(target, [MakeExample()], (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = target, TrainSet = [MakeExample()], Metric = (_, _) => 0.5f };
 
         await bc.OptimizeAsync(ctx);
 

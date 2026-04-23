@@ -15,7 +15,7 @@ namespace LMP;
 /// Pair with <see cref="ChatClientTarget"/> for end-to-end tool selection optimization:
 /// <code>
 /// var target = ChatClientTarget.For(client, tools: [search, calc, mail]);
-/// var ctx = OptimizationContext.For(target, trainSet, metric)
+/// var ctx = new OptimizationContext { Target = target, TrainSet = trainSet, Metric = metric }
 ///     .WithToolPool([search, calc, mail], minSize: 1, maxSize: 2);
 /// </code>
 /// </para>

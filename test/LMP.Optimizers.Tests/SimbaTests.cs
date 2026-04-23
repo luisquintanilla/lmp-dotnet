@@ -57,7 +57,7 @@ public sealed class SimbaTests
     {
         var simba = new SIMBA(new FakeSimbaReflectionClient(), maxIterations: 5);
         var module = new SimbaTestModule(new FakeSimbaTaskClient());
-        var ctx = OptimizationContext.For(module, [], (_, _) => 1f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = [], Metric = (_, _) => 1f };
         var originalInstruction = module.GetPredictors().First().Predictor.Instructions;
 
         await simba.OptimizeAsync(ctx);
@@ -74,7 +74,7 @@ public sealed class SimbaTests
         var trainSet = Enumerable.Range(0, 3)
             .Select(i => (Example)new Example<SimbaInput, SimbaOutput>(new SimbaInput($"q{i}"), new SimbaOutput("a")))
             .ToList();
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 1f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 1f };
 
         await simba.OptimizeAsync(ctx);
 
@@ -96,7 +96,7 @@ public sealed class SimbaTests
         Func<Example, object, float> metric = (_, output) =>
             output is SimbaOutput o && o.Answer.Contains("Improved", StringComparison.OrdinalIgnoreCase) ? 0.9f : 0.2f;
 
-        var ctx = OptimizationContext.For(module, trainSet, metric);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = metric };
 
         await simba.OptimizeAsync(ctx);
 
@@ -121,7 +121,7 @@ public sealed class SimbaTests
         Func<Example, object, float> metric = (_, output) =>
             output is SimbaOutput o && o.Answer.Contains("Improved", StringComparison.OrdinalIgnoreCase) ? 0.9f : 0.2f;
 
-        var ctx = OptimizationContext.For(module, trainSet, metric);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = metric };
 
         await simba.OptimizeAsync(ctx);
 
@@ -146,7 +146,7 @@ public sealed class SimbaTests
             .Select(i => (Example)new Example<SimbaInput, SimbaOutput>(new SimbaInput($"q{i}"), new SimbaOutput("expected")))
             .ToList();
 
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
         ctx.Diagnostics.BaselineScore = 0.5f;
 
         await simba.OptimizeAsync(ctx);
@@ -163,7 +163,7 @@ public sealed class SimbaTests
             .Select(i => (Example)new Example<SimbaInput, SimbaOutput>(new SimbaInput($"q{i}"), new SimbaOutput("expected")))
             .ToList();
 
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
         ctx.Budget = new CostBudget.Builder().MaxTurns(3).Build();
 
         await simba.OptimizeAsync(ctx);
@@ -186,7 +186,7 @@ public sealed class SimbaTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => simba.OptimizeAsync(ctx, cts.Token));
@@ -210,7 +210,7 @@ public sealed class SimbaTests
             .Select(i => (Example)new Example<SimbaInput, SimbaOutput>(new SimbaInput($"q{i}"), new SimbaOutput("expected")))
             .ToList();
 
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
 
         await simba.OptimizeAsync(ctx);
 
@@ -234,7 +234,7 @@ public sealed class SimbaTests
         Func<Example, object, float> metric = (_, output) =>
             output is SimbaOutput o && o.Answer.Contains("Improved", StringComparison.OrdinalIgnoreCase) ? 0.95f : 0.1f;
 
-        var ctx = OptimizationContext.For(module, trainSet, metric);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = metric };
         var target = ctx.Target;
 
         await simba.OptimizeAsync(ctx);
@@ -273,7 +273,7 @@ public sealed class SimbaTests
         var trainSet = Enumerable.Range(0, 4)
             .Select(i => (Example)new Example<SimbaInput, SimbaOutput>(new SimbaInput($"q{i}"), new SimbaOutput("expected")))
             .ToList();
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
         // No TrajectoryMetric — must not throw or produce trajectory-specific behavior.
 
         await simba.OptimizeAsync(ctx);
@@ -297,7 +297,7 @@ public sealed class SimbaTests
         // Regular metric: 0.5; trajectory metric: 0.9.
         // Since all candidates will score the same as baseline (no real improvement),
         // currentFullSetScore stays at 0.9 throughout.
-        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
+        var ctx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = (_, _) => 0.5f };
         ctx.TrajectoryMetric = new FakeSimbaTrajectoryMetric(0.9f);
 
         await simba.OptimizeAsync(ctx);
