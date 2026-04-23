@@ -85,6 +85,107 @@ public static class Evaluator
             Count: scores.Length);
     }
 
+    /// <summary>
+    /// Evaluates an arbitrary <see cref="IOptimizationTarget"/> against a development set
+    /// using the provided metric function. Runs examples concurrently up to
+    /// <paramref name="maxConcurrency"/>.
+    /// </summary>
+    /// <remarks>
+    /// When <paramref name="target"/> is an <see cref="LmpModule"/>, the call is routed
+    /// to the typed <c>EvaluateAsync&lt;TModule&gt;</c> overload (which calls
+    /// <c>module.ForwardAsync</c> directly) to preserve existing concurrency semantics.
+    /// Composite targets containing <see cref="LmpModule"/> children may exhibit trace
+    /// tearing under high concurrency due to the module's instance <c>Trace</c> property;
+    /// behavior matches the existing <see cref="EvaluateAsync{TModule}(TModule, IReadOnlyList{Example}, Func{Example, object, float}, int, CancellationToken)"/>
+    /// overload semantics.
+    /// </remarks>
+    /// <param name="target">The optimization target to evaluate.</param>
+    /// <param name="devSet">The set of examples to evaluate against.</param>
+    /// <param name="metric">Scoring function: (example, target output) → score in [0, 1].</param>
+    /// <param name="maxConcurrency">Maximum number of concurrent evaluations. Default is 4.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Aggregate evaluation results including per-example scores.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when target, devSet, or metric is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when maxConcurrency is less than 1.</exception>
+    public static Task<EvaluationResult> EvaluateAsync(
+        IOptimizationTarget target,
+        IReadOnlyList<Example> devSet,
+        Func<Example, object, float> metric,
+        int maxConcurrency = 4,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(devSet);
+        ArgumentNullException.ThrowIfNull(metric);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);
+
+        // LmpModule.ExecuteAsync mutates instance Trace property — route to the
+        // module overload (calls ForwardAsync directly) to preserve existing
+        // concurrency semantics. Pure-IOT path is safe per IOT.ExecuteAsync contract.
+        if (target is LmpModule module)
+            return EvaluateAsync(module, devSet, metric, maxConcurrency, cancellationToken);
+
+        return EvaluateTargetAsync(target, devSet, metric, maxConcurrency, cancellationToken);
+    }
+
+    private static async Task<EvaluationResult> EvaluateTargetAsync(
+        IOptimizationTarget target,
+        IReadOnlyList<Example> devSet,
+        Func<Example, object, float> metric,
+        int maxConcurrency,
+        CancellationToken cancellationToken)
+    {
+        if (devSet.Count == 0)
+        {
+            return new EvaluationResult([], 0f, 0f, 0f, 0);
+        }
+
+        var results = new ConcurrentBag<ExampleResult>();
+
+        await Parallel.ForEachAsync(
+            devSet,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = maxConcurrency,
+                CancellationToken = cancellationToken
+            },
+            async (example, ct) =>
+            {
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    try
+                    {
+                        var (output, _) = await target.ExecuteAsync(example.WithInputs(), ct);
+                        var score = metric(example, output);
+                        results.Add(new ExampleResult(example, output, score));
+                        return;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch when (attempt < 2)
+                    {
+                        // Transient error (e.g., rate limit 429). Back off and retry.
+                        await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), ct);
+                    }
+                    catch
+                    {
+                        // LLM failures (malformed JSON, network errors, etc.) → score 0
+                        results.Add(new ExampleResult(example, null!, 0f));
+                    }
+                }
+            });
+
+        var scores = results.Select(r => r.Score).ToArray();
+        return new EvaluationResult(
+            PerExample: [.. results],
+            AverageScore: TensorPrimitives.Average<float>(scores),
+            MinScore: TensorPrimitives.Min<float>(scores),
+            MaxScore: TensorPrimitives.Max<float>(scores),
+            Count: scores.Length);
+    }
+
     // ── Typed overloads (module output and dataset label may differ) ──
 
     /// <summary>

@@ -604,4 +604,119 @@ public class BootstrapRandomSearchTests
     }
 
     #endregion
+
+    #region T2e — IOptimizationTarget seam
+
+    [Fact]
+    public async Task OptimizeAsync_OnPredictorTarget_PicksBestAcrossTrials()
+    {
+        // FakePredictor implements both IPredictor and IOptimizationTarget, so it
+        // can stand in as a standalone leaf target for BRS (same shape as Predictor<TIn,TOut>).
+        var predictor = new FakePredictor(x => x) { Name = "standalone" };
+        IOptimizationTarget target = predictor;
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"item_{i}", $"item_{i}"))
+            .ToList();
+
+        var ctx = OptimizationContext.For(target, trainSet, ExactMatchMetric());
+        var optimizer = new BootstrapRandomSearch(numTrials: 3, maxDemos: 4, seed: 42);
+
+        await optimizer.OptimizeAsync(ctx);
+
+        // BRS should have applied the best candidate's state back into the original
+        // predictor target, populating its demo slot.
+        Assert.True(predictor.TypedDemos.Count > 0,
+            "Standalone Predictor target should have demos after BRS.");
+        Assert.True(predictor.TypedDemos.Count <= 4,
+            "Should not exceed maxDemos.");
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnChainTargetOfModules_PicksBestAcrossTrials()
+    {
+        // Two LmpModule children, each containing one FakePredictor, composed via .Then().
+        // BRS should populate demos on BOTH stages by picking the best trial candidate
+        // and applying its state back to the chain.
+        var (moduleA, predA) = CreateSinglePredictorModule(x => x, predictorName: "stageA");
+        var (moduleB, predB) = CreateSinglePredictorModule(x => x, predictorName: "stageB");
+
+        var chain = moduleA.Then(moduleB);
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("alpha", "alpha"),
+            new Example<string, string>("beta", "beta"),
+            new Example<string, string>("gamma", "gamma"),
+            new Example<string, string>("delta", "delta"),
+            new Example<string, string>("epsilon", "epsilon"),
+        };
+
+        var ctx = OptimizationContext.For(chain, trainSet, ExactMatchMetric());
+        var optimizer = new BootstrapRandomSearch(numTrials: 2, maxDemos: 4, seed: 7);
+
+        await optimizer.OptimizeAsync(ctx);
+
+        Assert.True(predA.TypedDemos.Count > 0,
+            "Stage A predictor should have demos after BRS over chain target.");
+        Assert.True(predB.TypedDemos.Count > 0,
+            "Stage B predictor should have demos after BRS over chain target.");
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnPredictorTarget_DoesNotThrowNotSupported()
+    {
+        // Regression canary: the banned `GetService<LmpModule>() ?? throw NotSupportedException`
+        // pattern (§20b.2) must stay gone. Passing a bare Predictor target must complete
+        // without throwing NotSupportedException.
+        var predictor = new FakePredictor(x => x) { Name = "bare" };
+        IOptimizationTarget target = predictor;
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("x", "x"),
+            new Example<string, string>("y", "y"),
+        };
+
+        var ctx = OptimizationContext.For(target, trainSet, ExactMatchMetric());
+        var optimizer = new BootstrapRandomSearch(numTrials: 2, maxDemos: 2, seed: 1);
+
+        // Must not throw NotSupportedException (or any other exception in this happy path).
+        await optimizer.OptimizeAsync(ctx);
+
+        // Verify the source itself is free of the banned pattern (defense-in-depth).
+        var sourcePath = System.IO.Path.GetFullPath(System.IO.Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            "src", "LMP.Optimizers", "BootstrapRandomSearch.cs"));
+        if (System.IO.File.Exists(sourcePath))
+        {
+            var source = System.IO.File.ReadAllText(sourcePath);
+            Assert.DoesNotContain("NotSupportedException", source);
+            Assert.DoesNotContain("GetService<LmpModule>()", source);
+        }
+    }
+
+    [Fact]
+    public async Task CompileAsync_DoesNotMutateInputModule()
+    {
+        // Back-compat regression for Amendment B: input module must never be mutated;
+        // CompileAsync returns a clone whose predictor demos may be populated.
+        var (module, inputPredictor) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"in_{i}", $"in_{i}"))
+            .ToList();
+
+        var optimizer = new BootstrapRandomSearch(numTrials: 2, maxDemos: 3, seed: 99);
+        var result = await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        Assert.NotSame(module, result);
+        Assert.Empty(inputPredictor.TypedDemos);
+        // Returned clone should have demos applied.
+        Assert.True(result.GetPredictors()[0].Predictor.Demos.Count > 0,
+            "Returned clone should carry the best candidate's demos.");
+    }
+
+    #endregion
 }
