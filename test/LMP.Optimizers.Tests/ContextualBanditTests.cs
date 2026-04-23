@@ -59,7 +59,7 @@ public sealed class ContextualBanditTests
         var bandit = new ContextualBandit("skills", numTrials: 5, seed: 1);
         var ctx = MakeContext([SkillManifest.For("a")], []);
         await bandit.OptimizeAsync(ctx);
-        Assert.Empty(ctx.Bag);
+        Assert.Empty(ctx.Diagnostics.Snapshots);
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class ContextualBanditTests
         var ctx = MakeContext([SkillManifest.For("a")], [MakeExample()]);
         // "tools" param not added, only "skills"
         await bandit.OptimizeAsync(ctx);
-        Assert.Empty(ctx.Bag);
+        Assert.Empty(ctx.Diagnostics.Snapshots);
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public sealed class ContextualBanditTests
         var bandit = new ContextualBandit("skills", numTrials: 3, seed: 1);
         var ctx = MakeContext([], [MakeExample()]);
         await bandit.OptimizeAsync(ctx);
-        Assert.Empty(ctx.Bag);
+        Assert.Empty(ctx.Diagnostics.Snapshots);
     }
 
     // ── Bag Key Population ──────────────────────────────────────
@@ -91,9 +91,9 @@ public sealed class ContextualBanditTests
 
         await bandit.OptimizeAsync(ctx);
 
-        Assert.True(ctx.Bag.ContainsKey("lmp.bandit:skills:alphas"), "Missing alphas key");
-        Assert.True(ctx.Bag.ContainsKey("lmp.bandit:skills:betas"), "Missing betas key");
-        Assert.True(ctx.Bag.ContainsKey("lmp.bandit:skills:best"), "Missing best key");
+        Assert.True(ctx.Diagnostics.Snapshots.ContainsKey("lmp.bandit:skills:alphas"), "Missing alphas key");
+        Assert.True(ctx.Diagnostics.Snapshots.ContainsKey("lmp.bandit:skills:betas"), "Missing betas key");
+        Assert.True(ctx.Diagnostics.Snapshots.ContainsKey("lmp.bandit:skills:best"), "Missing best key");
     }
 
     [Fact]
@@ -105,8 +105,8 @@ public sealed class ContextualBanditTests
 
         await bandit.OptimizeAsync(ctx);
 
-        var alphas = (float[])ctx.Bag["lmp.bandit:skills:alphas"];
-        var betas = (float[])ctx.Bag["lmp.bandit:skills:betas"];
+        var alphas = (float[])ctx.Diagnostics.Snapshots["lmp.bandit:skills:alphas"];
+        var betas = (float[])ctx.Diagnostics.Snapshots["lmp.bandit:skills:betas"];
         Assert.Equal(3, alphas.Length);
         Assert.Equal(3, betas.Length);
     }
@@ -120,7 +120,7 @@ public sealed class ContextualBanditTests
 
         await bandit.OptimizeAsync(ctx);
 
-        var best = (IReadOnlyList<object>)ctx.Bag["lmp.bandit:skills:best"];
+        var best = (IReadOnlyList<object>)ctx.Diagnostics.Snapshots["lmp.bandit:skills:best"];
         Assert.InRange(best.Count, 1, 2);
     }
 
@@ -133,8 +133,8 @@ public sealed class ContextualBanditTests
 
         await bandit.OptimizeAsync(ctx);
 
-        var alphas = (float[])ctx.Bag["lmp.bandit:skills:alphas"];
-        var betas = (float[])ctx.Bag["lmp.bandit:skills:betas"];
+        var alphas = (float[])ctx.Diagnostics.Snapshots["lmp.bandit:skills:alphas"];
+        var betas = (float[])ctx.Diagnostics.Snapshots["lmp.bandit:skills:betas"];
         Assert.All(alphas, a => Assert.True(a >= 1f, $"alpha should be >= 1 but was {a}"));
         Assert.All(betas, b => Assert.True(b >= 1f, $"beta should be >= 1 but was {b}"));
     }
@@ -154,8 +154,8 @@ public sealed class ContextualBanditTests
 
         await bandit.OptimizeAsync(ctx);
 
-        Assert.True(ctx.Bag.ContainsKey("lmp.bandit:choice:alphas"));
-        Assert.Equal(3, ((float[])ctx.Bag["lmp.bandit:choice:alphas"]).Length);
+        Assert.True(ctx.Diagnostics.Snapshots.ContainsKey("lmp.bandit:choice:alphas"));
+        Assert.Equal(3, ((float[])ctx.Diagnostics.Snapshots["lmp.bandit:choice:alphas"]).Length);
     }
 
     // ── Graceful NotSupportedException ─────────────────────────
@@ -175,7 +175,7 @@ public sealed class ContextualBanditTests
         await bandit.OptimizeAsync(ctx);
 
         // Bag keys are still written (best-of-nothing = empty list from MAP)
-        Assert.True(ctx.Bag.ContainsKey("lmp.bandit:skills:alphas"));
+        Assert.True(ctx.Diagnostics.Snapshots.ContainsKey("lmp.bandit:skills:alphas"));
     }
 
     // ── Seed Reproducibility ────────────────────────────────────
@@ -192,8 +192,8 @@ public sealed class ContextualBanditTests
         await new ContextualBandit("skills", numTrials: 8, seed: 42).OptimizeAsync(ctx1);
         await new ContextualBandit("skills", numTrials: 8, seed: 42).OptimizeAsync(ctx2);
 
-        var alphas1 = (float[])ctx1.Bag["lmp.bandit:skills:alphas"];
-        var alphas2 = (float[])ctx2.Bag["lmp.bandit:skills:alphas"];
+        var alphas1 = (float[])ctx1.Diagnostics.Snapshots["lmp.bandit:skills:alphas"];
+        var alphas2 = (float[])ctx2.Diagnostics.Snapshots["lmp.bandit:skills:alphas"];
         Assert.Equal(alphas1, alphas2);
     }
 

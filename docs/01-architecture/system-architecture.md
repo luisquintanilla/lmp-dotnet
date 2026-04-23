@@ -33,7 +33,7 @@
 ├─────────────────────────────────────────────────────────────────────┤
 │ Layer 3 — Unified Optimization Pipeline          LMP.Optimizers     │
 │   ┌ Tier 4 AutoML façade ─ Lmp.Optimize.AutoAsync(app, data, goal) ┐ │
-│   │ Tier 3 Target adapters ─ ModuleTarget · ChatClientTarget        │ │
+│   │ Tier 3 Target adapters ─ LmpModule (self) · ChatClientTarget    │ │
 │   │ Tier 2 Pipeline ─ OptimizationPipeline · IOptimizer             │ │
 │   │   BootstrapFewShot · GEPA · MIPROv2 · SIMBA · BayesianCalibration│ │
 │   │   Z3Feasibility · RouteLLM · MultiFidelity · EvaluationCritique  │ │

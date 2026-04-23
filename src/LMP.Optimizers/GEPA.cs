@@ -84,7 +84,7 @@ public sealed class GEPA : IOptimizer
         ArgumentNullException.ThrowIfNull(ctx);
         var module = ctx.Target.GetService<LmpModule>()
             ?? throw new NotSupportedException(
-                $"{nameof(GEPA)} requires an LmpModule target. Use ModuleTarget.For(module).");
+                $"{nameof(GEPA)} requires an LmpModule target. Pass the LmpModule directly (it implements IOptimizationTarget).");
 
         // Capture external reflection entries (e.g., from EvaluationCritique) for this run
         _externalObservations = ctx.ReflectionLog.Entries;
@@ -103,7 +103,7 @@ public sealed class GEPA : IOptimizer
             .ConfigureAwait(false);
 
         if (!ReferenceEquals(best, module))
-            ctx.Target.ApplyState(TargetState.From(best.GetState()));
+            ctx.Target.ApplyState(best.GetState());
     }
 
     /// <inheritdoc />

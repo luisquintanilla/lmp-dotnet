@@ -78,7 +78,7 @@ public sealed class SIMBA : IOptimizer
 
         var module = ctx.Target.GetService<LmpModule>()
             ?? throw new NotSupportedException(
-                $"{nameof(SIMBA)} requires an LmpModule target. Use ModuleTarget.For(module).");
+                $"{nameof(SIMBA)} requires an LmpModule target. Pass the LmpModule directly (it implements IOptimizationTarget).");
 
         if (ctx.TrainSet.Count == 0)
             return;
@@ -93,8 +93,8 @@ public sealed class SIMBA : IOptimizer
         var evalSet = ctx.DevSet.Count > 0 ? ctx.DevSet : ctx.TrainSet;
 
         // Reuse pipeline-computed baseline when available; otherwise evaluate now.
-        float baselineScore = ctx.Bag.TryGetValue("baseline", out var b) && b is float f
-            ? f
+        float baselineScore = ctx.Diagnostics.BaselineScore is { } cached
+            ? cached
             : ctx.TrajectoryMetric != null
                 ? await EvaluateTrajectoryScoreAsync(ctx.Target, evalSet, ctx.TrajectoryMetric, ct).ConfigureAwait(false)
                 : await EvaluateScoreAsync(module, evalSet, ctx.Metric, ct).ConfigureAwait(false);
@@ -167,7 +167,7 @@ public sealed class SIMBA : IOptimizer
                 if (ctx.TrajectoryMetric != null)
                 {
                     // Apply the accepted candidate's state to the target before trajectory scoring.
-                    ctx.Target.ApplyState(TargetState.From(current.GetState()));
+                    ctx.Target.ApplyState(current.GetState());
                     currentFullSetScore = await EvaluateTrajectoryScoreAsync(
                         ctx.Target, evalSet, ctx.TrajectoryMetric, ct).ConfigureAwait(false);
                 }
@@ -200,7 +200,7 @@ public sealed class SIMBA : IOptimizer
             _progress?.Report(new SimbaProgressReport(iter + 1, _maxIterations, bestScore, accepted));
         }
 
-        ctx.Target.ApplyState(TargetState.From(best.GetState()));
+        ctx.Target.ApplyState(best.GetState());
     }
 
     // ── Private helpers ──────────────────────────────────────────────────

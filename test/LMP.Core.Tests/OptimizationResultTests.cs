@@ -13,7 +13,7 @@ public class OptimizationResultTests
     private static OptimizationResult MakeResult(float baseline = 0.5f, float optimized = 0.7f)
         => new()
         {
-            Target = ModuleTarget.For(new EchoModule()),
+            Target = new EchoModule(),
             BaselineScore = baseline,
             OptimizedScore = optimized,
             Trials = []
@@ -57,7 +57,7 @@ public class OptimizationResultTests
         var module = new EchoModule();
         var result = new OptimizationResult
         {
-            Target = ModuleTarget.For(module),
+            Target = module,
             BaselineScore = 0.5f,
             OptimizedScore = 0.8f,
             Trials = []
@@ -83,7 +83,7 @@ public class OptimizationResultTests
     public async Task WriteArtifactAsync_ChatClientTarget_WithClassName_WritesFactory()
     {
         var spy = new SpyChatClient("reply");
-        var target = ChatClientTarget.For(spy, systemPrompt: "Be helpful.", temperature: 0.8f);
+        var target = spy.AsOptimizationTarget(b => b.WithSystemPrompt("Be helpful.").WithTemperature(0.8f));
         var result = new OptimizationResult
         {
             Target = target,
@@ -121,7 +121,7 @@ public class OptimizationResultTests
     public async Task WriteArtifactAsync_ChatClientTarget_NoClassName_Throws()
     {
         var spy = new SpyChatClient("reply");
-        var target = ChatClientTarget.For(spy, systemPrompt: "Hello");
+        var target = spy.AsOptimizationTarget(b => b.WithSystemPrompt("Hello"));
         var result = new OptimizationResult
         {
             Target = target,

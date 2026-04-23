@@ -104,7 +104,7 @@ public class OptimizedChatClientToolFilterTests
         var calc = MakeTool("calculator");
 
         var spy = new SpyChatClient("reply");
-        var target = ChatClientTarget.For(spy, tools: [search, calc]);
+        var target = spy.AsOptimizationTarget(b => b.WithTools([search, calc]));
 
         // Simulate optimizer selecting only "search"
         var assignment = ParameterAssignment.Empty

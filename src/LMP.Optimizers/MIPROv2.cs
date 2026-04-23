@@ -126,13 +126,13 @@ public sealed class MIPROv2 : IOptimizer
         ArgumentNullException.ThrowIfNull(ctx);
         var module = ctx.Target.GetService<LmpModule>()
             ?? throw new NotSupportedException(
-                $"{nameof(MIPROv2)} requires an LmpModule target. Use ModuleTarget.For(module).");
+                $"{nameof(MIPROv2)} requires an LmpModule target. Pass the LmpModule directly (it implements IOptimizationTarget).");
 
         var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
             .ConfigureAwait(false);
 
         if (!ReferenceEquals(best, module))
-            ctx.Target.ApplyState(TargetState.From(best.GetState()));
+            ctx.Target.ApplyState(best.GetState());
 
         // Propagate per-trial results to the shared TrialHistory so the pipeline budget gate
         // and post-run analysis tools (TraceAnalyzer) can see MIPROv2's search history.

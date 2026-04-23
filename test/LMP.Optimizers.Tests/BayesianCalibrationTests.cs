@@ -48,7 +48,7 @@ public sealed class BayesianCalibrationTests
         var bc = new BayesianCalibration(numRefinements: 5, seed: 0);
         var module = new BcFakeModule();
         var ctx = OptimizationContext.For(
-            ModuleTarget.For(module),
+            module,
             [MakeExample()],
             (_, _) => 1f);
 

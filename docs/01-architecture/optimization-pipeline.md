@@ -150,7 +150,7 @@ and all hosted tools are covered without any future code change.
 OptimizationPipeline.OptimizeAsync(...)
     → OptimizationResult { Target, BaselineScore, OptimizedScore, Trials }
         → result.WriteArtifactAsync(options)               // new
-            → ModuleTarget.WriteArtifactAsync(options)     // new
+            → LmpModule.WriteArtifactAsync(options)         // new (via interface dispatch)
                 → CSharpArtifactWriter (existing)
                     → Generated/{Module}.Optimized.g.cs    // same format; richer state later
 ```

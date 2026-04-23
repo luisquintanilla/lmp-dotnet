@@ -16,7 +16,7 @@ public sealed class LmpTraceMiddlewareTests
     {
         var usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 20, TotalTokenCount = 30 };
         var client = new UsageReturningClient("answer", usage);
-        var target = ChatClientTarget.For(client);
+        var target = client.AsOptimizationTarget();
 
         var (output, trace) = await target.ExecuteAsync("hello");
 
@@ -29,7 +29,7 @@ public sealed class LmpTraceMiddlewareTests
     {
         var usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 20, TotalTokenCount = 30 };
         var client = new UsageReturningClient("answer", usage);
-        var target = ChatClientTarget.For(client);
+        var target = client.AsOptimizationTarget();
 
         var (_, trace) = await target.ExecuteAsync("hello");
 
@@ -44,7 +44,7 @@ public sealed class LmpTraceMiddlewareTests
     {
         var usage = new UsageDetails { TotalTokenCount = 5 };
         var client = new UsageReturningClient("hi", usage);
-        var target = ChatClientTarget.For(client);
+        var target = client.AsOptimizationTarget();
 
         var (_, trace) = await target.ExecuteAsync("question");
 
@@ -56,7 +56,7 @@ public sealed class LmpTraceMiddlewareTests
     {
         var usage = new UsageDetails { TotalTokenCount = 1 };
         var client = new UsageReturningClient("the answer", usage);
-        var target = ChatClientTarget.For(client);
+        var target = client.AsOptimizationTarget();
 
         var (_, trace) = await target.ExecuteAsync("query");
 
@@ -69,7 +69,7 @@ public sealed class LmpTraceMiddlewareTests
     public async Task ExecuteAsync_NoUsage_TraceIsEmpty()
     {
         var client = new NoUsageClient("hello");
-        var target = ChatClientTarget.For(client);
+        var target = client.AsOptimizationTarget();
 
         var (_, trace) = await target.ExecuteAsync("input");
 
@@ -84,7 +84,7 @@ public sealed class LmpTraceMiddlewareTests
     {
         var usage = new UsageDetails { InputTokenCount = 7, OutputTokenCount = 13, TotalTokenCount = 20 };
         var client = new UsageReturningClient("ok", usage);
-        var target = ChatClientTarget.For(client);
+        var target = client.AsOptimizationTarget();
 
         var (_, trace) = await target.ExecuteAsync("test input");
 
@@ -98,7 +98,7 @@ public sealed class LmpTraceMiddlewareTests
     {
         var usage = new UsageDetails { TotalTokenCount = 5 };
         var client = new UsageReturningClient("my response", usage);
-        var target = ChatClientTarget.For(client);
+        var target = client.AsOptimizationTarget();
 
         var (output, _) = await target.ExecuteAsync("prompt");
 

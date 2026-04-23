@@ -9,11 +9,13 @@ namespace LMP;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Create via <see cref="For"/>:
+/// Construction is internal — use the
+/// <see cref="ChatClientOptimizationExtensions.AsOptimizationTarget(IChatClient, Action{ChatClientTargetBuilder}?)"/>
+/// extension on <see cref="IChatClient"/>:
 /// <code>
-/// var target = ChatClientTarget.For(chatClient,
-///     systemPrompt: "Answer concisely.",
-///     tools: [searchTool, calcTool]);
+/// var target = chatClient.AsOptimizationTarget(b =&gt; b
+///     .WithSystemPrompt("Answer concisely.")
+///     .WithTools([searchTool, calcTool]));
 /// </code>
 /// </para>
 /// <para>
@@ -35,22 +37,13 @@ public sealed class ChatClientTarget : IOptimizationTarget
     }
 
     /// <summary>
-    /// Creates a <see cref="ChatClientTarget"/> wrapping the given client.
+    /// Internal factory invoked by <see cref="ChatClientOptimizationExtensions.AsOptimizationTarget(IChatClient, Action{ChatClientTargetBuilder}?)"/>.
     /// </summary>
-    /// <param name="client">The underlying chat client. Must not be null.</param>
-    /// <param name="systemPrompt">Optional initial system prompt. Registered as a <see cref="StringValued"/> parameter.</param>
-    /// <param name="temperature">Optional initial sampling temperature (0–2). Registered as a <see cref="Continuous"/> parameter.</param>
-    /// <param name="tools">
-    /// Optional tool pool. All tools are initially selected; the optimizer can narrow the subset.
-    /// Tool names must be unique within the pool.
-    /// </param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="client"/> is null.</exception>
-    /// <exception cref="ArgumentException">Thrown when two tools in <paramref name="tools"/> share the same name.</exception>
-    public static ChatClientTarget For(
+    internal static ChatClientTarget Create(
         IChatClient client,
-        string? systemPrompt = null,
-        float? temperature = null,
-        IReadOnlyList<AITool>? tools = null)
+        string? systemPrompt,
+        float? temperature,
+        IReadOnlyList<AITool>? tools)
     {
         ArgumentNullException.ThrowIfNull(client);
 

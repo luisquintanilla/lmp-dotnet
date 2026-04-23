@@ -2,8 +2,9 @@ namespace LMP;
 
 /// <summary>
 /// Vertical extensibility seam: any LM-backed component that can be optimized.
-/// Implementations include <c>ModuleTarget</c> (wraps <see cref="LmpModule"/>),
-/// <c>ChatClientTarget</c> (wraps <c>IChatClient</c>), and user-defined adapters.
+/// Implementations include <see cref="LmpModule"/> (its own optimization target),
+/// <c>ChatClientTarget</c> (wraps <c>IChatClient</c>), <c>ChainTarget</c> (sequential
+/// composition), and user-defined adapters.
 /// </summary>
 public interface IOptimizationTarget
 {
@@ -69,7 +70,8 @@ public interface IOptimizationTarget
 
     /// <summary>
     /// Writes an optimization artifact (e.g., <c>.g.cs</c>) for this target.
-    /// Default implementation is a no-op. Override in <c>ModuleTarget</c>.
+    /// Default implementation is a no-op. <see cref="LmpModule"/> overrides via
+    /// <see cref="OptimizationResult.WriteArtifactAsync"/> dispatch.
     /// </summary>
     Task WriteArtifactAsync(CompileOptions options, CancellationToken ct = default)
         => Task.CompletedTask;

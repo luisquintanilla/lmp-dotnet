@@ -140,7 +140,7 @@ public sealed class AcceptanceCriteriaTests
             .Select(i => (Example)new Example<AccInput, AccOutput>(
                 new AccInput($"q{i}"), new AccOutput($"a{i}")))
             .ToList();
-        var ctx = OptimizationContext.For(ModuleTarget.For(module), trainSet, (_, _) => 0.5f);
+        var ctx = OptimizationContext.For(module, trainSet, (_, _) => 0.5f);
 
         await bc.OptimizeAsync(ctx);
 

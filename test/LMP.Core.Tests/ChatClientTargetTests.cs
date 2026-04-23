@@ -9,7 +9,7 @@ public class ChatClientTargetTests
 
     [Fact]
     public void For_NullClientThrows()
-        => Assert.Throws<ArgumentNullException>(() => ChatClientTarget.For(null!));
+        => Assert.Throws<ArgumentNullException>(() => ChatClientOptimizationExtensions.AsOptimizationTarget(null!));
 
     [Fact]
     public void For_DuplicateToolNamesThrows()
@@ -17,7 +17,7 @@ public class ChatClientTargetTests
         var tool1 = AIFunctionFactory.Create(() => "ok", name: "search");
         var tool2 = AIFunctionFactory.Create(() => "ok", name: "search");
         Assert.Throws<ArgumentException>(
-            () => ChatClientTarget.For(new SpyChatClient("hi"), tools: [tool1, tool2]));
+            () => new SpyChatClient("hi").AsOptimizationTarget(b => b.WithTools([tool1, tool2])));
     }
 
     [Fact]
@@ -25,7 +25,7 @@ public class ChatClientTargetTests
     {
         var t1 = AIFunctionFactory.Create(() => "ok", name: "search");
         var t2 = AIFunctionFactory.Create(() => "ok", name: "calc");
-        var target = ChatClientTarget.For(new SpyChatClient("hi"), tools: [t1, t2]);
+        var target = new SpyChatClient("hi").AsOptimizationTarget(b => b.WithTools([t1, t2]));
         Assert.NotNull(target);
     }
 
@@ -34,7 +34,7 @@ public class ChatClientTargetTests
     [Fact]
     public void Shape_IsSingleTurn()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("response"));
+        var target = new SpyChatClient("response").AsOptimizationTarget();
         Assert.Equal(TargetShape.SingleTurn, target.Shape);
     }
 
@@ -44,7 +44,7 @@ public class ChatClientTargetTests
     public async Task ExecuteAsync_StringInput_SendsUserMessage()
     {
         var spy = new SpyChatClient("hello");
-        var target = ChatClientTarget.For(spy);
+        var target = spy.AsOptimizationTarget();
         await target.ExecuteAsync("Say hi");
         Assert.Single(spy.LastMessages!);
         Assert.Equal(ChatRole.User, spy.LastMessages![0].Role);
@@ -55,7 +55,7 @@ public class ChatClientTargetTests
     public async Task ExecuteAsync_WithSystemPrompt_PrependsSysMessage()
     {
         var spy = new SpyChatClient("world");
-        var target = ChatClientTarget.For(spy, systemPrompt: "Be concise.");
+        var target = spy.AsOptimizationTarget(b => b.WithSystemPrompt("Be concise."));
         await target.ExecuteAsync("Hello");
         Assert.Equal(2, spy.LastMessages!.Count);
         Assert.Equal(ChatRole.System, spy.LastMessages[0].Role);
@@ -67,7 +67,7 @@ public class ChatClientTargetTests
     public async Task ExecuteAsync_ChatMessageInput_PassedThrough()
     {
         var spy = new SpyChatClient("ok");
-        var target = ChatClientTarget.For(spy);
+        var target = spy.AsOptimizationTarget();
         var msgs = new List<ChatMessage>
         {
             new(ChatRole.User, "question"),
@@ -81,7 +81,7 @@ public class ChatClientTargetTests
     public async Task ExecuteAsync_ReturnsResponseText()
     {
         var spy = new SpyChatClient("the answer is 42");
-        var target = ChatClientTarget.For(spy);
+        var target = spy.AsOptimizationTarget();
         var (output, _) = await target.ExecuteAsync("What is it?");
         Assert.Equal("the answer is 42", output);
     }
@@ -90,7 +90,7 @@ public class ChatClientTargetTests
     public async Task ExecuteAsync_WithTemperature_SetsInOptions()
     {
         var spy = new SpyChatClient("ok");
-        var target = ChatClientTarget.For(spy, temperature: 0.8f);
+        var target = spy.AsOptimizationTarget(b => b.WithTemperature(0.8f));
         await target.ExecuteAsync("test");
         Assert.NotNull(spy.LastOptions);
         Assert.Equal(0.8f, spy.LastOptions.Temperature);
@@ -99,14 +99,14 @@ public class ChatClientTargetTests
     [Fact]
     public async Task ExecuteAsync_UnsupportedInputType_Throws()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("ok"));
+        var target = new SpyChatClient("ok").AsOptimizationTarget();
         await Assert.ThrowsAsync<ArgumentException>(() => target.ExecuteAsync(42));
     }
 
     [Fact]
     public async Task ExecuteAsync_NullInput_Throws()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("ok"));
+        var target = new SpyChatClient("ok").AsOptimizationTarget();
         await Assert.ThrowsAsync<ArgumentNullException>(() => target.ExecuteAsync(null!));
     }
 
@@ -115,14 +115,14 @@ public class ChatClientTargetTests
     [Fact]
     public void GetParameterSpace_NoConfig_ReturnsEmpty()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"));
+        var target = new SpyChatClient("x").AsOptimizationTarget();
         Assert.True(target.GetParameterSpace().IsEmpty);
     }
 
     [Fact]
     public void GetParameterSpace_WithSystemPrompt_HasStringValued()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"), systemPrompt: "Be helpful.");
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithSystemPrompt("Be helpful."));
         var space = target.GetParameterSpace();
         Assert.True(space.Parameters.ContainsKey("system_prompt"));
         Assert.IsType<StringValued>(space.Parameters["system_prompt"]);
@@ -131,7 +131,7 @@ public class ChatClientTargetTests
     [Fact]
     public void GetParameterSpace_WithTemperature_HasContinuous()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"), temperature: 1.0f);
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithTemperature(1.0f));
         var space = target.GetParameterSpace();
         Assert.True(space.Parameters.ContainsKey("temperature"));
         var cont = Assert.IsType<Continuous>(space.Parameters["temperature"]);
@@ -143,7 +143,7 @@ public class ChatClientTargetTests
     public void GetParameterSpace_WithTools_HasSubset()
     {
         var t1 = AIFunctionFactory.Create(() => "ok", name: "search");
-        var target = ChatClientTarget.For(new SpyChatClient("x"), tools: [t1]);
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithTools([t1]));
         var space = target.GetParameterSpace();
         Assert.True(space.Parameters.ContainsKey("tools"));
         Assert.IsType<Subset>(space.Parameters["tools"]);
@@ -154,7 +154,7 @@ public class ChatClientTargetTests
     [Fact]
     public void GetState_ReturnsCurrentState()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"), systemPrompt: "test", temperature: 0.5f);
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithSystemPrompt("test").WithTemperature(0.5f));
         var state = target.GetState().As<ChatClientState>();
         Assert.Equal("test", state.SystemPrompt);
         Assert.Equal(0.5f, state.Temperature);
@@ -163,7 +163,7 @@ public class ChatClientTargetTests
     [Fact]
     public void ApplyState_UpdatesState()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"), systemPrompt: "old");
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithSystemPrompt("old"));
         var newState = new ChatClientState { SystemPrompt = "new", Temperature = 1.2f };
         target.ApplyState(TargetState.From(newState));
         var retrieved = target.GetState().As<ChatClientState>();
@@ -174,14 +174,14 @@ public class ChatClientTargetTests
     [Fact]
     public void ApplyState_NullThrows()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"));
+        var target = new SpyChatClient("x").AsOptimizationTarget();
         Assert.Throws<ArgumentNullException>(() => target.ApplyState(null!));
     }
 
     [Fact]
     public void GetState_ApplyState_RoundTrip()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"), systemPrompt: "round-trip", temperature: 0.7f);
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithSystemPrompt("round-trip").WithTemperature(0.7f));
         var savedState = target.GetState();
         target.ApplyState(TargetState.From(new ChatClientState { SystemPrompt = "modified" }));
         target.ApplyState(savedState);
@@ -195,7 +195,7 @@ public class ChatClientTargetTests
     [Fact]
     public void WithParameters_Empty_ClonesCurrentState()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"), systemPrompt: "base");
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithSystemPrompt("base"));
         var cloned = (ChatClientTarget)target.WithParameters(ParameterAssignment.Empty);
         Assert.Equal("base", cloned.GetState().As<ChatClientState>().SystemPrompt);
     }
@@ -203,7 +203,7 @@ public class ChatClientTargetTests
     [Fact]
     public void WithParameters_SystemPrompt_UpdatesClone()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"), systemPrompt: "old");
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithSystemPrompt("old"));
         var assignment = ParameterAssignment.Empty.With("system_prompt", "new prompt");
         var cloned = (ChatClientTarget)target.WithParameters(assignment);
         Assert.Equal("new prompt", cloned.GetState().As<ChatClientState>().SystemPrompt);
@@ -214,7 +214,7 @@ public class ChatClientTargetTests
     [Fact]
     public void WithParameters_Temperature_ReadsDouble()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"), temperature: 1.0f);
+        var target = new SpyChatClient("x").AsOptimizationTarget(b => b.WithTemperature(1.0f));
         var assignment = ParameterAssignment.Empty.With("temperature", 0.3);  // double
         var cloned = (ChatClientTarget)target.WithParameters(assignment);
         var temp = cloned.GetState().As<ChatClientState>().Temperature;
@@ -225,7 +225,7 @@ public class ChatClientTargetTests
     [Fact]
     public void WithParameters_NullThrows()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"));
+        var target = new SpyChatClient("x").AsOptimizationTarget();
         Assert.Throws<ArgumentNullException>(() => target.WithParameters(null!));
     }
 
@@ -237,7 +237,7 @@ public class ChatClientTargetTests
         var t1 = AIFunctionFactory.Create(() => "ok", name: "search");
         var t2 = AIFunctionFactory.Create(() => "ok", name: "calc");
         var spy = new SpyChatClient("ok");
-        var target = ChatClientTarget.For(spy, tools: [t1, t2]);
+        var target = spy.AsOptimizationTarget(b => b.WithTools([t1, t2]));
 
         // Apply state with only "search" selected
         target.ApplyState(TargetState.From(new ChatClientState
@@ -259,7 +259,7 @@ public class ChatClientTargetTests
         var t2 = AIFunctionFactory.Create(() => "ok", name: "b");
         var t3 = AIFunctionFactory.Create(() => "ok", name: "c");
         var spy = new SpyChatClient("ok");
-        var target = ChatClientTarget.For(spy, tools: [t1, t2, t3]);
+        var target = spy.AsOptimizationTarget(b => b.WithTools([t1, t2, t3]));
 
         // First subset: only "a"
         target.ApplyState(TargetState.From(new ChatClientState { SelectedToolNames = ["a"] }));
@@ -278,14 +278,14 @@ public class ChatClientTargetTests
     public void GetService_ReturnsClientAsTService()
     {
         var spy = new SpyChatClient("ok");
-        var target = ChatClientTarget.For(spy);
+        var target = spy.AsOptimizationTarget();
         Assert.Same(spy, target.GetService<IChatClient>());
     }
 
     [Fact]
     public void GetService_WrongType_ReturnsNull()
     {
-        var target = ChatClientTarget.For(new SpyChatClient("ok"));
+        var target = new SpyChatClient("ok").AsOptimizationTarget();
         Assert.Null(target.GetService<System.IO.Stream>());
     }
 }

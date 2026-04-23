@@ -7,7 +7,11 @@ namespace LMP;
 /// Base class for composable LM programs. Subclass this and override
 /// <see cref="ForwardAsync"/> to define multi-step LM logic.
 /// </summary>
-public abstract class LmpModule
+/// <remarks>
+/// <see cref="LmpModule"/> implements <see cref="IOptimizationTarget"/> directly:
+/// any subclass can be passed straight to an optimizer pipeline without an adapter.
+/// </remarks>
+public abstract class LmpModule : IOptimizationTarget
 {
     /// <summary>
     /// The chat client used by <see cref="PredictAttribute"/>-decorated partial methods.
@@ -104,9 +108,12 @@ public abstract class LmpModule
             $"Ensure '{GetType().Name}' is declared as a partial class.");
 
     /// <summary>
-    /// Returns the current state of all predictors as a <see cref="ModuleState"/>.
+    /// Returns the current state of all predictors as a typed <see cref="ModuleState"/>.
+    /// Use the <see cref="IOptimizationTarget.GetState"/> overload (returning
+    /// <see cref="TargetState"/>) when you need to round-trip state through the
+    /// optimization pipeline.
     /// </summary>
-    public ModuleState GetState()
+    public ModuleState GetModuleState()
         => new()
         {
             Version = "1.0",
@@ -137,7 +144,7 @@ public abstract class LmpModule
     /// </summary>
     public virtual async Task SaveStateAsync(string path, CancellationToken cancellationToken = default)
     {
-        var state = GetState();
+        var state = GetModuleState();
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             state,
@@ -166,4 +173,66 @@ public abstract class LmpModule
 
         ApplyState(state);
     }
+
+    // ── IOptimizationTarget implementation ──────────────────────────────
+
+    /// <inheritdoc />
+    public TargetShape Shape => TargetShape.SingleTurn;
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Sets <see cref="Trace"/> for the duration of the call so that <c>[Predict]</c>-decorated
+    /// methods record into a fresh trace, then resets it in a finally block.
+    /// </remarks>
+    public async Task<(object Output, Trace Trace)> ExecuteAsync(
+        object input,
+        CancellationToken ct = default)
+    {
+        var trace = new Trace();
+        Trace = trace;
+        try
+        {
+            var output = await ForwardAsync(input, ct).ConfigureAwait(false);
+            return (output, trace);
+        }
+        finally
+        {
+            Trace = null;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// T1 returns <see cref="TypedParameterSpace.Empty"/>. The fractal predictor
+    /// parameter aggregation lands in T2.
+    /// </remarks>
+    // T2: fractal predictor params land here.
+    public TypedParameterSpace GetParameterSpace() => TypedParameterSpace.Empty;
+
+    /// <inheritdoc />
+    public TargetState GetState() => TargetState.From(GetModuleState());
+
+    /// <inheritdoc />
+    public void ApplyState(TargetState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        ApplyState(state.As<ModuleState>());
+    }
+
+    /// <inheritdoc />
+    /// <exception cref="NotSupportedException">
+    /// Thrown when <paramref name="assignment"/> is non-empty. T2 introduces the
+    /// fractal predictor parameter routing that makes per-parameter assignment work.
+    /// </exception>
+    public IOptimizationTarget WithParameters(ParameterAssignment assignment)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        if (!assignment.IsEmpty)
+            throw new NotSupportedException(
+                "LmpModule.WithParameters: TypedParameterSpace assignment is implemented in T2 (fractal predictor params).");
+        return Clone();
+    }
+
+    /// <inheritdoc />
+    public T? GetService<T>() where T : class => this as T;
 }

@@ -1,9 +1,13 @@
 namespace LMP;
 
 /// <summary>
-/// Extension methods for using <see cref="LmpModule"/> as an <see cref="IOptimizationTarget"/>
-/// in the unified optimization pipeline.
+/// Extension methods for using <see cref="LmpModule"/> in the unified optimization pipeline.
 /// </summary>
+/// <remarks>
+/// Since T1, <see cref="LmpModule"/> implements <see cref="IOptimizationTarget"/> directly —
+/// adapter wrappers are no longer required. Pass a module wherever an
+/// <see cref="IOptimizationTarget"/> is expected.
+/// </remarks>
 public static class LmpModuleOptimizationExtensions
 {
     /// <summary>
@@ -25,18 +29,7 @@ public static class LmpModuleOptimizationExtensions
     }
 
     /// <summary>
-    /// Creates a <see cref="ModuleTarget"/> wrapping this module for direct use
-    /// in an <see cref="OptimizationContext"/>.
-    /// </summary>
-    public static ModuleTarget AsOptimizationTarget(this LmpModule module)
-    {
-        ArgumentNullException.ThrowIfNull(module);
-        return ModuleTarget.For(module);
-    }
-
-    /// <summary>
     /// Creates an <see cref="OptimizationContext"/> bound to this module.
-    /// Equivalent to <c>OptimizationContext.For(ModuleTarget.For(module), trainSet, metric)</c>.
     /// </summary>
     public static OptimizationContext AsOptimizationContext(
         this LmpModule module,
@@ -45,6 +38,6 @@ public static class LmpModuleOptimizationExtensions
         IReadOnlyList<Example>? devSet = null)
     {
         ArgumentNullException.ThrowIfNull(module);
-        return OptimizationContext.For(ModuleTarget.For(module), trainSet, metric, devSet);
+        return OptimizationContext.For(module, trainSet, metric, devSet);
     }
 }

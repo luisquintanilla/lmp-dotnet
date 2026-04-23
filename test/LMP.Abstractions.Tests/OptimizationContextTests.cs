@@ -70,11 +70,11 @@ public class OptimizationContextTests
             => OptimizationContext.For(StubTarget, OneExample, null!));
 
     [Fact]
-    public void Bag_CanStoreAndRetrieveArbitraryValues()
+    public void Diagnostics_SnapshotsCanStoreAndRetrieveArbitraryValues()
     {
         var ctx = OptimizationContext.For(StubTarget, OneExample, AlwaysOne);
-        ctx.Bag["test:key"] = 42;
-        Assert.Equal(42, ctx.Bag["test:key"]);
+        ctx.Diagnostics.Snapshots["test:key"] = 42;
+        Assert.Equal(42, ctx.Diagnostics.Snapshots["test:key"]);
     }
 
     // ── Minimal stub target ───────────────────────────────────────────────

@@ -42,7 +42,7 @@ public static class OptimizerExtensions
         ArgumentNullException.ThrowIfNull(metric);
 
         var ctx = OptimizationContext.For(
-            ModuleTarget.For(module),
+            module,
             trainSet,
             metric);
 
@@ -50,7 +50,7 @@ public static class OptimizerExtensions
 
         if (options?.OutputDir is not null)
         {
-            var baseline = ctx.Bag.TryGetValue("baseline", out var b) ? (float)b : 0f;
+            var baseline = ctx.Diagnostics.BaselineScore ?? 0f;
             await CSharpArtifactWriter.WriteAsync(
                 module,
                 options.OutputDir,

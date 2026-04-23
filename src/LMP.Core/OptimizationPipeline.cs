@@ -32,7 +32,7 @@ public sealed class OptimizationPipeline : IOptimizer
     public static OptimizationPipeline For(LmpModule module)
     {
         ArgumentNullException.ThrowIfNull(module);
-        return new OptimizationPipeline(ModuleTarget.For(module));
+        return new OptimizationPipeline(module);
     }
 
     /// <summary>Creates a pipeline for the given target.</summary>
@@ -109,7 +109,7 @@ public sealed class OptimizationPipeline : IOptimizer
 
         // Evaluate baseline on the same set we will use for final scoring
         float baseline = await EvaluateAsync(_target, evalSet, metric, ct).ConfigureAwait(false);
-        ctx.Bag["baseline"] = (object)baseline;
+        ctx.Diagnostics.BaselineScore = baseline;
 
         await OptimizeAsync(ctx, ct).ConfigureAwait(false);
 

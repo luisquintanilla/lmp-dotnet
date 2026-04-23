@@ -64,7 +64,7 @@ const string SupportPrompt =
     "You are a helpful customer support agent. " +
     "Respond politely and address the customer's concern directly.";
 
-var baselineTarget = ChatClientTarget.For(client, systemPrompt: SupportPrompt, temperature: 0.7f);
+var baselineTarget = client.AsOptimizationTarget(b => b.WithSystemPrompt(SupportPrompt).WithTemperature(0.7f));
 
 // Running with no optimizers measures the baseline quality only.
 var baselineResult = await OptimizationPipeline.For(baselineTarget)
@@ -82,7 +82,7 @@ Console.WriteLine("  BayesianCalibration treats temperature as a Continuous hype
 Console.WriteLine("  and uses TPE to find the value that maximises keyword-overlap quality.");
 Console.WriteLine();
 
-var calibTarget = ChatClientTarget.For(client, systemPrompt: SupportPrompt, temperature: 0.7f);
+var calibTarget = client.AsOptimizationTarget(b => b.WithSystemPrompt(SupportPrompt).WithTemperature(0.7f));
 
 var calibResult = await OptimizationPipeline.For(calibTarget)
     .Use(new BayesianCalibration(numRefinements: 6, continuousSteps: 4, seed: 42))
@@ -99,28 +99,22 @@ Console.WriteLine();
 // ══════════════════════════════════════════════════════════════════════════════
 Console.WriteLine("Step 3: ChainTarget — classify then draft (two-stage pipeline)");
 Console.WriteLine("──────────────────────────────────────────────────────────────");
-Console.WriteLine("  ChainTarget.For(stage1, stage2) pipes the string output of stage1");
+Console.WriteLine("  stage1.Then(stage2) pipes the string output of stage1");
 Console.WriteLine("  as input to stage2. BayesianCalibration tunes each stage's");
 Console.WriteLine("  temperature independently: child_0.temperature / child_1.temperature.");
 Console.WriteLine();
 
 // Stage 1: classify the ticket into a structured category + summary
-var classifyTarget = ChatClientTarget.For(
-    client,
-    systemPrompt: "Classify this customer-support ticket. " +
+var classifyTarget = client.AsOptimizationTarget(b => b.WithSystemPrompt("Classify this customer-support ticket. " +
                   "Start with 'Category: Billing|Technical|Account|General. ' " +
-                  "then one sentence summarising the issue.",
-    temperature: 0.2f);
+                  "then one sentence summarising the issue.").WithTemperature(0.2f));
 
 // Stage 2: draft a reply given the category + summary from stage 1
-var draftTarget = ChatClientTarget.For(
-    client,
-    systemPrompt: "You are a support agent. " +
+var draftTarget = client.AsOptimizationTarget(b => b.WithSystemPrompt("You are a support agent. " +
                   "Write a brief, professional reply for the described support issue. " +
-                  "Start with 'Thank you for reaching out.'",
-    temperature: 0.7f);
+                  "Start with 'Thank you for reaching out.'").WithTemperature(0.7f));
 
-var chain = ChainTarget.For(classifyTarget, draftTarget);
+var chain = classifyTarget.Then(draftTarget);
 
 var chainResult = await OptimizationPipeline.For(chain)
     .Use(new BayesianCalibration(numRefinements: 4, continuousSteps: 4, seed: 42))

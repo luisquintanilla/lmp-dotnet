@@ -10,6 +10,36 @@ namespace LMP;
 public static class ChatClientOptimizationExtensions
 {
     /// <summary>
+    /// Adapts an <see cref="IChatClient"/> as an <see cref="IOptimizationTarget"/> for
+    /// use in an optimization pipeline. Configure optimizable parameters (system prompt,
+    /// temperature, tool pool) via the supplied <paramref name="configure"/> callback.
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// var target = chatClient.AsOptimizationTarget(b =&gt; b
+    ///     .WithSystemPrompt("Answer concisely.")
+    ///     .WithTemperature(0.7f)
+    ///     .WithTools([searchTool, calcTool]));
+    /// </code>
+    /// </example>
+    /// <param name="client">The underlying chat client. Must not be null.</param>
+    /// <param name="configure">
+    /// Optional configuration callback. When <see langword="null"/>, the resulting target
+    /// has no system prompt, no temperature override, and no tool pool.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="client"/> is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when two tools share the same name.</exception>
+    public static IOptimizationTarget AsOptimizationTarget(
+        this IChatClient client,
+        Action<ChatClientTargetBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        var builder = new ChatClientTargetBuilder();
+        configure?.Invoke(builder);
+        return ChatClientTarget.Create(client, builder.SystemPrompt, builder.Temperature, builder.Tools);
+    }
+
+    /// <summary>
     /// Adds trace-recording middleware that captures per-call token usage and messages
     /// into <paramref name="trace"/> for every <c>GetResponseAsync</c> call on the built client.
     /// </summary>

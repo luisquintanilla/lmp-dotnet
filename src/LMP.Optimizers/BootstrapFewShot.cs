@@ -42,7 +42,7 @@ public sealed class BootstrapFewShot : IOptimizer
 
         var module = ctx.Target.GetService<LmpModule>()
             ?? throw new NotSupportedException(
-                $"{nameof(BootstrapFewShot)} requires an LmpModule target. Use ModuleTarget.For(module).");
+                $"{nameof(BootstrapFewShot)} requires an LmpModule target. Pass the LmpModule directly (it implements IOptimizationTarget).");
 
         await RunAsync(module, ctx.TrainSet, ctx.Metric, ct).ConfigureAwait(false);
     }

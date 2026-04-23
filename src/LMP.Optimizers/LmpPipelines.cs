@@ -48,7 +48,7 @@ public static class LmpPipelines
     /// <item><term>Balanced</term><description>BootstrapFewShot → GEPA → BayesianCalibration</description></item>
     /// </list>
     /// <para>
-    /// <see cref="BayesianCalibration"/> is a safe no-op for <see cref="ModuleTarget"/> pipelines
+    /// <see cref="BayesianCalibration"/> is a safe no-op for <see cref="LmpModule"/> pipelines
     /// (its parameter space is always empty). It actively calibrates <see cref="Continuous"/> and
     /// <see cref="Integer"/> hyperparameters when the target is a <c>ChatClientTarget</c>
     /// (temperature, etc.).

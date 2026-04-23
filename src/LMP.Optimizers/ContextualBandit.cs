@@ -16,7 +16,7 @@ namespace LMP;
 /// </para>
 /// <para>
 /// After exploration, the MAP-estimated best subset is stored in
-/// <c>ctx.Bag["lmp.bandit:{paramName}:best"]</c> for downstream pipeline steps.
+/// <c>ctx.Diagnostics.Snapshots["lmp.bandit:{paramName}:best"]</c> for downstream pipeline steps.
 /// Beta distribution parameters are stored under
 /// <c>"lmp.bandit:{paramName}:alphas"</c> and <c>"lmp.bandit:{paramName}:betas"</c>.
 /// </para>
@@ -163,9 +163,9 @@ public sealed class ContextualBandit : IOptimizer
                     sw.ElapsedMilliseconds, trace.TotalApiCalls)));
         }
 
-        // Store learned Beta parameters in context bag
-        ctx.Bag[$"lmp.bandit:{ParameterName}:alphas"] = alphas;
-        ctx.Bag[$"lmp.bandit:{ParameterName}:betas"] = betas;
+        // Store learned Beta parameters in diagnostics snapshots
+        ctx.Diagnostics.Snapshots[$"lmp.bandit:{ParameterName}:alphas"] = alphas;
+        ctx.Diagnostics.Snapshots[$"lmp.bandit:{ParameterName}:betas"] = betas;
 
         // Compute MAP estimates and store the best subset
         float[] mapEstimates = new float[n];
@@ -182,7 +182,7 @@ public sealed class ContextualBandit : IOptimizer
         var bestItems = new List<object>(bestK);
         for (int j = 0; j < bestK; j++)
             bestItems.Add(pool[bestRanked[j]]);
-        ctx.Bag[$"lmp.bandit:{ParameterName}:best"] = (IReadOnlyList<object>)bestItems;
+        ctx.Diagnostics.Snapshots[$"lmp.bandit:{ParameterName}:best"] = (IReadOnlyList<object>)bestItems;
     }
 
     // ── Thompson Sampling math ─────────────────────────────────────────────

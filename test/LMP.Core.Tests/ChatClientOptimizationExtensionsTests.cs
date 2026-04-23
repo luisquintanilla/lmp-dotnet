@@ -110,7 +110,7 @@ public class ChatClientOptimizationExtensionsTests
         // ModuleTarget produces ModuleState, not ChatClientState
         var fakeModuleResult = new OptimizationResult
         {
-            Target = ModuleTarget.For(new FakeModule()),
+            Target = new FakeModule(),
             BaselineScore = 0f,
             OptimizedScore = 0f,
             Trials = []
@@ -122,8 +122,7 @@ public class ChatClientOptimizationExtensionsTests
     [Fact]
     public async Task UseOptimized_Result_ChatClientTarget_AppliesState()
     {
-        var chatClientTarget = ChatClientTarget.For(
-            new SpyChatClient("ok"), systemPrompt: "Use result.");
+        var chatClientTarget = new SpyChatClient("ok").AsOptimizationTarget(b => b.WithSystemPrompt("Use result."));
         var result = new OptimizationResult
         {
             Target = chatClientTarget,
@@ -203,7 +202,7 @@ public class ChatClientOptimizationExtensionsTests
 
     private static OptimizationResult FakeResult(ChatClientState state)
     {
-        var target = ChatClientTarget.For(new SpyChatClient("x"));
+        var target = new SpyChatClient("x").AsOptimizationTarget();
         target.ApplyState(TargetState.From(state));
         return new OptimizationResult
         {

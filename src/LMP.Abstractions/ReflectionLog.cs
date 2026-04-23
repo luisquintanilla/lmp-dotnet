@@ -9,7 +9,7 @@ namespace LMP;
 /// Thread-safe: <see cref="Add"/> and <see cref="Entries"/> may be called concurrently.
 /// Each <see cref="OptimizationContext"/> starts with a fresh <c>new ReflectionLog()</c>.
 /// </remarks>
-public sealed class ReflectionLog
+public sealed class ReflectionLog : IReflectionLog
 {
     /// <summary>
     /// A read-only empty sentinel.

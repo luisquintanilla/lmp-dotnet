@@ -15,7 +15,7 @@ namespace LMP.Extensions.Z3;
 /// <item><description>Reads a <see cref="Subset"/> parameter from <see cref="OptimizationContext.SearchSpace"/>.</description></item>
 /// <item><description>Uses the Z3 SMT solver to determine which tools can appear in at least one valid subset.</description></item>
 /// <item><description>Prunes the pool to only individually-feasible tools and tightens the min/max bounds.</description></item>
-/// <item><description>Stores the feasible tool names in <see cref="OptimizationContext.Bag"/> for downstream introspection.</description></item>
+/// <item><description>Stores the feasible tool names in <see cref="OptimizationContext.Diagnostics"/>.<see cref="OptimizationDiagnostics.Snapshots"/> for downstream introspection.</description></item>
 /// </list>
 /// </para>
 /// <para>
@@ -35,7 +35,7 @@ namespace LMP.Extensions.Z3;
 public sealed class Z3FeasibilityOptimizer : IOptimizer
 {
     /// <summary>
-    /// Bag key prefix where feasible tool name sets are stored.
+    /// Diagnostics snapshot key prefix where feasible tool name sets are stored.
     /// Full key: <c>"lmp.z3:feasible:{paramName}"</c>.
     /// The value is <see cref="IReadOnlySet{T}"/> of <see cref="string"/> (tool names).
     /// </summary>
@@ -111,7 +111,7 @@ public sealed class Z3FeasibilityOptimizer : IOptimizer
         if (minSize > maxSize)
         {
             // Infeasible bounds — clear the pool to signal no valid selection exists
-            ctx.Bag[BagKeyPrefix + _paramName] = (IReadOnlySet<string>)new HashSet<string>(StringComparer.Ordinal);
+            ctx.Diagnostics.Snapshots[BagKeyPrefix + _paramName] = (IReadOnlySet<string>)new HashSet<string>(StringComparer.Ordinal);
             ctx.SearchSpace = ctx.SearchSpace.Remove(_paramName);
             return Task.CompletedTask;
         }
@@ -125,8 +125,8 @@ public sealed class Z3FeasibilityOptimizer : IOptimizer
                 feasibleTools.Add(name);
         }
 
-        // Store feasible tools in bag for downstream introspection
-        ctx.Bag[BagKeyPrefix + _paramName] = (IReadOnlySet<string>)feasibleTools;
+        // Store feasible tools in diagnostics for downstream introspection
+        ctx.Diagnostics.Snapshots[BagKeyPrefix + _paramName] = (IReadOnlySet<string>)feasibleTools;
 
         // Prune pool to individually feasible tools only
         var prunedPool = subset.Pool

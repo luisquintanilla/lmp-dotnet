@@ -87,7 +87,7 @@ public interface IOptimizationTarget
     // Service locator for optional capabilities (e.g., IChatClient, IRetriever)
     TService? GetService<TService>() where TService : class;
 
-    // Write .g.cs artifact — default is no-op (only ModuleTarget implements)
+    // Write .g.cs artifact — default is no-op (LmpModule routes to source-gen)
     Task WriteArtifactAsync(CompileOptions options, CancellationToken ct = default)
         => Task.CompletedTask;
 }
@@ -323,7 +323,7 @@ public sealed class BayesianCalibration : IOptimizer
         int continuousSteps = 8,
         int? seed = null) { ... }
 
-    // Safe no-op for ModuleTarget (parameter space is empty)
+    // Safe no-op for LmpModule (parameter space is empty until T2)
     // For ChatClientTarget: temperature, top_p, other continuous/integer params
     public Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default) { ... }
 }

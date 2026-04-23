@@ -18,7 +18,7 @@ See [optimization-pipeline.md](optimization-pipeline.md) and [optimization-api.m
 
 | Phase | Title | Key Deliverables |
 |-------|-------|-----------------|
-| **A** | Seams | `IOptimizer.OptimizeAsync`, `IOptimizationTarget`, `OptimizationContext`, `OptimizationPipeline`, `LmpPipelines.Auto`, `ModuleTarget`, `DelegateTarget` |
+| **A** | Seams | `IOptimizer.OptimizeAsync`, `IOptimizationTarget`, `OptimizationContext`, `OptimizationPipeline`, `LmpPipelines.Auto`, `LmpModule` (its own optimization target), `DelegateTarget` |
 | **B** | Context-ify Algorithms | `SIMBA`, `InstructionReflector`, refactored `GEPA`, `AutoSampler` |
 | **C** | TypedParameterSpace | `TypedParameterSpace`, `ParameterKind` hierarchy, `ISearchStrategy`, `ISampler [Obsolete]` |
 | **D** | Vertical Targets | `ChatClientTarget`, `DelegateTarget`, `.UseOptimized()` MEAI middleware |
@@ -568,7 +568,7 @@ Introduce the unified optimization pipeline scaffolding without changing existin
 
 ### New in `LMP.Core`
 
-- `ModuleTarget : IOptimizationTarget`
+- `LmpModule : IOptimizationTarget` (T1: direct implementation, no adapter)
 - `OptimizationPipeline : IOptimizer` — fluent builder
 - `OptimizationResult` record
 - `LmpModuleOptimizationExtensions` — `.OptimizeAsync()`, `.AsOptimizationPipeline()`

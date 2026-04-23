@@ -281,7 +281,7 @@ internal static class AutoOptimizeCommand
             // CLI controls artifact writing after comparing to baseline on the SAME dataset.
             try
             {
-                var optCtx = OptimizationContext.For(ModuleTarget.For(module), trainSet, metric);
+                var optCtx = OptimizationContext.For(module, trainSet, metric);
                 await opt.OptimizeAsync(optCtx, linked.Token);
             }
             catch (OperationCanceledException) when (budgetCts.IsCancellationRequested)

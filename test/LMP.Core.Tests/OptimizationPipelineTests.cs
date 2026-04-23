@@ -204,7 +204,7 @@ public class OptimizationPipelineTests
         var outer = OptimizationPipeline.For(new EchoModule()).Use(inner);
         var outerCtx = new OptimizationContext
         {
-            Target = ModuleTarget.For(new EchoModule()),
+            Target = new EchoModule(),
             TrainSet = OneExample,
             Metric = AlwaysOne
         };
@@ -225,11 +225,10 @@ public class OptimizationPipelineTests
     }
 
     [Fact]
-    public void AsOptimizationTarget_ReturnsModuleTarget()
+    public void Module_IsItsOwnOptimizationTarget()
     {
         var module = new EchoModule();
-        var target = module.AsOptimizationTarget();
-        Assert.IsType<ModuleTarget>(target);
+        IOptimizationTarget target = module;
         Assert.Same(module, target.GetService<LmpModule>());
     }
 

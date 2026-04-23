@@ -57,7 +57,13 @@ public sealed class OptimizationContext
     public CostBudget Budget { get; set; } = CostBudget.Unlimited;
 
     /// <summary>Reflective observations from GEPA, EvaluationCritique, and similar steps.</summary>
-    public ReflectionLog ReflectionLog { get; set; } = new ReflectionLog();
+    public IReflectionLog ReflectionLog { get; set; } = new ReflectionLog();
+
+    /// <summary>
+    /// Typed diagnostic state shared across optimizer steps (baseline score, opaque
+    /// inter-step snapshots). Replaces the untyped <c>Bag</c> from earlier revisions.
+    /// </summary>
+    public OptimizationDiagnostics Diagnostics { get; } = new();
 
     /// <summary>
     /// Optional multi-objective metric. When set, optimizers that support vector metrics
@@ -91,11 +97,4 @@ public sealed class OptimizationContext
     /// <summary>Optional progress reporter for streaming optimization status.</summary>
     public IProgress<OptimizationProgress>? Progress { get; set; }
 
-    // ── Extensibility ───────────────────────────────────────────────────
-
-    /// <summary>
-    /// Free-form extensibility bag for inter-step communication not covered by typed fields.
-    /// Keys are namespaced by convention, e.g., <c>"gepa:pareto_frontier"</c>.
-    /// </summary>
-    public IDictionary<string, object> Bag { get; } = new Dictionary<string, object>();
 }

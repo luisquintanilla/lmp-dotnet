@@ -8,8 +8,8 @@ namespace LMP;
 /// <remarks>
 /// <para>
 /// <see cref="DelegateTarget"/> has no learnable state and no parameter space.
-/// It is a thin execution shell — all optimization must occur externally (e.g.,
-/// by wrapping in a <see cref="ModuleTarget"/> or composing with other targets).
+/// It is a thin execution shell — all optimization must occur externally
+/// (e.g., by composing with other targets via <see cref="OptimizationTargetExtensions.Then"/>).
 /// </para>
 /// <para>
 /// Usage:

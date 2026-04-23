@@ -53,13 +53,13 @@ public sealed class Z3ConstrainedDemoSelector : IOptimizer
         ArgumentNullException.ThrowIfNull(ctx);
         var module = ctx.Target.GetService<LmpModule>()
             ?? throw new NotSupportedException(
-                $"{nameof(Z3ConstrainedDemoSelector)} requires an LmpModule target. Use ModuleTarget.For(module).");
+                $"{nameof(Z3ConstrainedDemoSelector)} requires an LmpModule target. Pass the LmpModule directly (it implements IOptimizationTarget).");
 
         var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
             .ConfigureAwait(false);
 
         if (!ReferenceEquals(best, module))
-            ctx.Target.ApplyState(TargetState.From(best.GetState()));
+            ctx.Target.ApplyState(best.GetState());
     }
 
     /// <inheritdoc />

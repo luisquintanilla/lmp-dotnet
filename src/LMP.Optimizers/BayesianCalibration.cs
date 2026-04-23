@@ -24,8 +24,8 @@ namespace LMP.Optimizers;
 /// evaluation; <see cref="ContinuousDiscretizer.Encode"/> maps results back for the update step.
 /// </para>
 /// <para>
-/// For <see cref="ModuleTarget"/> pipelines this optimizer is a safe no-op:
-/// <c>ModuleTarget.GetParameterSpace()</c> always returns <see cref="TypedParameterSpace.Empty"/>,
+/// For <see cref="LmpModule"/> pipelines this optimizer is a safe no-op:
+/// <c>LmpModule.GetParameterSpace()</c> always returns <see cref="TypedParameterSpace.Empty"/>,
 /// so the empty-space guard exits immediately. Add this step to a pipeline without fear of wasted
 /// LM calls when the target has no numeric parameters.
 /// </para>

@@ -191,9 +191,9 @@ public sealed class Z3FeasibilityOptimizerTests
 
         await opt.OptimizeAsync(ctx);
 
-        Assert.True(ctx.Bag.ContainsKey("lmp.z3:feasible:tools"));
+        Assert.True(ctx.Diagnostics.Snapshots.ContainsKey("lmp.z3:feasible:tools"));
         var feasible = Assert.IsAssignableFrom<IReadOnlySet<string>>(
-            ctx.Bag["lmp.z3:feasible:tools"]);
+            ctx.Diagnostics.Snapshots["lmp.z3:feasible:tools"]);
         Assert.Contains("search", feasible);
         Assert.Contains("calc", feasible);
     }
@@ -244,8 +244,8 @@ public sealed class Z3FeasibilityOptimizerTests
 
         await opt.OptimizeAsync(ctx);
 
-        Assert.True(ctx.Bag.ContainsKey("lmp.z3:feasible:my_tools"));
-        Assert.False(ctx.Bag.ContainsKey("lmp.z3:feasible:tools"));
+        Assert.True(ctx.Diagnostics.Snapshots.ContainsKey("lmp.z3:feasible:my_tools"));
+        Assert.False(ctx.Diagnostics.Snapshots.ContainsKey("lmp.z3:feasible:tools"));
     }
 
     [Fact]

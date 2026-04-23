@@ -22,7 +22,7 @@ public class IOptimizerTests
         }
 
         public TypedParameterSpace GetParameterSpace() => TypedParameterSpace.Empty;
-        public TargetState GetState() => TargetState.From(module.GetState());
+        public TargetState GetState() => TargetState.From(module.GetModuleState());
         public void ApplyState(TargetState state) => module.ApplyState(state.As<ModuleState>());
         public IOptimizationTarget WithParameters(ParameterAssignment assignment) => this;
         public TService? GetService<TService>() where TService : class => module as TService;

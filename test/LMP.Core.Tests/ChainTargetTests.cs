@@ -3,37 +3,45 @@ using Microsoft.Extensions.AI;
 
 namespace LMP.Tests;
 
+/// <summary>
+/// Tests the chaining behavior exposed publicly via <see cref="OptimizationTargetExtensions.Then"/>
+/// and <see cref="Pipeline{TIn, TOut}"/>. The underlying <c>ChainTarget</c> is an internal
+/// composition primitive — tests exercise it through the public façade.
+/// </summary>
 public sealed class ChainTargetTests
 {
-    // ── Factory / null guards ─────────────────────────────────────────────
+    // ── Composition guards ────────────────────────────────────────────────
 
     [Fact]
-    public void For_NullArray_Throws()
-        => Assert.Throws<ArgumentNullException>(() => ChainTarget.For(null!));
+    public void Then_NullFirst_Throws()
+        => Assert.Throws<ArgumentNullException>(()
+            => OptimizationTargetExtensions.Then(null!, new StubTarget("a")));
 
     [Fact]
-    public void For_EmptyArray_Throws()
-        => Assert.Throws<ArgumentException>(() => ChainTarget.For());
+    public void Then_NullNext_Throws()
+        => Assert.Throws<ArgumentNullException>(()
+            => new StubTarget("a").Then(null!));
 
     [Fact]
-    public void For_ContainsNull_Throws()
-        => Assert.Throws<ArgumentException>(() => ChainTarget.For(new StubTarget("a"), null!));
+    public void Pipeline_AddNull_Throws()
+    {
+        var pipeline = new Pipeline<object, object>();
+        Assert.Throws<ArgumentNullException>(() => pipeline.Add(null!));
+    }
 
     // ── Shape ─────────────────────────────────────────────────────────────
 
     [Fact]
     public void Shape_AllSingleTurn_IsSingleTurn()
     {
-        var chain = ChainTarget.For(new StubTarget("a"), new StubTarget("b"));
+        var chain = new StubTarget("a").Then(new StubTarget("b"));
         Assert.Equal(TargetShape.SingleTurn, chain.Shape);
     }
 
     [Fact]
     public void Shape_AnyMultiTurn_IsMultiTurn()
     {
-        var chain = ChainTarget.For(
-            new StubTarget("a"),
-            new StubTarget("b", shape: TargetShape.MultiTurn));
+        var chain = new StubTarget("a").Then(new StubTarget("b", shape: TargetShape.MultiTurn));
         Assert.Equal(TargetShape.MultiTurn, chain.Shape);
     }
 
@@ -44,7 +52,7 @@ public sealed class ChainTargetTests
     {
         var first = new StubTarget("intermediate");
         var second = new CaptureInputTarget("final");
-        var chain = ChainTarget.For(first, second);
+        var chain = first.Then(second);
 
         var (output, _) = await chain.ExecuteAsync("original");
 
@@ -53,12 +61,11 @@ public sealed class ChainTargetTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_SingleTarget_PassesThroughOutput()
+    public async Task ExecuteAsync_SingleStagePipeline_PassesThroughOutput()
     {
-        var target = new StubTarget("result");
-        var chain = ChainTarget.For(target);
+        var pipeline = new Pipeline<object, object> { new StubTarget("result") };
 
-        var (output, _) = await chain.ExecuteAsync("input");
+        var (output, _) = await pipeline.ExecuteAsync("input");
 
         Assert.Equal("result", output);
     }
@@ -69,7 +76,7 @@ public sealed class ChainTargetTests
         var t1 = new TransformTarget(s => $"{s}-A");
         var t2 = new TransformTarget(s => $"{s}-B");
         var t3 = new TransformTarget(s => $"{s}-C");
-        var chain = ChainTarget.For(t1, t2, t3);
+        var chain = t1.Then(t2).Then(t3);
 
         var (output, _) = await chain.ExecuteAsync("start");
 
@@ -79,8 +86,8 @@ public sealed class ChainTargetTests
     [Fact]
     public async Task ExecuteAsync_NullInput_Throws()
     {
-        var chain = ChainTarget.For(new StubTarget("x"));
-        await Assert.ThrowsAsync<ArgumentNullException>(() => chain.ExecuteAsync(null!));
+        var pipeline = new Pipeline<object, object> { new StubTarget("x") };
+        await Assert.ThrowsAsync<ArgumentNullException>(() => pipeline.ExecuteAsync(null!));
     }
 
     // ── Trace merging ─────────────────────────────────────────────────────
@@ -92,7 +99,7 @@ public sealed class ChainTargetTests
         var usage2 = new UsageDetails { TotalTokenCount = 20 };
         var t1 = new TracingTarget("pred1", "out1", usage1);
         var t2 = new TracingTarget("pred2", "out2", usage2);
-        var chain = ChainTarget.For(t1, t2);
+        var chain = t1.Then(t2);
 
         var (_, trace) = await chain.ExecuteAsync("input");
 
@@ -105,9 +112,23 @@ public sealed class ChainTargetTests
     [Fact]
     public async Task ExecuteAsync_EmptyChildTraces_MergedTraceIsEmpty()
     {
-        var chain = ChainTarget.For(new StubTarget("a"), new StubTarget("b"));
+        var chain = new StubTarget("a").Then(new StubTarget("b"));
         var (_, trace) = await chain.ExecuteAsync("in");
         Assert.Empty(trace.Entries);
+    }
+
+    // ── Then flattens ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void Then_FlattensExistingChain()
+    {
+        var t1 = new StubTarget("a");
+        var t2 = new StubTarget("b");
+        var t3 = new StubTarget("c");
+        var chain = (ChainTarget)t1.Then(t2).Then(t3);
+
+        // 3 sequential children, not nested
+        Assert.Equal(3, chain.Targets.Count);
     }
 
     // ── GetParameterSpace ─────────────────────────────────────────────────
@@ -115,7 +136,7 @@ public sealed class ChainTargetTests
     [Fact]
     public void GetParameterSpace_NoChildHasParams_ReturnsEmpty()
     {
-        var chain = ChainTarget.For(new StubTarget("a"), new StubTarget("b"));
+        var chain = new StubTarget("a").Then(new StubTarget("b"));
         Assert.True(chain.GetParameterSpace().IsEmpty);
     }
 
@@ -124,7 +145,7 @@ public sealed class ChainTargetTests
     {
         var t1 = new ParameterizedTarget(("temp", new Continuous(0.0, 2.0)));
         var t2 = new ParameterizedTarget(("model", new Categorical(3)));
-        var chain = ChainTarget.For(t1, t2);
+        var chain = t1.Then(t2);
 
         var space = chain.GetParameterSpace();
 
@@ -139,7 +160,7 @@ public sealed class ChainTargetTests
     {
         var t1 = new ParameterizedTarget(("prompt", new StringValued("a")));
         var t2 = new ParameterizedTarget(("prompt", new StringValued("b")));
-        var chain = ChainTarget.For(t1, t2);
+        var chain = t1.Then(t2);
 
         var space = chain.GetParameterSpace();
 
@@ -153,7 +174,7 @@ public sealed class ChainTargetTests
     [Fact]
     public void GetState_ReturnsStateArrayOfCorrectLength()
     {
-        var chain = ChainTarget.For(new StubTarget("a"), new StubTarget("b"), new StubTarget("c"));
+        var chain = new StubTarget("a").Then(new StubTarget("b")).Then(new StubTarget("c"));
         var states = chain.GetState().As<TargetState[]>();
         Assert.Equal(3, states.Length);
     }
@@ -161,7 +182,7 @@ public sealed class ChainTargetTests
     [Fact]
     public void ApplyState_WrongLength_Throws()
     {
-        var chain = ChainTarget.For(new StubTarget("a"), new StubTarget("b"));
+        var chain = new StubTarget("a").Then(new StubTarget("b"));
         var badState = TargetState.From(new TargetState[] { new(new object(), typeof(object)) });
         Assert.Throws<ArgumentException>(() => chain.ApplyState(badState));
     }
@@ -169,8 +190,8 @@ public sealed class ChainTargetTests
     [Fact]
     public void ApplyState_NullState_Throws()
     {
-        var chain = ChainTarget.For(new StubTarget("a"));
-        Assert.Throws<ArgumentNullException>(() => chain.ApplyState(null!));
+        var pipeline = new Pipeline<object, object> { new StubTarget("a") };
+        Assert.Throws<ArgumentNullException>(() => pipeline.ApplyState(null!));
     }
 
     [Fact]
@@ -178,7 +199,7 @@ public sealed class ChainTargetTests
     {
         var stateful1 = new StatefulTarget("original-1");
         var stateful2 = new StatefulTarget("original-2");
-        var chain = ChainTarget.For(stateful1, stateful2);
+        var chain = stateful1.Then(stateful2);
 
         // Modify both children
         stateful1.SetValue("modified-1");
@@ -199,15 +220,15 @@ public sealed class ChainTargetTests
     [Fact]
     public void WithParameters_Null_Throws()
     {
-        var chain = ChainTarget.For(new StubTarget("a"));
-        Assert.Throws<ArgumentNullException>(() => chain.WithParameters(null!));
+        var pipeline = new Pipeline<object, object> { new StubTarget("a") };
+        Assert.Throws<ArgumentNullException>(() => pipeline.WithParameters(null!));
     }
 
     [Fact]
     public void WithParameters_Empty_ClonesWithSameState()
     {
         var stateful = new StatefulTarget("value");
-        var chain = ChainTarget.For(stateful);
+        var chain = (ChainTarget)stateful.Then(new StubTarget("trailing"));
 
         var cloned = (ChainTarget)chain.WithParameters(ParameterAssignment.Empty);
 
@@ -220,7 +241,7 @@ public sealed class ChainTargetTests
     {
         var t1 = new RecordingParameterTarget();
         var t2 = new RecordingParameterTarget();
-        var chain = ChainTarget.For(t1, t2);
+        var chain = t1.Then(t2);
 
         var assignment = ParameterAssignment.Empty
             .With("child_0.foo", "val0")
@@ -239,9 +260,9 @@ public sealed class ChainTargetTests
     public void WithParameters_UnrelatedKeys_Ignored()
     {
         var t = new RecordingParameterTarget();
-        var chain = ChainTarget.For(t);
+        var pipeline = new Pipeline<object, object> { t };
 
-        chain.WithParameters(ParameterAssignment.Empty.With("unrelated.key", "x"));
+        pipeline.WithParameters(ParameterAssignment.Empty.With("unrelated.key", "x"));
 
         Assert.True(t.ReceivedAssignment.IsEmpty);
     }
@@ -254,7 +275,7 @@ public sealed class ChainTargetTests
         var svc = new MyService();
         var t1 = new ServiceTarget<MyService>(null);
         var t2 = new ServiceTarget<MyService>(svc);
-        var chain = ChainTarget.For(t1, t2);
+        var chain = t1.Then(t2);
 
         Assert.Same(svc, chain.GetService<MyService>());
     }
@@ -262,7 +283,7 @@ public sealed class ChainTargetTests
     [Fact]
     public void GetService_NothingMatches_ReturnsNull()
     {
-        var chain = ChainTarget.For(new StubTarget("a"), new StubTarget("b"));
+        var chain = new StubTarget("a").Then(new StubTarget("b"));
         Assert.Null(chain.GetService<MyService>());
     }
 
@@ -271,7 +292,9 @@ public sealed class ChainTargetTests
     [Fact]
     public void Targets_ReturnsCorrectCount()
     {
-        var chain = ChainTarget.For(new StubTarget("a"), new StubTarget("b"), new StubTarget("c"));
+        var chain = (ChainTarget)new StubTarget("a")
+            .Then(new StubTarget("b"))
+            .Then(new StubTarget("c"));
         Assert.Equal(3, chain.Targets.Count);
     }
 }

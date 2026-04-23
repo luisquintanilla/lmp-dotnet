@@ -13,38 +13,24 @@ namespace LMP;
 /// the prefix before forwarding.
 /// </para>
 /// <para>
-/// Create via the <see cref="For"/> factory:
-/// <code>
-/// var chain = ChainTarget.For(retrievalTarget, answerTarget);
-/// </code>
+/// Construction is internal — use <see cref="OptimizationTargetExtensions.Then"/>
+/// for two-element chains or <see cref="Pipeline{TIn, TOut}"/> for collection-init
+/// composition of three or more stages.
 /// </para>
 /// </remarks>
 public sealed class ChainTarget : IOptimizationTarget
 {
     private readonly IReadOnlyList<IOptimizationTarget> _targets;
 
-    private ChainTarget(IReadOnlyList<IOptimizationTarget> targets) => _targets = targets;
-
-    /// <summary>
-    /// Creates a <see cref="ChainTarget"/> that executes the given targets in order.
-    /// </summary>
-    /// <param name="targets">
-    /// Ordered list of targets. At least one is required; none may be null.
-    /// The output of each target is passed as input to the next.
-    /// </param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="targets"/> is null.</exception>
-    /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="targets"/> is empty or contains a null element.
-    /// </exception>
-    public static ChainTarget For(params IOptimizationTarget[] targets)
+    internal ChainTarget(IReadOnlyList<IOptimizationTarget> targets)
     {
         ArgumentNullException.ThrowIfNull(targets);
-        if (targets.Length == 0)
+        if (targets.Count == 0)
             throw new ArgumentException("At least one target is required.", nameof(targets));
-        for (int i = 0; i < targets.Length; i++)
+        for (int i = 0; i < targets.Count; i++)
             if (targets[i] is null)
                 throw new ArgumentException($"targets[{i}] is null.", nameof(targets));
-        return new ChainTarget([.. targets]);
+        _targets = targets;
     }
 
     /// <inheritdoc />
