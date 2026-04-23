@@ -203,11 +203,26 @@ public abstract class LmpModule : IOptimizationTarget
 
     /// <inheritdoc />
     /// <remarks>
-    /// T1 returns <see cref="TypedParameterSpace.Empty"/>. The fractal predictor
-    /// parameter aggregation lands in T2.
+    /// Fractal merge: aggregates the parameter space of each child predictor
+    /// (via <see cref="GetPredictors"/>), prefixing each child key with
+    /// <c>"{predictorName}."</c>. Predictors that do not implement
+    /// <see cref="IOptimizationTarget"/> are silently skipped — they have
+    /// opted out of optimization at this layer.
     /// </remarks>
-    // T2: fractal predictor params land here.
-    public TypedParameterSpace GetParameterSpace() => TypedParameterSpace.Empty;
+    public TypedParameterSpace GetParameterSpace()
+    {
+        var space = TypedParameterSpace.Empty;
+        foreach (var (name, predictor) in GetPredictors())
+        {
+            if (predictor is IOptimizationTarget iot)
+            {
+                var child = iot.GetParameterSpace();
+                foreach (var (key, kind) in child.Parameters)
+                    space = space.Add($"{name}.{key}", kind);
+            }
+        }
+        return space;
+    }
 
     /// <inheritdoc />
     public TargetState GetState() => TargetState.From(GetModuleState());
@@ -220,17 +235,55 @@ public abstract class LmpModule : IOptimizationTarget
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Fractal routing: per-predictor keys are prefix-stripped
+    /// (<c>"{predictorName}."</c>) and forwarded to each child predictor's
+    /// <see cref="IOptimizationTarget.WithParameters"/>. The returned
+    /// sub-target's <see cref="IPredictor"/> state is loaded back into the
+    /// cloned module's predictor instance so the per-key routing logic lives
+    /// in exactly one place (the predictor's <c>WithParameters</c>).
+    /// Keys that match no predictor prefix are silently ignored.
+    /// </remarks>
     /// <exception cref="NotSupportedException">
-    /// Thrown when <paramref name="assignment"/> is non-empty. T2 introduces the
-    /// fractal predictor parameter routing that makes per-parameter assignment work.
+    /// Thrown when a child predictor does not implement
+    /// <see cref="IOptimizationTarget"/> but has assigned keys routed to it.
     /// </exception>
     public IOptimizationTarget WithParameters(ParameterAssignment assignment)
     {
         ArgumentNullException.ThrowIfNull(assignment);
-        if (!assignment.IsEmpty)
-            throw new NotSupportedException(
-                "LmpModule.WithParameters: TypedParameterSpace assignment is implemented in T2 (fractal predictor params).");
-        return Clone();
+        if (assignment.IsEmpty)
+            return Clone();
+
+        var clone = Clone();
+        foreach (var (name, predictor) in clone.GetPredictors())
+        {
+            var prefix = $"{name}.";
+            var sub = ParameterAssignment.Empty;
+            foreach (var (k, v) in assignment.Values)
+            {
+                if (k.StartsWith(prefix, StringComparison.Ordinal))
+                    sub = sub.With(k[prefix.Length..], v);
+            }
+            if (sub.IsEmpty)
+                continue;
+
+            if (predictor is IOptimizationTarget iot)
+            {
+                var updated = iot.WithParameters(sub);
+                var updatedAsPredictor = updated.GetService<IPredictor>()
+                    ?? throw new InvalidOperationException(
+                        $"Predictor '{name}' WithParameters returned a target without an IPredictor view.");
+                predictor.LoadState(updatedAsPredictor.GetState());
+            }
+            else
+            {
+                throw new NotSupportedException(
+                    $"Predictor '{name}' does not implement IOptimizationTarget; cannot apply "
+                  + $"fractal parameter assignment. Use a Predictor<TIn,TOut> instance or "
+                  + $"implement IOptimizationTarget on your custom IPredictor.");
+            }
+        }
+        return clone;
     }
 
     /// <inheritdoc />
