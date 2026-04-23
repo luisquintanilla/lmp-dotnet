@@ -217,7 +217,7 @@ file class AcceptanceTestModule : LmpModule<AccInput, AccOutput>
     }
 }
 
-file sealed class AcceptanceFakePredictor : IPredictor
+file sealed class AcceptanceFakePredictor : IPredictor, IOptimizationTarget
 {
     private readonly IChatClient _client;
 
@@ -246,6 +246,67 @@ file sealed class AcceptanceFakePredictor : IPredictor
         foreach (var d in TypedDemos) c.TypedDemos.Add(d);
         return c;
     }
+
+    // ── IOptimizationTarget implementation (required for MIPROv2 seam) ─────
+
+    TargetShape IOptimizationTarget.Shape => TargetShape.SingleTurn;
+
+    Task<(object Output, Trace Trace)> IOptimizationTarget.ExecuteAsync(
+        object input, CancellationToken ct)
+    {
+        var trace = new Trace();
+        var output = new AccOutput("answer");
+        trace.Record(Name, input, output);
+        return Task.FromResult<(object, Trace)>((output, trace));
+    }
+
+    TypedParameterSpace IOptimizationTarget.GetParameterSpace()
+        => TypedParameterSpace.Empty
+            .Add("instructions", new StringValued(Instructions))
+            .Add("demos", new Subset([.. TypedDemos.Cast<object>()], 0, TypedDemos.Count));
+
+    TargetState IOptimizationTarget.GetState() => TargetState.From(GetState());
+
+    void IOptimizationTarget.ApplyState(TargetState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        LoadState(state.As<PredictorState>());
+    }
+
+    IOptimizationTarget IOptimizationTarget.WithParameters(ParameterAssignment assignment)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+        var clone = (AcceptanceFakePredictor)Clone();
+        foreach (var (k, v) in assignment.Values)
+        {
+            switch (k)
+            {
+                case "instructions":
+                    clone.Instructions = (string)v;
+                    break;
+                case "demos":
+                    if (v is not IReadOnlyList<object> list)
+                        throw new ArgumentException(
+                            $"AcceptanceFakePredictor.WithParameters: 'demos' expected IReadOnlyList<object>.",
+                            nameof(assignment));
+                    clone.TypedDemos.Clear();
+                    foreach (var item in list)
+                    {
+                        if (item is ValueTuple<object, object> erased)
+                            clone.TypedDemos.Add((erased.Item1, erased.Item2));
+                    }
+                    break;
+                default:
+                    throw new ArgumentException(
+                        $"AcceptanceFakePredictor.WithParameters: unknown key '{k}'.",
+                        nameof(assignment));
+            }
+        }
+        return clone;
+    }
+
+    TService? IOptimizationTarget.GetService<TService>() where TService : class
+        => this as TService;
 }
 
 /// <summary>

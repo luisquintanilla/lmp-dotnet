@@ -1,4 +1,6 @@
 using System.Collections;
+using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using LMP.Optimizers;
 using Microsoft.Extensions.AI;
 #pragma warning disable CS0618 // tests obsolete ISampler interface intentionally
@@ -18,9 +20,21 @@ public class MIPROv2Tests
 
     /// <summary>
     /// A test predictor that returns a fixed output and records traces.
+    /// Implements <see cref="IOptimizationTarget"/> so fractal <see cref="LmpModule"/>
+    /// parameter discovery and routing include it (required for T2f.1 seam migration).
     /// </summary>
-    private sealed class FakePredictor : IPredictor
+    private sealed class FakePredictor : IPredictor, IOptimizationTarget
     {
+        /// <summary>
+        /// Counts calls into <see cref="IOptimizationTarget.WithParameters"/> across
+        /// all instances. Used by tests to prove the seam is exercised. Reset via
+        /// <see cref="ResetWithParametersCalls"/>.
+        /// </summary>
+        public static int WithParametersCalls;
+
+        public static void ResetWithParametersCalls() =>
+            Interlocked.Exchange(ref WithParametersCalls, 0);
+
         private readonly Func<object, object> _predict;
 
         public FakePredictor(Func<object, object> predict)
@@ -50,12 +64,39 @@ public class MIPROv2Tests
         public PredictorState GetState() => new()
         {
             Instructions = Instructions,
-            Demos = [],
+            Demos = [.. TypedDemos.Select(d => new DemoEntry
+            {
+                Input = SerializeToDict(d.Input),
+                Output = SerializeToDict(d.Output),
+            })],
             Config = null
         };
 
-        public void LoadState(PredictorState state) =>
+        public void LoadState(PredictorState state)
+        {
             Instructions = state.Instructions;
+            TypedDemos.Clear();
+            foreach (var entry in state.Demos)
+            {
+                TypedDemos.Add((DeserializeFromDict(entry.Input), DeserializeFromDict(entry.Output)));
+            }
+        }
+
+        [UnconditionalSuppressMessage("AOT", "IL2026", Justification = "Test double.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Test double.")]
+        private static Dictionary<string, JsonElement> SerializeToDict(object value)
+            => new() { ["value"] = JsonSerializer.SerializeToElement(value, value.GetType()) };
+
+        private static object DeserializeFromDict(Dictionary<string, JsonElement> dict)
+        {
+            if (dict.TryGetValue("value", out var elem))
+            {
+                return elem.ValueKind == JsonValueKind.String
+                    ? elem.GetString()!
+                    : elem.GetRawText();
+            }
+            return "";
+        }
 
         public IPredictor Clone()
         {
@@ -73,6 +114,75 @@ public class MIPROv2Tests
             clone.TypedDemos = new List<(object, object)>(TypedDemos);
             return clone;
         }
+
+        // ── IOptimizationTarget implementation ───────────────────────────
+
+        TargetShape IOptimizationTarget.Shape => TargetShape.SingleTurn;
+
+        Task<(object Output, Trace Trace)> IOptimizationTarget.ExecuteAsync(
+            object input, CancellationToken ct)
+        {
+            var trace = new Trace();
+            var output = _predict(input);
+            trace.Record(Name, input, output, RecordUsage);
+            return Task.FromResult<(object, Trace)>((output, trace));
+        }
+
+        TypedParameterSpace IOptimizationTarget.GetParameterSpace()
+            => TypedParameterSpace.Empty
+                .Add("instructions", new StringValued(Instructions))
+                .Add("demos", new Subset([.. TypedDemos.Cast<object>()], 0, TypedDemos.Count));
+
+        TargetState IOptimizationTarget.GetState() => TargetState.From(GetState());
+
+        void IOptimizationTarget.ApplyState(TargetState state)
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            LoadState(state.As<PredictorState>());
+        }
+
+        IOptimizationTarget IOptimizationTarget.WithParameters(ParameterAssignment assignment)
+        {
+            ArgumentNullException.ThrowIfNull(assignment);
+            Interlocked.Increment(ref WithParametersCalls);
+            var clone = (FakePredictor)Clone();
+            foreach (var (k, v) in assignment.Values)
+            {
+                switch (k)
+                {
+                    case "instructions":
+                        clone.Instructions = (string)v;
+                        break;
+                    case "demos":
+                        if (v is not IReadOnlyList<object> list)
+                            throw new ArgumentException(
+                                $"FakePredictor.WithParameters: parameter 'demos' expected " +
+                                $"IReadOnlyList<object>, got {v.GetType().FullName}.",
+                                nameof(assignment));
+                        clone.TypedDemos.Clear();
+                        foreach (var item in list)
+                        {
+                            if (item is ValueTuple<object, object> erased)
+                                clone.TypedDemos.Add((erased.Item1, erased.Item2));
+                            else
+                                throw new ArgumentException(
+                                    $"FakePredictor.WithParameters: demo item has unsupported type " +
+                                    $"{item?.GetType().FullName ?? "null"}.",
+                                    nameof(assignment));
+                        }
+                        break;
+                    default:
+                        throw new ArgumentException(
+                            $"FakePredictor.WithParameters: unknown parameter key '{k}'. " +
+                            $"Valid keys: instructions, demos.",
+                            nameof(assignment));
+                }
+            }
+            return clone;
+        }
+
+        TService? IOptimizationTarget.GetService<TService>() where TService : class
+            => this as TService;
     }
 
     /// <summary>
@@ -891,6 +1001,68 @@ public class MIPROv2Tests
             seed: 42);
 
         await Assert.ThrowsAsync<ArgumentException>(() => optimizer.OptimizeAsync(ctx));
+    }
+
+    #endregion
+
+    #region T2f.1 — Per-trial IOptimizationTarget.WithParameters seam
+
+    [Fact]
+    public async Task CompileAsync_PerTrial_UsesWithParametersSeam()
+    {
+        FakePredictor.ResetWithParametersCalls();
+
+        var (module, _) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 2,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 1,
+            seed: 42);
+
+        await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        Assert.True(FakePredictor.WithParametersCalls > 0,
+            "Per-trial candidate construction must go through IOptimizationTarget.WithParameters.");
+    }
+
+    [Fact]
+    public async Task CompileAsync_PerTrial_DoesNotMutateOriginalModulePredictors()
+    {
+        const string originalInstructions = "ORIGINAL-UNIQUE-INSTRUCTION";
+
+        var pred = new FakePredictor(x => x)
+        {
+            Name = "classify",
+            Instructions = originalInstructions,
+        };
+        var module = new TestModule([pred]);
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 2,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 2,
+            seed: 42);
+
+        await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        // The seam migration ensures per-trial construction clones via
+        // WithParameters; the original module's predictors must remain untouched.
+        var originalPred = module.GetPredictors()[0].Predictor;
+        Assert.Equal(originalInstructions, originalPred.Instructions);
+        Assert.Empty(originalPred.Demos);
     }
 
     #endregion

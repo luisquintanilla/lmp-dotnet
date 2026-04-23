@@ -167,6 +167,17 @@ public sealed class MIPROv2 : IOptimizer
     /// <item><description>Phase 3 — Bayesian search over (instruction, demo-set) per predictor.</description></item>
     /// </list>
     /// </summary>
+    /// <remarks>
+    /// Per-trial candidate construction goes through the fractal
+    /// <see cref="IOptimizationTarget.WithParameters"/> seam:
+    /// <c>var candidate = (TModule)module.WithParameters(pa);</c>. Because
+    /// <see cref="LmpModule.WithParameters"/> routes per-predictor sub-assignments
+    /// to each child's <see cref="IOptimizationTarget.WithParameters"/>, every
+    /// <see cref="IPredictor"/> in the module must also implement
+    /// <see cref="IOptimizationTarget"/>. <see cref="Predictor{TInput, TOutput}"/>
+    /// from <c>LMP.Core</c> already does; custom <see cref="IPredictor"/>
+    /// implementations must implement <see cref="IOptimizationTarget"/> as well.
+    /// </remarks>
     /// <typeparam name="TModule">The module type.</typeparam>
     /// <param name="module">The module to optimize. Cloned for each trial.</param>
     /// <param name="trainSet">Training examples — split 80/20 into bootstrap/validation internally.</param>
@@ -233,31 +244,34 @@ public sealed class MIPROv2 : IOptimizer
             cancellationToken.ThrowIfCancellationRequested();
 
             var config = sampler.Propose();
-            var candidate = module.Clone<TModule>();
 
-            // Apply the proposed configuration to the candidate
-            foreach (var (name, predictor) in candidate.GetPredictors())
+            // Build a ParameterAssignment prefixed by predictor name. The
+            // fractal LmpModule.WithParameters seam routes `"{name}.instructions"`
+            // and `"{name}.demos"` keys to each child predictor's
+            // IOptimizationTarget.WithParameters.
+            var pa = ParameterAssignment.Empty;
+            foreach (var (name, _) in predictors)
             {
-                // Set instruction
-                if (instructionCandidates.TryGetValue(name, out var instrs))
+                if (instructionCandidates.TryGetValue(name, out var instrs) && instrs.Count > 0)
                 {
-                    int instrIdx = config.TryGetValue($"{name}_instr", out var idx) ? idx : 0;
-                    predictor.Instructions = instrs[instrIdx % instrs.Count];
+                    int instrIdx = config.TryGetValue($"{name}_instr", out var iIdx) ? iIdx : 0;
+                    pa = pa.With($"{name}.instructions", instrs[instrIdx % instrs.Count]);
                 }
 
-                // Set demos
                 if (demoSubsets.TryGetValue(name, out var subsets) && subsets.Count > 0)
                 {
-                    int demoIdx = config.TryGetValue($"{name}_demos", out var didx) ? didx : 0;
+                    int demoIdx = config.TryGetValue($"{name}_demos", out var dIdx) ? dIdx : 0;
                     var selectedDemos = subsets[demoIdx % subsets.Count];
-
-                    predictor.Demos.Clear();
-                    foreach (var (input, output) in selectedDemos)
-                    {
-                        predictor.AddDemo(input, output);
-                    }
+                    // Box each demo as ValueTuple<object,object> per the
+                    // IPredictor.WithParameters 'demos' contract.
+                    var demoList = (IReadOnlyList<object>)selectedDemos
+                        .Select(d => (object)new ValueTuple<object, object>(d.Input, d.Output))
+                        .ToList();
+                    pa = pa.With($"{name}.demos", demoList);
                 }
             }
+
+            var candidate = (TModule)module.WithParameters(pa);
 
             // Evaluate with cost collection
             candidate.Trace = new Trace();
