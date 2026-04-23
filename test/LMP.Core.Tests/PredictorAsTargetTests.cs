@@ -161,6 +161,33 @@ public sealed class PredictorAsTargetTests
     }
 
     [Fact]
+    public void WithParameters_DemosAcceptsErasedTuples()
+    {
+        // Trace-based optimizers (BFS) naturally produce ValueTuple<object,object> demo
+        // items because TraceEntry.Input/Output are object-typed. Verify Option B
+        // widening accepts these as well as typed (TInput, TOutput) tuples.
+        var p = NewPredictor();
+
+        IReadOnlyList<object> erasedDemos = new object[]
+        {
+            ((object)new QAIn("ErQ1"), (object)new QAOut("ErA1")),
+            ((object)new QAIn("ErQ2"), (object)new QAOut("ErA2")),
+        };
+        var assignment = ParameterAssignment.Empty.With("demos", erasedDemos);
+
+        var result = ((IOptimizationTarget)p).WithParameters(assignment);
+
+        var clone = Assert.IsType<Predictor<QAIn, QAOut>>(result);
+        Assert.Equal(2, clone.Demos.Count);
+        // Assert the tuple items are *typed* (TInput, TOutput) after acceptance,
+        // not the erased (object, object) we passed in.
+        Assert.IsType<QAIn>(clone.Demos[0].Input);
+        Assert.IsType<QAOut>(clone.Demos[0].Output);
+        Assert.Equal("ErQ1", clone.Demos[0].Input.Question);
+        Assert.Equal("ErA2", clone.Demos[1].Output.Answer);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_WrongInputType_ThrowsArgumentException()
     {
         var p = NewPredictor();

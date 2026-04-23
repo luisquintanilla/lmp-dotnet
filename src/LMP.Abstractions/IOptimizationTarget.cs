@@ -15,13 +15,17 @@ public interface IOptimizationTarget
     /// Executes the target for a single input.
     /// Returns the output and the execution trace together — trace is not a side-channel.
     /// </summary>
+    /// <remarks>
+    /// The returned trace describes only this invocation and MUST NOT carry state from prior calls.
+    /// Implementations should create a fresh <see cref="Trace"/> per call (see
+    /// <see cref="LmpModule.ExecuteAsync"/> reference implementation).
+    /// </remarks>
     Task<(object Output, Trace Trace)> ExecuteAsync(
         object input,
         CancellationToken ct = default);
 
     /// <summary>
     /// Returns the optimization parameter space for this target.
-    /// Phase A: returns <see cref="TypedParameterSpace.Empty"/>.
     /// </summary>
     TypedParameterSpace GetParameterSpace();
 
@@ -34,11 +38,12 @@ public interface IOptimizationTarget
     /// <summary>
     /// Returns a new target that is a clone of this one with the given parameter assignment applied.
     /// Enables parallel trial evaluation without shared mutable state.
-    /// Phase A: <paramref name="assignment"/> must be <see cref="ParameterAssignment.Empty"/>.
     /// </summary>
-    /// <exception cref="NotSupportedException">
-    /// Thrown when <paramref name="assignment"/> is non-empty in Phase A.
-    /// </exception>
+    /// <remarks>
+    /// When <paramref name="assignment"/> is <see cref="ParameterAssignment.Empty"/>, the returned
+    /// target is a state-independent clone of this target. Optimizers use this idiom to create
+    /// teacher/student copies without shared mutable state.
+    /// </remarks>
     IOptimizationTarget WithParameters(ParameterAssignment assignment);
 
     /// <summary>

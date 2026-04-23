@@ -1,5 +1,7 @@
 using System.Collections;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using LMP.Optimizers;
 using Microsoft.Extensions.AI;
 using Moq;
@@ -20,8 +22,10 @@ public class BootstrapFewShotTests
     /// <summary>
     /// A test predictor that returns a fixed output and records traces.
     /// Does NOT require an IChatClient — it simulates predictions directly.
+    /// Implements <see cref="IOptimizationTarget"/> so fractal <see cref="LmpModule"/>
+    /// parameter discovery and routing include it.
     /// </summary>
-    private sealed class FakePredictor : IPredictor
+    private sealed class FakePredictor : IPredictor, IOptimizationTarget
     {
         private readonly Func<object, object> _predict;
 
@@ -51,12 +55,39 @@ public class BootstrapFewShotTests
         public PredictorState GetState() => new()
         {
             Instructions = Instructions,
-            Demos = [],
+            Demos = [.. TypedDemos.Select(d => new DemoEntry
+            {
+                Input = SerializeToDict(d.Input),
+                Output = SerializeToDict(d.Output),
+            })],
             Config = null
         };
 
-        public void LoadState(PredictorState state) =>
+        public void LoadState(PredictorState state)
+        {
             Instructions = state.Instructions;
+            TypedDemos.Clear();
+            foreach (var entry in state.Demos)
+            {
+                TypedDemos.Add((DeserializeFromDict(entry.Input), DeserializeFromDict(entry.Output)));
+            }
+        }
+
+        [UnconditionalSuppressMessage("AOT", "IL2026", Justification = "Test double.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Test double.")]
+        private static Dictionary<string, JsonElement> SerializeToDict(object value)
+            => new() { ["value"] = JsonSerializer.SerializeToElement(value, value.GetType()) };
+
+        private static object DeserializeFromDict(Dictionary<string, JsonElement> dict)
+        {
+            if (dict.TryGetValue("value", out var elem))
+            {
+                return elem.ValueKind == JsonValueKind.String
+                    ? elem.GetString()!
+                    : elem.GetRawText();
+            }
+            return "";
+        }
 
         public IPredictor Clone()
         {
@@ -73,6 +104,74 @@ public class BootstrapFewShotTests
             clone.TypedDemos = new List<(object, object)>(TypedDemos);
             return clone;
         }
+
+        // ── IOptimizationTarget implementation ───────────────────────────
+
+        TargetShape IOptimizationTarget.Shape => TargetShape.SingleTurn;
+
+        Task<(object Output, Trace Trace)> IOptimizationTarget.ExecuteAsync(
+            object input, CancellationToken ct)
+        {
+            var trace = new Trace();
+            var output = _predict(input);
+            trace.Record(Name, input, output);
+            return Task.FromResult<(object, Trace)>((output, trace));
+        }
+
+        TypedParameterSpace IOptimizationTarget.GetParameterSpace()
+            => TypedParameterSpace.Empty
+                .Add("instructions", new StringValued(Instructions))
+                .Add("demos", new Subset([.. TypedDemos.Cast<object>()], 0, TypedDemos.Count));
+
+        TargetState IOptimizationTarget.GetState() => TargetState.From(GetState());
+
+        void IOptimizationTarget.ApplyState(TargetState state)
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            LoadState(state.As<PredictorState>());
+        }
+
+        IOptimizationTarget IOptimizationTarget.WithParameters(ParameterAssignment assignment)
+        {
+            ArgumentNullException.ThrowIfNull(assignment);
+            var clone = (FakePredictor)Clone();
+            foreach (var (k, v) in assignment.Values)
+            {
+                switch (k)
+                {
+                    case "instructions":
+                        clone.Instructions = (string)v;
+                        break;
+                    case "demos":
+                        if (v is not IReadOnlyList<object> list)
+                            throw new ArgumentException(
+                                $"FakePredictor.WithParameters: parameter 'demos' expected " +
+                                $"IReadOnlyList<object>, got {v.GetType().FullName}.",
+                                nameof(assignment));
+                        clone.TypedDemos.Clear();
+                        foreach (var item in list)
+                        {
+                            if (item is ValueTuple<object, object> erased)
+                                clone.TypedDemos.Add((erased.Item1, erased.Item2));
+                            else
+                                throw new ArgumentException(
+                                    $"FakePredictor.WithParameters: demo item has unsupported type " +
+                                    $"{item?.GetType().FullName ?? "null"}.",
+                                    nameof(assignment));
+                        }
+                        break;
+                    default:
+                        throw new ArgumentException(
+                            $"FakePredictor.WithParameters: unknown parameter key '{k}'. " +
+                            $"Valid keys: instructions, demos.",
+                            nameof(assignment));
+                }
+            }
+            return clone;
+        }
+
+        TService? IOptimizationTarget.GetService<TService>() where TService : class
+            => this as TService;
     }
 
     /// <summary>
@@ -741,6 +840,84 @@ public class BootstrapFewShotTests
         Assert.True(callCount >= 50,
             $"Expected at least 50 calls, got {callCount}");
         Assert.Equal(10, predictor.TypedDemos.Count);
+    }
+
+    #endregion
+
+    #region T2d — Target-shape-driven BFS
+
+    [Fact]
+    public async Task OptimizeAsync_StandalonePredictorTarget_FillsDemos()
+    {
+        // FakePredictor implements both IPredictor and IOptimizationTarget, so it
+        // can stand in as a standalone leaf target for BFS (same shape as Predictor<TIn,TOut>).
+        var predictor = new FakePredictor(x => x) { Name = "standalone" };
+        IOptimizationTarget target = predictor;
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("p", "p"),
+            new Example<string, string>("q", "q"),
+        };
+
+        var ctx = OptimizationContext.For(target, trainSet, ExactMatchMetric());
+        var optimizer = new BootstrapFewShot(maxDemos: 4, metricThreshold: 1.0f);
+
+        await optimizer.OptimizeAsync(ctx);
+
+        Assert.Equal(2, predictor.TypedDemos.Count);
+        var inputs = predictor.TypedDemos.Select(d => d.Input).OrderBy(x => (string)x).ToList();
+        Assert.Equal("p", inputs[0]);
+        Assert.Equal("q", inputs[1]);
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_ViaPipeline_MutatesOriginalTargetObservably()
+    {
+        // Wire BFS into an OptimizationPipeline and verify the returned
+        // OptimizationResult.Target is the *same* module instance whose predictors
+        // now carry demos. Catches any reassignment of ctx.Target inside BFS.
+        var (module, predictor) = CreateSinglePredictorModule(x => x);
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("alpha", "alpha"),
+            new Example<string, string>("beta", "beta"),
+        };
+
+        var result = await OptimizationPipeline.For(module)
+            .Use(new BootstrapFewShot(maxDemos: 4, metricThreshold: 1.0f))
+            .OptimizeAsync(trainSet, devSet: null, ExactMatchMetric());
+
+        Assert.Same(module, result.Target);
+        Assert.Equal(2, predictor.TypedDemos.Count);
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_MultiRound_DemoOrderingIsStable()
+    {
+        // maxRounds=2, maxDemos=3, 5 always-passing examples.
+        // New semantic: buckets are List<TraceEntry> in trainSet insertion order;
+        // the final demos are exactly the first 3 examples of round 1 (pre-round-2
+        // appendings come after and are truncated by Take(maxDemos)).
+        var optimizer = new BootstrapFewShot(maxDemos: 3, maxRounds: 2, metricThreshold: 0.0f);
+        var (module, predictor) = CreateSinglePredictorModule(x => x);
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("e1", "e1"),
+            new Example<string, string>("e2", "e2"),
+            new Example<string, string>("e3", "e3"),
+            new Example<string, string>("e4", "e4"),
+            new Example<string, string>("e5", "e5"),
+        };
+
+        await optimizer.CompileAsync(module, trainSet, (_, _) => 1.0f);
+
+        Assert.Equal(3, predictor.TypedDemos.Count);
+        Assert.Equal("e1", predictor.TypedDemos[0].Input);
+        Assert.Equal("e2", predictor.TypedDemos[1].Input);
+        Assert.Equal("e3", predictor.TypedDemos[2].Input);
     }
 
     #endregion

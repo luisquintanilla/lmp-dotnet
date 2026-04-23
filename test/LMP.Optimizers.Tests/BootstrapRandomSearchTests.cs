@@ -1,4 +1,6 @@
 using System.Collections;
+using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using LMP.Optimizers;
 namespace LMP.Tests;
 
@@ -16,8 +18,10 @@ public class BootstrapRandomSearchTests
 
     /// <summary>
     /// A test predictor that returns a fixed output and records traces.
+    /// Implements <see cref="IOptimizationTarget"/> so that <see cref="LmpModule"/>'s
+    /// fractal parameter discovery/routing (used by BootstrapFewShot) includes it.
     /// </summary>
-    private sealed class FakePredictor : IPredictor
+    private sealed class FakePredictor : IPredictor, IOptimizationTarget
     {
         private readonly Func<object, object> _predict;
 
@@ -47,12 +51,39 @@ public class BootstrapRandomSearchTests
         public PredictorState GetState() => new()
         {
             Instructions = Instructions,
-            Demos = [],
+            Demos = [.. TypedDemos.Select(d => new DemoEntry
+            {
+                Input = SerializeToDict(d.Input),
+                Output = SerializeToDict(d.Output),
+            })],
             Config = null
         };
 
-        public void LoadState(PredictorState state) =>
+        public void LoadState(PredictorState state)
+        {
             Instructions = state.Instructions;
+            TypedDemos.Clear();
+            foreach (var entry in state.Demos)
+            {
+                TypedDemos.Add((DeserializeFromDict(entry.Input), DeserializeFromDict(entry.Output)));
+            }
+        }
+
+        [UnconditionalSuppressMessage("AOT", "IL2026", Justification = "Test double.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Test double.")]
+        private static Dictionary<string, JsonElement> SerializeToDict(object value)
+            => new() { ["value"] = JsonSerializer.SerializeToElement(value, value.GetType()) };
+
+        private static object DeserializeFromDict(Dictionary<string, JsonElement> dict)
+        {
+            if (dict.TryGetValue("value", out var elem))
+            {
+                return elem.ValueKind == JsonValueKind.String
+                    ? elem.GetString()!
+                    : elem.GetRawText();
+            }
+            return "";
+        }
 
         public IPredictor Clone()
         {
@@ -69,6 +100,74 @@ public class BootstrapRandomSearchTests
             clone.TypedDemos = new List<(object, object)>(TypedDemos);
             return clone;
         }
+
+        // ── IOptimizationTarget implementation ───────────────────────────
+
+        TargetShape IOptimizationTarget.Shape => TargetShape.SingleTurn;
+
+        Task<(object Output, Trace Trace)> IOptimizationTarget.ExecuteAsync(
+            object input, CancellationToken ct)
+        {
+            var trace = new Trace();
+            var output = _predict(input);
+            trace.Record(Name, input, output);
+            return Task.FromResult<(object, Trace)>((output, trace));
+        }
+
+        TypedParameterSpace IOptimizationTarget.GetParameterSpace()
+            => TypedParameterSpace.Empty
+                .Add("instructions", new StringValued(Instructions))
+                .Add("demos", new Subset([.. TypedDemos.Cast<object>()], 0, TypedDemos.Count));
+
+        TargetState IOptimizationTarget.GetState() => TargetState.From(GetState());
+
+        void IOptimizationTarget.ApplyState(TargetState state)
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            LoadState(state.As<PredictorState>());
+        }
+
+        IOptimizationTarget IOptimizationTarget.WithParameters(ParameterAssignment assignment)
+        {
+            ArgumentNullException.ThrowIfNull(assignment);
+            var clone = (FakePredictor)Clone();
+            foreach (var (k, v) in assignment.Values)
+            {
+                switch (k)
+                {
+                    case "instructions":
+                        clone.Instructions = (string)v;
+                        break;
+                    case "demos":
+                        if (v is not IReadOnlyList<object> list)
+                            throw new ArgumentException(
+                                $"FakePredictor.WithParameters: parameter 'demos' expected " +
+                                $"IReadOnlyList<object>, got {v.GetType().FullName}.",
+                                nameof(assignment));
+                        clone.TypedDemos.Clear();
+                        foreach (var item in list)
+                        {
+                            if (item is ValueTuple<object, object> erased)
+                                clone.TypedDemos.Add((erased.Item1, erased.Item2));
+                            else
+                                throw new ArgumentException(
+                                    $"FakePredictor.WithParameters: demo item has unsupported type " +
+                                    $"{item?.GetType().FullName ?? "null"}.",
+                                    nameof(assignment));
+                        }
+                        break;
+                    default:
+                        throw new ArgumentException(
+                            $"FakePredictor.WithParameters: unknown parameter key '{k}'. " +
+                            $"Valid keys: instructions, demos.",
+                            nameof(assignment));
+                }
+            }
+            return clone;
+        }
+
+        TService? IOptimizationTarget.GetService<TService>() where TService : class
+            => this as TService;
     }
 
     /// <summary>

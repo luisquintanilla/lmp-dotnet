@@ -302,9 +302,12 @@ public class Predictor<TInput, TOutput> : IPredictor, IOptimizationTarget
 
     /// <inheritdoc />
     /// <remarks>
-    /// T2a emits exactly two parameters: <c>instructions</c> (<see cref="StringValued"/>)
+    /// Emits exactly two parameters: <c>instructions</c> (<see cref="StringValued"/>)
     /// and <c>demos</c> (<see cref="Subset"/> over the current demo list, snapshot by value).
-    /// Temperature/model parameters land in a later T-phase.
+    /// The <c>demos</c> parameter accepts a list of either typed
+    /// <c>(TInput, TOutput)</c> tuples or erased <c>(object, object)</c> tuples; the latter
+    /// is produced naturally by trace-based optimizers where entry inputs/outputs are
+    /// object-typed.
     /// </remarks>
     TypedParameterSpace IOptimizationTarget.GetParameterSpace()
     {
@@ -353,7 +356,37 @@ public class Predictor<TInput, TOutput> : IPredictor, IOptimizationTarget
                             nameof(assignment));
                     clone.Demos.Clear();
                     foreach (var item in list)
-                        clone.Demos.Add(((TInput, TOutput))item);
+                    {
+                        // Accept both already-typed tuples (what library users and older optimizers
+                        // construct) and erased (object, object) tuples (what trace-based optimizers
+                        // naturally produce — TraceEntry.Input/Output are object).
+                        if (item is ValueTuple<TInput, TOutput> typed)
+                        {
+                            clone.Demos.Add((typed.Item1, typed.Item2));
+                        }
+                        else if (item is ValueTuple<object, object> erased)
+                        {
+                            if (erased.Item1 is not TInput tin)
+                                throw new ArgumentException(
+                                    $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                                    $"demo.Input is {erased.Item1?.GetType().FullName ?? "null"}, expected {typeof(TInput).FullName}.",
+                                    nameof(assignment));
+                            if (erased.Item2 is not TOutput tout)
+                                throw new ArgumentException(
+                                    $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                                    $"demo.Output is {erased.Item2?.GetType().FullName ?? "null"}, expected {typeof(TOutput).FullName}.",
+                                    nameof(assignment));
+                            clone.Demos.Add((tin, tout));
+                        }
+                        else
+                        {
+                            throw new ArgumentException(
+                                $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                                $"demo item is {item?.GetType().FullName ?? "null"}; expected " +
+                                $"ValueTuple<{typeof(TInput).Name},{typeof(TOutput).Name}> or ValueTuple<object,object>.",
+                                nameof(assignment));
+                        }
+                    }
                     break;
 
                 default:
