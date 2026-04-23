@@ -46,7 +46,14 @@ public sealed class ChainTarget : IOptimizationTarget
     /// <remarks>
     /// Executes each target in sequence, passing the output of each as input to
     /// the next. The combined <see cref="Trace"/> merges all child trace entries
-    /// in execution order.
+    /// in execution order. To preserve the symmetric prefix contract with
+    /// <see cref="GetParameterSpace"/>, each merged entry's
+    /// <see cref="TraceEntry.PredictorName"/> is rewritten to
+    /// <c>"child_{i}.{originalName}"</c>, where <c>i</c> is the zero-based index
+    /// of the producing child. Consumers that match trace entries against
+    /// parameter slot keys (e.g., BootstrapFewShot matching
+    /// <c>"{PredictorName}.demos"</c>) therefore see the same fully-qualified
+    /// slot path on both sides.
     /// </remarks>
     public async Task<(object Output, Trace Trace)> ExecuteAsync(
         object input, CancellationToken ct = default)
@@ -56,12 +63,12 @@ public sealed class ChainTarget : IOptimizationTarget
         object current = input;
         var combined = new Trace();
 
-        foreach (var target in _targets)
+        for (int i = 0; i < _targets.Count; i++)
         {
-            var (output, trace) = await target.ExecuteAsync(current, ct).ConfigureAwait(false);
+            var (output, trace) = await _targets[i].ExecuteAsync(current, ct).ConfigureAwait(false);
             current = output;
             foreach (var entry in trace.Entries)
-                combined.Record(entry.PredictorName, entry.Input, entry.Output, entry.Usage);
+                combined.Record($"child_{i}.{entry.PredictorName}", entry.Input, entry.Output, entry.Usage);
         }
 
         return (current, combined);
@@ -69,7 +76,10 @@ public sealed class ChainTarget : IOptimizationTarget
 
     /// <summary>
     /// Returns a merged parameter space where each child's parameters are prefixed
-    /// by <c>"child_{i}."</c> (zero-based index).
+    /// by <c>"child_{i}."</c> (zero-based index). This prefix mirrors the one applied
+    /// by <see cref="ExecuteAsync"/> to child trace entries'
+    /// <see cref="TraceEntry.PredictorName"/>, so slot keys and trace entry names
+    /// share the same fully-qualified path.
     /// </summary>
     public TypedParameterSpace GetParameterSpace()
     {

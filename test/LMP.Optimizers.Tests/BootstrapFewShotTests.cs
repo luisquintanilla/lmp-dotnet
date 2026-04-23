@@ -920,5 +920,69 @@ public class BootstrapFewShotTests
         Assert.Equal("e3", predictor.TypedDemos[2].Input);
     }
 
+    // ── ChainTarget / Pipeline of modules ────────────────────────────────
+
+    [Fact]
+    public async Task OptimizeAsync_OnChainTargetOfModules_FillsDemosForEachStage()
+    {
+        // Two LmpModule children, each containing one FakePredictor, composed via .Then().
+        // Verify BFS fills demos on BOTH stages by routing through the symmetric
+        // "child_{i}.{predictorName}.demos" slot path.
+        var (moduleA, predA) = CreateSinglePredictorModule(x => x, predictorName: "stageA");
+        var (moduleB, predB) = CreateSinglePredictorModule(x => x, predictorName: "stageB");
+
+        var chain = moduleA.Then(moduleB);
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("alpha", "alpha"),
+            new Example<string, string>("beta", "beta"),
+        };
+
+        var result = await OptimizationPipeline.For(chain)
+            .Use(new BootstrapFewShot(maxDemos: 4, metricThreshold: 1.0f))
+            .OptimizeAsync(trainSet, devSet: null, ExactMatchMetric());
+
+        Assert.NotNull(result);
+        Assert.Equal(2, predA.TypedDemos.Count);
+        Assert.Equal(2, predB.TypedDemos.Count);
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnNestedChainTarget_FillsDemosWithComposedPrefix()
+    {
+        // Nested composite: outer ChainTarget of (inner ChainTarget of modules, trailing module).
+        // Exercises the recursive prefix contract: inner slot keys
+        // "child_0.leaf.demos" become "child_0.child_0.leaf.demos" at the outer level,
+        // and trace entries are prefixed symmetrically so BFS still matches.
+        var (moduleA, predA) = CreateSinglePredictorModule(x => x, predictorName: "a");
+        var (moduleB, predB) = CreateSinglePredictorModule(x => x, predictorName: "b");
+        var (moduleC, predC) = CreateSinglePredictorModule(x => x, predictorName: "c");
+
+        var inner = new Pipeline<object, object> { moduleA, moduleB };
+        var outer = ((IOptimizationTarget)inner).Then(moduleC);
+
+        // Sanity-check the parameter-space prefix composition before running BFS.
+        var keys = outer.GetParameterSpace().Parameters.Select(p => p.Key).ToHashSet();
+        Assert.Contains("child_0.child_0.a.demos", keys);
+        Assert.Contains("child_0.child_1.b.demos", keys);
+        Assert.Contains("child_1.c.demos", keys);
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("one", "one"),
+            new Example<string, string>("two", "two"),
+        };
+
+        var result = await OptimizationPipeline.For(outer)
+            .Use(new BootstrapFewShot(maxDemos: 4, metricThreshold: 1.0f))
+            .OptimizeAsync(trainSet, devSet: null, ExactMatchMetric());
+
+        Assert.NotNull(result);
+        Assert.Equal(2, predA.TypedDemos.Count);
+        Assert.Equal(2, predB.TypedDemos.Count);
+        Assert.Equal(2, predC.TypedDemos.Count);
+    }
+
     #endregion
 }

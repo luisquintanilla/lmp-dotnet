@@ -23,13 +23,21 @@ namespace LMP.Optimizers;
 /// <b><see cref="LmpModule"/> fractal tree</b> — emits <c>"{predictorName}.demos"</c> slots, one per
 /// <see cref="IOptimizationTarget"/>-implementing child predictor.
 /// </description></item>
+/// <item><description>
+/// <b><c>ChainTarget</c> / <c>Pipeline</c> of <see cref="LmpModule"/> children</b> — emits
+/// <c>"child_{i}.{predictorName}.demos"</c> slots. Trace entries carry the symmetric
+/// <c>"child_{i}.{predictorName}"</c> prefix (see <see cref="IOptimizationTarget.ExecuteAsync"/>),
+/// so demos are routed to the correct stage. Nesting composes (e.g.,
+/// <c>"child_0.child_1.{predictorName}.demos"</c>).
+/// </description></item>
 /// </list>
 /// </para>
 /// <para>
-/// Explicitly NOT supported: <c>ChainTarget</c>, <c>Pipeline</c>, or any composite that prefixes
-/// its parameters but does not prefix child trace entries' <see cref="TraceEntry.PredictorName"/>.
-/// With those shapes the discovered slot keys do not match trace entry names and no demos
-/// will be recorded.
+/// Explicitly NOT supported: <see cref="Predictor{TInput,TOutput}"/> inside a bare
+/// <c>ChainTarget</c>/<c>Pipeline</c> (without an enclosing <see cref="LmpModule"/>). A bare
+/// <see cref="Predictor{TInput,TOutput}"/> exposes a root <c>"demos"</c> slot, so composite
+/// prefixing produces <c>"child_{i}.demos"</c> slot keys that do not collide across children
+/// but are not routed back into the predictor's root slot. Tracked as future work (T2d.6).
 /// </para>
 /// </remarks>
 public sealed class BootstrapFewShot : IOptimizer

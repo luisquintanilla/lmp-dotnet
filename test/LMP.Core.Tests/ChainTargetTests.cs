@@ -104,8 +104,8 @@ public sealed class ChainTargetTests
         var (_, trace) = await chain.ExecuteAsync("input");
 
         Assert.Equal(2, trace.Entries.Count);
-        Assert.Equal("pred1", trace.Entries[0].PredictorName);
-        Assert.Equal("pred2", trace.Entries[1].PredictorName);
+        Assert.Equal("child_0.pred1", trace.Entries[0].PredictorName);
+        Assert.Equal("child_1.pred2", trace.Entries[1].PredictorName);
         Assert.Equal(30, trace.TotalTokens);
     }
 

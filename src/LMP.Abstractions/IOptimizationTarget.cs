@@ -16,9 +16,20 @@ public interface IOptimizationTarget
     /// Returns the output and the execution trace together — trace is not a side-channel.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The returned trace describes only this invocation and MUST NOT carry state from prior calls.
     /// Implementations should create a fresh <see cref="Trace"/> per call (see
     /// <see cref="LmpModule.ExecuteAsync"/> reference implementation).
+    /// </para>
+    /// <para>
+    /// Composite implementations (e.g., <c>ChainTarget</c>, <c>Pipeline</c>) MUST prefix each
+    /// child trace entry's <see cref="TraceEntry.PredictorName"/> with the same prefix that
+    /// <see cref="GetParameterSpace"/> applies to the corresponding child's parameters
+    /// (for <c>ChainTarget</c>, <c>"child_{i}."</c>). This keeps the parameter slot space and
+    /// trace entry names symmetric: consumers comparing a <see cref="TraceEntry.PredictorName"/>
+    /// to a local predictor key MUST compare against the fully-qualified slot path
+    /// (e.g., <c>"child_0.classify"</c>), not the leaf name alone.
+    /// </para>
     /// </remarks>
     Task<(object Output, Trace Trace)> ExecuteAsync(
         object input,
