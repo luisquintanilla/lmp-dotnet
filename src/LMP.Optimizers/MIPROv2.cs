@@ -124,9 +124,14 @@ public sealed class MIPROv2 : IOptimizer
     public async Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(ctx);
-        var module = ctx.Target.GetService<LmpModule>()
-            ?? throw new NotSupportedException(
-                $"{nameof(MIPROv2)} requires an LmpModule target. Pass the LmpModule directly (it implements IOptimizationTarget).");
+        if (ctx.Target is not LmpModule module)
+            throw new ArgumentException(
+                $"{nameof(MIPROv2)} requires an LmpModule target. " +
+                $"Composite targets (ChainTarget / Pipeline) and bare Predictor targets are not yet supported " +
+                $"because MIPROv2's Phase 2 (instruction proposal) requires per-predictor metadata " +
+                $"(signature, field names, current instructions). Tracked as T2f.1 / T2g. " +
+                $"Pass the LmpModule directly.",
+                nameof(ctx));
 
         var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
             .ConfigureAwait(false);

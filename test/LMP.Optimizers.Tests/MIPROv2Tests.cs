@@ -795,4 +795,103 @@ public class MIPROv2Tests
     }
 
     #endregion
+
+    #region T2f — OptimizeAsync entry-point target validation
+
+    [Fact]
+    public async Task OptimizeAsync_OnLmpModuleTarget_AppliesStateAndPopulatesContext()
+    {
+        var (module, _) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var ctx = new OptimizationContext
+        {
+            Target = module,
+            TrainSet = trainSet,
+            Metric = ExactMatchMetric()
+        };
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 2,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 1,
+            maxDemos: 1,
+            seed: 42);
+
+        await optimizer.OptimizeAsync(ctx);
+
+        Assert.True(ctx.TrialHistory.Count > 0,
+            "OptimizeAsync should propagate at least one trial into ctx.TrialHistory.");
+        Assert.True(ctx.SearchSpace.Parameters.Count > 0,
+            "OptimizeAsync should publish the discovered parameter cardinalities to ctx.SearchSpace.");
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnChainTargetComposite_ThrowsArgumentException()
+    {
+        var (moduleA, _) = CreateSinglePredictorModule(x => x, "stage_a");
+        var (moduleB, _) = CreateSinglePredictorModule(x => x, "stage_b");
+        var composite = moduleA.Then(moduleB);
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("a", "a"),
+        };
+
+        var ctx = new OptimizationContext
+        {
+            Target = composite,
+            TrainSet = trainSet,
+            Metric = ExactMatchMetric()
+        };
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 1,
+            numInstructionCandidates: 1,
+            numDemoSubsets: 1,
+            maxDemos: 1,
+            seed: 42);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => optimizer.OptimizeAsync(ctx));
+        Assert.Contains("MIPROv2", ex.Message);
+        Assert.Contains("LmpModule", ex.Message);
+        // Regression canary: the banned NotSupportedException must not come back.
+        Assert.IsNotType<NotSupportedException>(ex);
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnPredictorTarget_ThrowsArgumentException()
+    {
+        // A bare Predictor<TIn,TOut> is IOptimizationTarget but not LmpModule.
+        var bare = new Predictor<string, string>(new FakeProposalClient()) { Name = "bare" };
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("x", "x"),
+        };
+
+        var ctx = new OptimizationContext
+        {
+            Target = bare,
+            TrainSet = trainSet,
+            Metric = ExactMatchMetric()
+        };
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 1,
+            numInstructionCandidates: 1,
+            numDemoSubsets: 1,
+            maxDemos: 1,
+            seed: 42);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => optimizer.OptimizeAsync(ctx));
+    }
+
+    #endregion
 }
