@@ -76,14 +76,12 @@ public sealed class SIMBA : IOptimizer
     {
         ArgumentNullException.ThrowIfNull(ctx);
 
-        var module = ctx.Target.GetService<LmpModule>()
-            ?? throw new NotSupportedException(
-                $"{nameof(SIMBA)} requires an LmpModule target. Pass the LmpModule directly (it implements IOptimizationTarget).");
-
         if (ctx.TrainSet.Count == 0)
             return;
 
-        var predictors = module.GetPredictors().ToList();
+        // Enumerate predictors via the walker so SIMBA is composite-aware
+        // (ChainTarget/Pipeline of LmpModules). Empty → no-op (bare Predictor targets, etc.).
+        var predictors = PredictorWalker.Enumerate(ctx.Target).ToList();
         if (predictors.Count == 0)
             return;
 
@@ -95,13 +93,13 @@ public sealed class SIMBA : IOptimizer
         // Reuse pipeline-computed baseline when available; otherwise evaluate now.
         float baselineScore = ctx.Diagnostics.BaselineScore is { } cached
             ? cached
-            : ctx.TrajectoryMetric != null
-                ? await EvaluateTrajectoryScoreAsync(ctx.Target, evalSet, ctx.TrajectoryMetric, ct).ConfigureAwait(false)
-                : await EvaluateScoreAsync(module, evalSet, ctx.Metric, ct).ConfigureAwait(false);
+            : await EvaluateAvgScoreAsync(
+                ctx.Target, evalSet, ctx.Metric, ctx.TrajectoryMetric, ct).ConfigureAwait(false);
 
+        // Pristine clones via the seam — no direct module.Clone, no LmpModule-typed locals.
+        var best = ctx.Target.WithParameters(ParameterAssignment.Empty);
+        var current = ctx.Target.WithParameters(ParameterAssignment.Empty);
         float bestScore = baselineScore;
-        var best = module.Clone();
-        var current = module.Clone();
         float currentFullSetScore = baselineScore;
 
         for (int iter = 0; iter < _maxIterations; iter++)
@@ -110,20 +108,58 @@ public sealed class SIMBA : IOptimizer
             if (!ctx.Budget.IsWithinBudget(ctx.TrialHistory))
                 break;
 
-            // Sample mini-batch and run current with trace capture for reflection.
+            // Sample mini-batch and run current with inline trace capture (GEPA T2g pattern).
             var miniBatch = InstructionReflector.SampleMiniBatch(ctx.TrainSet, rng, _miniBatchSize);
-            var traceResults = await InstructionReflector.RunWithTracesAsync(
-                current, miniBatch, ctx.Metric, ct, ctx.TrajectoryMetric).ConfigureAwait(false);
+            var evalClone = current.WithParameters(ParameterAssignment.Empty);
+
+            var traceResults = new List<(Example Example, object Output, float Score, Trace Trace)>();
+            foreach (var example in miniBatch)
+            {
+                Trace capturedTrace = new();
+                object capturedOutput = "error";
+                float capturedScore = 0f;
+                bool scored = false;
+
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    try
+                    {
+                        var (output, trace) = await evalClone.ExecuteAsync(example.WithInputs(), ct)
+                            .ConfigureAwait(false);
+                        capturedOutput = output;
+                        capturedTrace = trace;
+                        if (ctx.TrajectoryMetric != null)
+                        {
+                            var traj = Trajectory.FromTrace(trace, example);
+                            capturedScore = await ctx.TrajectoryMetric.ScoreAsync(traj, ct).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            capturedScore = ctx.Metric(example, output);
+                        }
+                        scored = true;
+                        break;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch when (attempt < 2)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), ct).ConfigureAwait(false);
+                    }
+                    catch { break; }
+                }
+
+                traceResults.Add((example, capturedOutput, scored ? capturedScore : 0f, capturedTrace));
+            }
 
             float currentMiniBatchScore = traceResults.Count > 0
                 ? traceResults.Average(r => r.Score)
                 : 0f;
 
-            // Round-robin predictor selection — cycle through all predictors.
-            predictors = current.GetPredictors().ToList();
+            // Round-robin predictor selection via the walker — cycle through all predictors.
+            predictors = PredictorWalker.Enumerate(current).ToList();
             if (predictors.Count == 0) break;
 
-            var (targetName, targetPredictor) = predictors[iter % predictors.Count];
+            var (targetPath, targetPredictor) = predictors[iter % predictors.Count];
 
             // Reflect on failures to propose an improved instruction.
             var failedTraces = traceResults.Where(r => r.Score < 1.0f).ToList();
@@ -133,7 +169,7 @@ public sealed class SIMBA : IOptimizer
                 try
                 {
                     newInstruction = await InstructionReflector.ReflectAsync(
-                        _reflectionClient, targetName, targetPredictor.Instructions,
+                        _reflectionClient, targetPath, targetPredictor.Instructions,
                         failedTraces, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { throw; }
@@ -144,43 +180,37 @@ public sealed class SIMBA : IOptimizer
                 }
             }
 
-            // Build candidate: clone current and apply the proposed instruction.
-            var candidate = current.Clone();
+            // Build candidate via the seam: non-empty instruction mutates ONE predictor;
+            // otherwise candidate is a pristine clone of current (no mutation).
+            IOptimizationTarget candidate;
             if (!string.IsNullOrWhiteSpace(newInstruction))
             {
-                var cp = candidate.GetPredictors()
-                    .ToDictionary(p => p.Name, p => p.Predictor);
-                if (cp.TryGetValue(targetName, out var pred))
-                    pred.Instructions = newInstruction;
+                var pa = ParameterAssignment.Empty.With($"{targetPath}.instructions", newInstruction);
+                candidate = current.WithParameters(pa);
+            }
+            else
+            {
+                candidate = current.WithParameters(ParameterAssignment.Empty);
             }
 
             // Gate check: accept if the candidate scores better on the SAME mini-batch.
-            float candidateMiniBatchScore = await EvaluateMiniBatchScoreAsync(
-                candidate, miniBatch, ctx.Metric, ct, ctx.TrajectoryMetric).ConfigureAwait(false);
+            float candidateMiniBatchScore = await EvaluateAvgScoreAsync(
+                candidate, miniBatch, ctx.Metric, ctx.TrajectoryMetric, ct).ConfigureAwait(false);
 
             bool accepted = candidateMiniBatchScore > currentMiniBatchScore;
             if (accepted)
             {
                 current = candidate;
 
-                // Lazy full-set re-evaluation: only incur the cost on acceptance.
-                if (ctx.TrajectoryMetric != null)
-                {
-                    // Apply the accepted candidate's state to the target before trajectory scoring.
-                    ctx.Target.ApplyState(current.GetState());
-                    currentFullSetScore = await EvaluateTrajectoryScoreAsync(
-                        ctx.Target, evalSet, ctx.TrajectoryMetric, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    currentFullSetScore = await EvaluateScoreAsync(current, evalSet, ctx.Metric, ct)
-                        .ConfigureAwait(false);
-                }
+                // Lazy full-set re-evaluation on the accepted candidate directly (no state
+                // copy to ctx.Target needed — the IOT seam routes eval through `current`).
+                currentFullSetScore = await EvaluateAvgScoreAsync(
+                    current, evalSet, ctx.Metric, ctx.TrajectoryMetric, ct).ConfigureAwait(false);
 
                 if (currentFullSetScore > bestScore)
                 {
                     bestScore = currentFullSetScore;
-                    best = current.Clone();
+                    best = current;
                 }
             }
 
@@ -200,56 +230,50 @@ public sealed class SIMBA : IOptimizer
             _progress?.Report(new SimbaProgressReport(iter + 1, _maxIterations, bestScore, accepted));
         }
 
-        ctx.Target.ApplyState(best.GetState());
+        if (!ReferenceEquals(best, ctx.Target))
+            ctx.Target.ApplyState(best.GetState());
     }
 
     // ── Private helpers ──────────────────────────────────────────────────
 
-    private static async Task<float> EvaluateScoreAsync(
-        LmpModule module,
-        IReadOnlyList<Example> evalSet,
+    /// <summary>
+    /// Evaluates a target over an example set and returns the average score.
+    /// Unified IOT-parameterized helper handling baseline, gate-check mini-batch, and
+    /// post-acceptance full-set evaluation. Trajectory mode routes through
+    /// <see cref="IOptimizationTarget.ExecuteTrajectoryAsync"/> and
+    /// <see cref="ITrajectoryMetric.ScoreAsync"/>; non-trajectory mode calls
+    /// <see cref="IOptimizationTarget.ExecuteAsync"/> and applies <paramref name="metric"/>.
+    /// </summary>
+    private static async Task<float> EvaluateAvgScoreAsync(
+        IOptimizationTarget target,
+        IEnumerable<Example> set,
         Func<Example, object, float> metric,
+        ITrajectoryMetric? trajectoryMetric,
         CancellationToken ct)
-    {
-        if (evalSet.Count == 0)
-            return 0f;
-
-        var result = await Evaluator.EvaluateAsync(module, evalSet, metric, cancellationToken: ct)
-            .ConfigureAwait(false);
-        return result.AverageScore;
-    }
-
-    private static async Task<float> EvaluateMiniBatchScoreAsync(
-        LmpModule module,
-        IEnumerable<Example> batch,
-        Func<Example, object, float> metric,
-        CancellationToken ct,
-        ITrajectoryMetric? trajectoryMetric = null)
     {
         float total = 0f;
         int count = 0;
 
-        // Clone to avoid mutating module.Trace during gate-check evaluation.
-        var evalModule = module.Clone();
-
-        foreach (var ex in batch)
+        foreach (var example in set)
         {
-            var trace = new Trace();
-            evalModule.Trace = trace;
+            ct.ThrowIfCancellationRequested();
 
             for (int attempt = 0; attempt < 3; attempt++)
             {
                 try
                 {
-                    var output = await evalModule.ForwardAsync(ex.WithInputs(), ct).ConfigureAwait(false);
                     if (trajectoryMetric != null)
                     {
-                        var traj = Trajectory.FromTrace(trace, ex);
+                        var traj = await target
+                            .ExecuteTrajectoryAsync(example.WithInputs(), source: example, ct: ct)
+                            .ConfigureAwait(false);
                         total += await trajectoryMetric.ScoreAsync(traj, ct).ConfigureAwait(false);
                     }
                     else
                     {
-                        total += metric(ex, output);
+                        var (output, _) = await target.ExecuteAsync(example.WithInputs(), ct)
+                            .ConfigureAwait(false);
+                        total += metric(example, output);
                     }
                     count++;
                     break;
@@ -265,42 +289,6 @@ public sealed class SIMBA : IOptimizer
                     break;
                 }
             }
-        }
-
-        return count > 0 ? total / count : 0f;
-    }
-
-    /// <summary>
-    /// Evaluates a set of examples using <see cref="IOptimizationTarget.ExecuteTrajectoryAsync"/>
-    /// and the provided <see cref="ITrajectoryMetric"/>. Used when
-    /// <see cref="OptimizationContext.TrajectoryMetric"/> is set, replacing the standard
-    /// module-based evaluation path.
-    /// </summary>
-    private static async Task<float> EvaluateTrajectoryScoreAsync(
-        IOptimizationTarget target,
-        IReadOnlyList<Example> evalSet,
-        ITrajectoryMetric metric,
-        CancellationToken ct)
-    {
-        if (evalSet.Count == 0)
-            return 0f;
-
-        float total = 0f;
-        int count = 0;
-
-        foreach (var example in evalSet)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                var trajectory = await target
-                    .ExecuteTrajectoryAsync(example.WithInputs(), source: example, ct: ct)
-                    .ConfigureAwait(false);
-                total += await metric.ScoreAsync(trajectory, ct).ConfigureAwait(false);
-                count++;
-            }
-            catch (OperationCanceledException) { throw; }
-            catch { count++; /* score 0 for failed examples */ }
         }
 
         return count > 0 ? total / count : 0f;
