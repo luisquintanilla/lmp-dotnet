@@ -121,23 +121,54 @@ public sealed class MIPROv2 : IOptimizer
     public IReadOnlyDictionary<string, int>? LastCardinalities => _lastCardinalities;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Accepts both <see cref="LmpModule"/> targets (typed path — routes to
+    /// <see cref="CompileAsync{TModule}"/>) and composite <see cref="ChainTarget"/>
+    /// targets (walker-based path). Walker-empty targets (bare
+    /// <see cref="Predictor{TIn,TOut}"/>, unsupported composite shapes) are
+    /// rejected with <see cref="ArgumentException"/>.
+    /// Composite targets optimize end-to-end but do not emit <c>.g.cs</c>
+    /// artifacts; optimized state is applied in-place via
+    /// <see cref="IOptimizationTarget.ApplyState"/>. Composite artifact emission
+    /// is tracked as T4.
+    /// </remarks>
     public async Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(ctx);
-        if (ctx.Target is not LmpModule module)
+
+        // Clear stale state from prior runs so stale trial history / cardinalities
+        // don't leak into the caller's context (rubber-duck Q7.1).
+        _lastTrialHistory = null;
+        _lastCardinalities = null;
+
+        // Reject targets with no optimizable predictors (bare Predictor<>, unsupported
+        // composite shapes). This preserves the pre-T2i.a bare-predictor rejection
+        // contract without blocking composite ChainTarget-of-modules.
+        var discoveredPredictors = PredictorWalker.Enumerate(ctx.Target).ToList();
+        if (discoveredPredictors.Count == 0)
             throw new ArgumentException(
-                $"{nameof(MIPROv2)} requires an LmpModule target. " +
-                $"Composite targets (ChainTarget / Pipeline) and bare Predictor targets are not yet supported " +
-                $"because MIPROv2's Phase 2 (instruction proposal) requires per-predictor metadata " +
-                $"(signature, field names, current instructions). Tracked as T2f.1 / T2g. " +
-                $"Pass the LmpModule directly.",
+                $"{nameof(MIPROv2)} requires a target containing optimizable predictors " +
+                $"(LmpModule or ChainTarget of modules).",
                 nameof(ctx));
 
-        var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
-            .ConfigureAwait(false);
+        if (ctx.Target is LmpModule module)
+        {
+            // Typed path: preserves CompileAsync<TModule> public API and artifact emission.
+            var best = await CompileAsync(module, ctx.TrainSet, ctx.Metric, CompileOptions.RuntimeOnly, ct)
+                .ConfigureAwait(false);
 
-        if (!ReferenceEquals(best, module))
-            ctx.Target.ApplyState(best.GetState());
+            if (!ReferenceEquals(best, module))
+                ctx.Target.ApplyState(best.GetState());
+        }
+        else
+        {
+            // Composite path: walker-based end-to-end optimization. No artifact emission.
+            var (best, _) = await CompileInternalAsync(ctx.Target, ctx.TrainSet, ctx.Metric, ct)
+                .ConfigureAwait(false);
+
+            if (!ReferenceEquals(best, ctx.Target))
+                ctx.Target.ApplyState(best.GetState());
+        }
 
         // Propagate per-trial results to the shared TrialHistory so the pipeline budget gate
         // and post-run analysis tools (TraceAnalyzer) can see MIPROv2's search history.
@@ -202,105 +233,13 @@ public sealed class MIPROv2 : IOptimizer
         if (trainSet.Count == 0)
             return module;
 
-        var rng = _seed.HasValue ? new Random(_seed.Value) : Random.Shared;
-        var (bootstrapSplit, valSplit) = BootstrapRandomSearch.SplitDataset(trainSet, 0.8, rng);
+        var (bestTarget, bestScore) = await CompileInternalAsync(module, trainSet, metric, cancellationToken)
+            .ConfigureAwait(false);
 
-        if (valSplit.Count == 0)
-            valSplit = bootstrapSplit;
+        var bestCandidate = (TModule)bestTarget;
 
-        // Phase 1: Bootstrap a pool of demos per predictor
-        var demoPool = await BootstrapDemoPoolAsync(
-            module, bootstrapSplit, metric, rng, cancellationToken);
-
-        // Phase 2: Generate instruction candidates per predictor via LM
-        var instructionCandidates = await ProposeInstructionsAsync(
-            module, demoPool, cancellationToken);
-
-        // Phase 3: Bayesian search over (instruction_index, demo_set_index) per predictor
-        var predictors = module.GetPredictors();
-
-        // Create random demo subsets for each predictor
-        var demoSubsets = CreateDemoSubsets(demoPool, predictors, rng);
-
-        // Build the TPE search space
-        var cardinalities = new Dictionary<string, int>();
-        foreach (var (name, _) in predictors)
-        {
-            cardinalities[$"{name}_instr"] = instructionCandidates.TryGetValue(name, out var instrs)
-                ? instrs.Count : 1;
-            cardinalities[$"{name}_demos"] = demoSubsets.TryGetValue(name, out var subsets)
-                ? subsets.Count : 1;
-        }
-
-        var sampler = _samplerFactory?.Invoke(cardinalities)
-            ?? new CategoricalTpeSampler(cardinalities, _gamma, _seed);
-        _lastCardinalities = cardinalities;
-        TModule bestCandidate = module;
-        float bestScore = float.MinValue;
-        var trialHistory = new List<TrialResult>(_numTrials);
-
-        for (int trial = 0; trial < _numTrials; trial++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var config = sampler.Propose();
-
-            // Build a ParameterAssignment prefixed by predictor name. The
-            // fractal LmpModule.WithParameters seam routes `"{name}.instructions"`
-            // and `"{name}.demos"` keys to each child predictor's
-            // IOptimizationTarget.WithParameters.
-            var pa = ParameterAssignment.Empty;
-            foreach (var (name, _) in predictors)
-            {
-                if (instructionCandidates.TryGetValue(name, out var instrs) && instrs.Count > 0)
-                {
-                    int instrIdx = config.TryGetValue($"{name}_instr", out var iIdx) ? iIdx : 0;
-                    pa = pa.With($"{name}.instructions", instrs[instrIdx % instrs.Count]);
-                }
-
-                if (demoSubsets.TryGetValue(name, out var subsets) && subsets.Count > 0)
-                {
-                    int demoIdx = config.TryGetValue($"{name}_demos", out var dIdx) ? dIdx : 0;
-                    var selectedDemos = subsets[demoIdx % subsets.Count];
-                    // Box each demo as ValueTuple<object,object> per the
-                    // IPredictor.WithParameters 'demos' contract.
-                    var demoList = (IReadOnlyList<object>)selectedDemos
-                        .Select(d => (object)new ValueTuple<object, object>(d.Input, d.Output))
-                        .ToList();
-                    pa = pa.With($"{name}.demos", demoList);
-                }
-            }
-
-            var candidate = (TModule)module.WithParameters(pa);
-
-            // Evaluate with cost collection
-            candidate.Trace = new Trace();
-            var stopwatch = Stopwatch.StartNew();
-            var result = await Evaluator.EvaluateAsync(
-                candidate, valSplit, metric, maxConcurrency: _maxConcurrency, cancellationToken: cancellationToken);
-            stopwatch.Stop();
-
-            var trace = candidate.Trace;
-            var trialCost = new TrialCost(
-                TotalTokens: trace.TotalTokens,
-                InputTokens: trace.InputTokens,
-                OutputTokens: trace.OutputTokens,
-                ElapsedMilliseconds: stopwatch.ElapsedMilliseconds,
-                ApiCalls: trace.TotalApiCalls);
-
-            sampler.Update(config, result.AverageScore, trialCost);
-            trialHistory.Add(new TrialResult(new Dictionary<string, int>(config), result.AverageScore, trialCost));
-
-            if (result.AverageScore > bestScore)
-            {
-                bestScore = result.AverageScore;
-                bestCandidate = candidate;
-            }
-        }
-
-        _lastTrialHistory = trialHistory;
-
-        // Auto-emit .g.cs artifact
+        // Auto-emit .g.cs artifact — typed-path only. Composite artifact emission
+        // is deferred to T4 (shape not yet defined for multi-stage compositions).
         string? outputDir = options?.OutputDir;
         if (outputDir is not null)
         {
@@ -313,28 +252,215 @@ public sealed class MIPROv2 : IOptimizer
     }
 
     /// <summary>
-    /// Phase 1: Runs BootstrapFewShot to collect a pool of successful demos per predictor.
-    /// Uses a larger maxDemos to build a diverse pool, not just the final demo set.
+    /// Shared implementation of the three-phase MIPROv2 loop that operates on
+    /// any <see cref="IOptimizationTarget"/>. Enumerates predictors via
+    /// <see cref="PredictorWalker"/> so composite targets (ChainTarget of
+    /// modules) are treated symmetrically with bare <see cref="LmpModule"/>s.
+    /// Returns the best candidate target + its validation score.
     /// </summary>
-    private async Task<Dictionary<string, List<(object Input, object Output)>>> BootstrapDemoPoolAsync<TModule>(
-        TModule module,
+    private async Task<(IOptimizationTarget Best, float Score)> CompileInternalAsync(
+        IOptimizationTarget target,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken cancellationToken)
+    {
+        var rng = _seed.HasValue ? new Random(_seed.Value) : Random.Shared;
+        var (bootstrapSplit, valSplit) = BootstrapRandomSearch.SplitDataset(trainSet, 0.8, rng);
+
+        if (valSplit.Count == 0)
+            valSplit = bootstrapSplit;
+
+        // Phase 1: Bootstrap a pool of demos keyed by predictor path.
+        var demoPool = await BootstrapDemoPoolAsync(
+            target, bootstrapSplit, metric, cancellationToken).ConfigureAwait(false);
+
+        // Phase 2: Generate instruction candidates per predictor via LM (walker-based).
+        var instructionCandidates = await ProposeInstructionsAsync(
+            target, demoPool, cancellationToken).ConfigureAwait(false);
+
+        // Phase 3: Bayesian search over (instruction_index, demo_set_index) per predictor path.
+        var predictors = PredictorWalker.Enumerate(target).ToList();
+
+        // Create random demo subsets for each predictor path.
+        var demoSubsets = CreateDemoSubsets(demoPool, predictors, rng);
+
+        // Build the TPE search space — keyed by path so duplicate leaf names across
+        // composite stages (e.g., child_0.classify vs child_1.classify) don't collide.
+        var cardinalities = new Dictionary<string, int>();
+        foreach (var (path, _) in predictors)
+        {
+            cardinalities[$"{path}_instr"] = instructionCandidates.TryGetValue(path, out var instrs)
+                ? instrs.Count : 1;
+            cardinalities[$"{path}_demos"] = demoSubsets.TryGetValue(path, out var subsets)
+                ? subsets.Count : 1;
+        }
+
+        var sampler = _samplerFactory?.Invoke(cardinalities)
+            ?? new CategoricalTpeSampler(cardinalities, _gamma, _seed);
+        _lastCardinalities = cardinalities;
+        IOptimizationTarget bestCandidate = target;
+        float bestScore = float.MinValue;
+        var trialHistory = new List<TrialResult>(_numTrials);
+
+        for (int trial = 0; trial < _numTrials; trial++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var config = sampler.Propose();
+
+            // Build a ParameterAssignment keyed by predictor path. The fractal
+            // WithParameters seam routes `"{path}.instructions"` / `"{path}.demos"`
+            // through ChainTarget → LmpModule → predictor without ambiguity.
+            var pa = ParameterAssignment.Empty;
+            foreach (var (path, _) in predictors)
+            {
+                if (instructionCandidates.TryGetValue(path, out var instrs) && instrs.Count > 0)
+                {
+                    int instrIdx = config.TryGetValue($"{path}_instr", out var iIdx) ? iIdx : 0;
+                    pa = pa.With($"{path}.instructions", instrs[instrIdx % instrs.Count]);
+                }
+
+                if (demoSubsets.TryGetValue(path, out var subsets) && subsets.Count > 0)
+                {
+                    int demoIdx = config.TryGetValue($"{path}_demos", out var dIdx) ? dIdx : 0;
+                    var selectedDemos = subsets[demoIdx % subsets.Count];
+                    // Box each demo as ValueTuple<object,object> per the
+                    // IPredictor.WithParameters 'demos' contract.
+                    var demoList = (IReadOnlyList<object>)selectedDemos
+                        .Select(d => (object)new ValueTuple<object, object>(d.Input, d.Output))
+                        .ToList();
+                    pa = pa.With($"{path}.demos", demoList);
+                }
+            }
+
+            var candidate = target.WithParameters(pa);
+
+            // Evaluate via the shared F2 helper — accumulates TrialCost per example by
+            // calling IOptimizationTarget.ExecuteAsync (fresh Trace per call). We do NOT
+            // use the Evaluator.EvaluateAsync IOT overload here because it does not
+            // aggregate TrialCost — a switch would silently regress cost-aware sampling.
+            var (avgScore, trialCost) = await EvalCandidateAsync(
+                candidate, valSplit, metric, _maxConcurrency, cancellationToken).ConfigureAwait(false);
+
+            sampler.Update(config, avgScore, trialCost);
+            trialHistory.Add(new TrialResult(new Dictionary<string, int>(config), avgScore, trialCost));
+
+            if (avgScore > bestScore)
+            {
+                bestScore = avgScore;
+                bestCandidate = candidate;
+            }
+        }
+
+        _lastTrialHistory = trialHistory;
+        return (bestCandidate, bestScore);
+    }
+
+    /// <summary>
+    /// Shared per-trial evaluation helper. Runs the candidate against
+    /// <paramref name="valSplit"/> via <see cref="IOptimizationTarget.ExecuteAsync"/>
+    /// (fresh trace per call) so per-example token / API-call usage can be
+    /// aggregated into a single <see cref="TrialCost"/>. Used by both typed
+    /// and composite paths.
+    /// </summary>
+    private static async Task<(float Score, TrialCost Cost)> EvalCandidateAsync(
+        IOptimizationTarget candidate,
+        IReadOnlyList<Example> valSplit,
+        Func<Example, object, float> metric,
+        int maxConcurrency,
+        CancellationToken cancellationToken)
+    {
+        if (valSplit.Count == 0)
+            return (0f, new TrialCost(0, 0, 0, 0, 0));
+
+        long totalTokens = 0;
+        long inputTokens = 0;
+        long outputTokens = 0;
+        long apiCalls = 0;
+        var scores = new float[valSplit.Count];
+
+        var stopwatch = Stopwatch.StartNew();
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, valSplit.Count),
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = maxConcurrency,
+                CancellationToken = cancellationToken
+            },
+            async (i, ct) =>
+            {
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    try
+                    {
+                        var (output, trace) = await candidate.ExecuteAsync(valSplit[i].WithInputs(), ct)
+                            .ConfigureAwait(false);
+                        scores[i] = metric(valSplit[i], output);
+                        Interlocked.Add(ref totalTokens, trace.TotalTokens);
+                        Interlocked.Add(ref inputTokens, trace.InputTokens);
+                        Interlocked.Add(ref outputTokens, trace.OutputTokens);
+                        Interlocked.Add(ref apiCalls, trace.TotalApiCalls);
+                        return;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch when (attempt < 2)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1 << (attempt + 1)), ct).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        scores[i] = 0f;
+                        return;
+                    }
+                }
+            }).ConfigureAwait(false);
+        stopwatch.Stop();
+
+        float avg = 0f;
+        for (int i = 0; i < scores.Length; i++)
+            avg += scores[i];
+        avg /= scores.Length;
+
+        var cost = new TrialCost(
+            TotalTokens: totalTokens,
+            InputTokens: inputTokens,
+            OutputTokens: outputTokens,
+            ElapsedMilliseconds: stopwatch.ElapsedMilliseconds,
+            ApiCalls: (int)apiCalls);
+        return (avg, cost);
+    }
+
+    /// <summary>
+    /// Phase 1: Runs BootstrapFewShot to collect a pool of successful demos per predictor path.
+    /// Uses a larger maxDemos to build a diverse pool, not just the final demo set.
+    /// Operates on any <see cref="IOptimizationTarget"/> via BFS's IOT entry point so
+    /// both bare <see cref="LmpModule"/>s and composite <see cref="ChainTarget"/>s share
+    /// a single bootstrap path.
+    /// </summary>
+    private async Task<Dictionary<string, List<(object Input, object Output)>>> BootstrapDemoPoolAsync(
+        IOptimizationTarget target,
         List<Example> trainSplit,
         Func<Example, object, float> metric,
-        Random rng,
         CancellationToken cancellationToken)
-        where TModule : LmpModule
     {
         // Bootstrap with a larger demo count to build a pool
         int poolSize = _maxDemos * _numDemoSubsets;
         var bootstrap = new BootstrapFewShot(poolSize, metricThreshold: _metricThreshold);
 
-        // Clone the module for bootstrapping so the original stays clean
-        var bootstrapModule = module.Clone<TModule>();
-        await bootstrap.CompileAsync(bootstrapModule, trainSplit, metric, CompileOptions.RuntimeOnly, cancellationToken);
+        // WithParameters(Empty) gives a pristine clone for both LmpModule and ChainTarget,
+        // so BootstrapFewShot's in-place ApplyState doesn't mutate the user's target.
+        var bootstrapTarget = target.WithParameters(ParameterAssignment.Empty);
+        await bootstrap.OptimizeAsync(new OptimizationContext
+        {
+            Target = bootstrapTarget,
+            TrainSet = trainSplit,
+            Metric = metric
+        }, cancellationToken).ConfigureAwait(false);
 
-        // Extract demos from the bootstrapped module
+        // Extract demos from the bootstrapped target, keyed by predictor path
+        // (raw name for LmpModule; "child_{i}.{inner}" for composite ChainTarget).
         var pool = new Dictionary<string, List<(object Input, object Output)>>();
-        foreach (var (name, predictor) in bootstrapModule.GetPredictors())
+        foreach (var (path, predictor) in PredictorWalker.Enumerate(bootstrapTarget))
         {
             var demos = new List<(object Input, object Output)>();
             foreach (var demo in predictor.Demos)
@@ -345,7 +471,7 @@ public sealed class MIPROv2 : IOptimizer
                     demos.Add((tuple[0]!, tuple[1]!));
                 }
             }
-            pool[name] = demos;
+            pool[path] = demos;
         }
 
         return pool;
@@ -354,17 +480,17 @@ public sealed class MIPROv2 : IOptimizer
     /// <summary>
     /// Phase 2: Uses the proposal LM client to generate diverse instruction variants
     /// for each predictor. The LM sees the current instructions, field names, and
-    /// example demos to produce diverse phrasings.
+    /// example demos to produce diverse phrasings. Keyed by predictor path so
+    /// duplicate leaf names across composite stages don't collide.
     /// </summary>
-    private async Task<Dictionary<string, List<string>>> ProposeInstructionsAsync<TModule>(
-        TModule module,
+    private async Task<Dictionary<string, List<string>>> ProposeInstructionsAsync(
+        IOptimizationTarget target,
         Dictionary<string, List<(object Input, object Output)>> demoPool,
         CancellationToken cancellationToken)
-        where TModule : LmpModule
     {
         var result = new Dictionary<string, List<string>>();
 
-        foreach (var (name, predictor) in module.GetPredictors())
+        foreach (var (path, predictor) in PredictorWalker.Enumerate(target))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -374,7 +500,7 @@ public sealed class MIPROv2 : IOptimizer
             candidates.Add(predictor.Instructions);
 
             // Generate N-1 new instruction candidates via LM
-            var demoExamples = demoPool.TryGetValue(name, out var demos)
+            var demoExamples = demoPool.TryGetValue(path, out var demos)
                 ? demos.Take(3).ToList()
                 : [];
 
@@ -385,7 +511,7 @@ public sealed class MIPROv2 : IOptimizer
                 try
                 {
                     var proposed = await GenerateInstructionAsync(
-                        name, predictor.Instructions, demoExamples, i, cancellationToken);
+                        path, predictor.Instructions, demoExamples, i, cancellationToken);
                     if (!string.IsNullOrWhiteSpace(proposed))
                         candidates.Add(proposed.Trim());
                 }
@@ -397,7 +523,7 @@ public sealed class MIPROv2 : IOptimizer
                 }
             }
 
-            result[name] = candidates;
+            result[path] = candidates;
         }
 
         return result;

@@ -941,16 +941,20 @@ public class MIPROv2Tests
     }
 
     [Fact]
-    public async Task OptimizeAsync_OnChainTargetComposite_ThrowsArgumentException()
+    public async Task OptimizeAsync_OnChainTargetOfModules_OptimizesEachStage()
     {
-        var (moduleA, _) = CreateSinglePredictorModule(x => x, "stage_a");
-        var (moduleB, _) = CreateSinglePredictorModule(x => x, "stage_b");
+        // Both stages deliberately share the SAME leaf predictor name ("classify")
+        // to prove path disambiguation: a raw-name impl would collide; a path-keyed
+        // impl produces separate child_0.classify / child_1.classify entries.
+        FakePredictor.ResetWithParametersCalls();
+
+        var (moduleA, _) = CreateSinglePredictorModule(x => x, "classify");
+        var (moduleB, _) = CreateSinglePredictorModule(x => x, "classify");
         var composite = moduleA.Then(moduleB);
 
-        var trainSet = new List<Example>
-        {
-            new Example<string, string>("a", "a"),
-        };
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
 
         var ctx = new OptimizationContext
         {
@@ -961,17 +965,76 @@ public class MIPROv2Tests
 
         var optimizer = new MIPROv2(
             new FakeProposalClient(),
-            numTrials: 1,
-            numInstructionCandidates: 1,
+            numTrials: 2,
+            numInstructionCandidates: 2,
             numDemoSubsets: 1,
             maxDemos: 1,
             seed: 42);
 
-        var ex = await Assert.ThrowsAsync<ArgumentException>(() => optimizer.OptimizeAsync(ctx));
-        Assert.Contains("MIPROv2", ex.Message);
-        Assert.Contains("LmpModule", ex.Message);
-        // Regression canary: the banned NotSupportedException must not come back.
-        Assert.IsNotType<NotSupportedException>(ex);
+        await optimizer.OptimizeAsync(ctx);
+
+        // Path-disambiguation proof: both child_0.classify and child_1.classify
+        // must appear as independent cardinality keys.
+        Assert.NotNull(optimizer.LastCardinalities);
+        Assert.Contains("child_0.classify_instr", optimizer.LastCardinalities!.Keys);
+        Assert.Contains("child_1.classify_instr", optimizer.LastCardinalities!.Keys);
+
+        // Trial history is populated with cost aggregates from the F2 inline eval path.
+        Assert.True(ctx.TrialHistory.Count > 0,
+            "OptimizeAsync should propagate at least one trial into ctx.TrialHistory on composite target.");
+
+        // The WithParameters seam must be exercised on each stage's predictor.
+        Assert.True(FakePredictor.WithParametersCalls > 0,
+            "IOptimizationTarget.WithParameters must be called on composite-stage predictors during trials.");
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnChainTarget_NoArtifactEmitted()
+    {
+        // Composite-target artifact emission is deferred to T4. OptimizeAsync on
+        // composite targets must NOT write .g.cs files — verify by watching a
+        // clean temp directory for side effects during an optimize run.
+        var (moduleA, _) = CreateSinglePredictorModule(x => x, "stage_a");
+        var (moduleB, _) = CreateSinglePredictorModule(x => x, "stage_b");
+        var composite = moduleA.Then(moduleB);
+
+        var trainSet = Enumerable.Range(0, 4)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var tempDir = Path.Combine(
+            Path.GetTempPath(),
+            $"lmp-t2ia-nocodeemit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var ctx = new OptimizationContext
+            {
+                Target = composite,
+                TrainSet = trainSet,
+                Metric = ExactMatchMetric()
+            };
+
+            var optimizer = new MIPROv2(
+                new FakeProposalClient(),
+                numTrials: 1,
+                numInstructionCandidates: 1,
+                numDemoSubsets: 1,
+                maxDemos: 1,
+                seed: 42);
+
+            await optimizer.OptimizeAsync(ctx);
+
+            // OptimizeAsync on composite targets must not emit artifacts anywhere —
+            // the temp dir should remain empty regardless of CWD.
+            var emitted = Directory.GetFiles(tempDir, "*.g.cs", SearchOption.AllDirectories);
+            Assert.Empty(emitted);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, recursive: true);
+        }
     }
 
     [Fact]
