@@ -41,3 +41,4 @@ You are implementing LMP (Language Model Programs) — a .NET 10 / C# 14 library
 - The source code in `src/` is ALWAYS the ground truth. If a doc says one thing and the code says another, the code wins.
 - `TreatWarningsAsErrors` is enabled globally — 0 warnings required.
 - `IsAotCompatible` is enabled on Abstractions, Core, Optimizers — new code must not introduce AOT warnings.
+- **If no ❌ tasks remain:** update the first line of `IMPLEMENTATION_PLAN.md` to say `> **Status:** ALL TASKS COMPLETE` and commit, then exit.

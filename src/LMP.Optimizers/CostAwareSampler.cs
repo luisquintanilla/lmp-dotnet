@@ -1,3 +1,4 @@
+#pragma warning disable CS0618 // implements obsolete ISampler intentionally for backward compat
 namespace LMP.Optimizers;
 
 /// <summary>
@@ -19,7 +20,7 @@ namespace LMP.Optimizers;
 /// to a single scalar for the acquisition function.
 /// </para>
 /// </remarks>
-public sealed class CostAwareSampler : ISampler
+public sealed class CostAwareSampler : ISampler, ISearchStrategy
 {
     private readonly string[] _paramNames;
     private readonly Func<TrialCost, double> _costProjection;
@@ -122,6 +123,23 @@ public sealed class CostAwareSampler : ISampler
         double projectedCost = _costProjection(cost);
         bool improved = _thread.RecordTrial(score, projectedCost);
         _flow.CommitProposal(improved);
+    }
+
+    // ── ISearchStrategy (explicit, thin bridge) ──────────────────────────
+
+    /// <inheritdoc />
+    ParameterAssignment ISearchStrategy.Propose(TypedParameterSpace space)
+    {
+        ArgumentNullException.ThrowIfNull(space);
+        var config = Propose();
+        return ParameterAssignment.FromCategorical(config);
+    }
+
+    /// <inheritdoc />
+    void ISearchStrategy.Update(ParameterAssignment assignment, float score, TrialCost cost)
+    {
+        var config = assignment.ToCategoricalDictionary();
+        Update(config, score, cost);  // delegates to cost-aware Update overload
     }
 }
 

@@ -277,11 +277,12 @@ internal static class AutoOptimizeCommand
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken, budgetCts.Token);
 
-            // RuntimeOnly: optimizer returns optimized module WITHOUT writing .g.cs.
+            // RuntimeOnly: optimizer mutates module in-place via OptimizeAsync.
             // CLI controls artifact writing after comparing to baseline on the SAME dataset.
             try
             {
-                module = await opt.CompileAsync(module, trainSet, metric, CompileOptions.RuntimeOnly, linked.Token);
+                var optCtx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = metric };
+                await opt.OptimizeAsync(optCtx, linked.Token);
             }
             catch (OperationCanceledException) when (budgetCts.IsCancellationRequested)
             {

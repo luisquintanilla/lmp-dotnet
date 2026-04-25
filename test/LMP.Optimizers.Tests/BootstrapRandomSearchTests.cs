@@ -1,4 +1,6 @@
 using System.Collections;
+using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using LMP.Optimizers;
 namespace LMP.Tests;
 
@@ -16,8 +18,10 @@ public class BootstrapRandomSearchTests
 
     /// <summary>
     /// A test predictor that returns a fixed output and records traces.
+    /// Implements <see cref="IOptimizationTarget"/> so that <see cref="LmpModule"/>'s
+    /// fractal parameter discovery/routing (used by BootstrapFewShot) includes it.
     /// </summary>
-    private sealed class FakePredictor : IPredictor
+    private sealed class FakePredictor : IPredictor, IOptimizationTarget
     {
         private readonly Func<object, object> _predict;
 
@@ -47,12 +51,39 @@ public class BootstrapRandomSearchTests
         public PredictorState GetState() => new()
         {
             Instructions = Instructions,
-            Demos = [],
+            Demos = [.. TypedDemos.Select(d => new DemoEntry
+            {
+                Input = SerializeToDict(d.Input),
+                Output = SerializeToDict(d.Output),
+            })],
             Config = null
         };
 
-        public void LoadState(PredictorState state) =>
+        public void LoadState(PredictorState state)
+        {
             Instructions = state.Instructions;
+            TypedDemos.Clear();
+            foreach (var entry in state.Demos)
+            {
+                TypedDemos.Add((DeserializeFromDict(entry.Input), DeserializeFromDict(entry.Output)));
+            }
+        }
+
+        [UnconditionalSuppressMessage("AOT", "IL2026", Justification = "Test double.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Test double.")]
+        private static Dictionary<string, JsonElement> SerializeToDict(object value)
+            => new() { ["value"] = JsonSerializer.SerializeToElement(value, value.GetType()) };
+
+        private static object DeserializeFromDict(Dictionary<string, JsonElement> dict)
+        {
+            if (dict.TryGetValue("value", out var elem))
+            {
+                return elem.ValueKind == JsonValueKind.String
+                    ? elem.GetString()!
+                    : elem.GetRawText();
+            }
+            return "";
+        }
 
         public IPredictor Clone()
         {
@@ -69,6 +100,74 @@ public class BootstrapRandomSearchTests
             clone.TypedDemos = new List<(object, object)>(TypedDemos);
             return clone;
         }
+
+        // ── IOptimizationTarget implementation ───────────────────────────
+
+        TargetShape IOptimizationTarget.Shape => TargetShape.SingleTurn;
+
+        Task<(object Output, Trace Trace)> IOptimizationTarget.ExecuteAsync(
+            object input, CancellationToken ct)
+        {
+            var trace = new Trace();
+            var output = _predict(input);
+            trace.Record(Name, input, output);
+            return Task.FromResult<(object, Trace)>((output, trace));
+        }
+
+        TypedParameterSpace IOptimizationTarget.GetParameterSpace()
+            => TypedParameterSpace.Empty
+                .Add("instructions", new StringValued(Instructions))
+                .Add("demos", new Subset([.. TypedDemos.Cast<object>()], 0, TypedDemos.Count));
+
+        TargetState IOptimizationTarget.GetState() => TargetState.From(GetState());
+
+        void IOptimizationTarget.ApplyState(TargetState state)
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            LoadState(state.As<PredictorState>());
+        }
+
+        IOptimizationTarget IOptimizationTarget.WithParameters(ParameterAssignment assignment)
+        {
+            ArgumentNullException.ThrowIfNull(assignment);
+            var clone = (FakePredictor)Clone();
+            foreach (var (k, v) in assignment.Values)
+            {
+                switch (k)
+                {
+                    case "instructions":
+                        clone.Instructions = (string)v;
+                        break;
+                    case "demos":
+                        if (v is not IReadOnlyList<object> list)
+                            throw new ArgumentException(
+                                $"FakePredictor.WithParameters: parameter 'demos' expected " +
+                                $"IReadOnlyList<object>, got {v.GetType().FullName}.",
+                                nameof(assignment));
+                        clone.TypedDemos.Clear();
+                        foreach (var item in list)
+                        {
+                            if (item is ValueTuple<object, object> erased)
+                                clone.TypedDemos.Add((erased.Item1, erased.Item2));
+                            else
+                                throw new ArgumentException(
+                                    $"FakePredictor.WithParameters: demo item has unsupported type " +
+                                    $"{item?.GetType().FullName ?? "null"}.",
+                                    nameof(assignment));
+                        }
+                        break;
+                    default:
+                        throw new ArgumentException(
+                            $"FakePredictor.WithParameters: unknown parameter key '{k}'. " +
+                            $"Valid keys: instructions, demos.",
+                            nameof(assignment));
+                }
+            }
+            return clone;
+        }
+
+        TService? IOptimizationTarget.GetService<TService>() where TService : class
+            => this as TService;
     }
 
     /// <summary>
@@ -502,6 +601,121 @@ public class BootstrapRandomSearchTests
     {
         var optimizer = new BootstrapRandomSearch();
         Assert.IsAssignableFrom<IOptimizer>(optimizer);
+    }
+
+    #endregion
+
+    #region T2e — IOptimizationTarget seam
+
+    [Fact]
+    public async Task OptimizeAsync_OnPredictorTarget_PicksBestAcrossTrials()
+    {
+        // FakePredictor implements both IPredictor and IOptimizationTarget, so it
+        // can stand in as a standalone leaf target for BRS (same shape as Predictor<TIn,TOut>).
+        var predictor = new FakePredictor(x => x) { Name = "standalone" };
+        IOptimizationTarget target = predictor;
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"item_{i}", $"item_{i}"))
+            .ToList();
+
+        var ctx = new OptimizationContext { Target = target, TrainSet = trainSet, Metric = ExactMatchMetric() };
+        var optimizer = new BootstrapRandomSearch(numTrials: 3, maxDemos: 4, seed: 42);
+
+        await optimizer.OptimizeAsync(ctx);
+
+        // BRS should have applied the best candidate's state back into the original
+        // predictor target, populating its demo slot.
+        Assert.True(predictor.TypedDemos.Count > 0,
+            "Standalone Predictor target should have demos after BRS.");
+        Assert.True(predictor.TypedDemos.Count <= 4,
+            "Should not exceed maxDemos.");
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnChainTargetOfModules_PicksBestAcrossTrials()
+    {
+        // Two LmpModule children, each containing one FakePredictor, composed via .Then().
+        // BRS should populate demos on BOTH stages by picking the best trial candidate
+        // and applying its state back to the chain.
+        var (moduleA, predA) = CreateSinglePredictorModule(x => x, predictorName: "stageA");
+        var (moduleB, predB) = CreateSinglePredictorModule(x => x, predictorName: "stageB");
+
+        var chain = moduleA.Then(moduleB);
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("alpha", "alpha"),
+            new Example<string, string>("beta", "beta"),
+            new Example<string, string>("gamma", "gamma"),
+            new Example<string, string>("delta", "delta"),
+            new Example<string, string>("epsilon", "epsilon"),
+        };
+
+        var ctx = new OptimizationContext { Target = chain, TrainSet = trainSet, Metric = ExactMatchMetric() };
+        var optimizer = new BootstrapRandomSearch(numTrials: 2, maxDemos: 4, seed: 7);
+
+        await optimizer.OptimizeAsync(ctx);
+
+        Assert.True(predA.TypedDemos.Count > 0,
+            "Stage A predictor should have demos after BRS over chain target.");
+        Assert.True(predB.TypedDemos.Count > 0,
+            "Stage B predictor should have demos after BRS over chain target.");
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnPredictorTarget_DoesNotThrowNotSupported()
+    {
+        // Regression canary: the banned `GetService<LmpModule>() ?? throw NotSupportedException`
+        // pattern (§20b.2) must stay gone. Passing a bare Predictor target must complete
+        // without throwing NotSupportedException.
+        var predictor = new FakePredictor(x => x) { Name = "bare" };
+        IOptimizationTarget target = predictor;
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("x", "x"),
+            new Example<string, string>("y", "y"),
+        };
+
+        var ctx = new OptimizationContext { Target = target, TrainSet = trainSet, Metric = ExactMatchMetric() };
+        var optimizer = new BootstrapRandomSearch(numTrials: 2, maxDemos: 2, seed: 1);
+
+        // Must not throw NotSupportedException (or any other exception in this happy path).
+        await optimizer.OptimizeAsync(ctx);
+
+        // Verify the source itself is free of the banned pattern (defense-in-depth).
+        var sourcePath = System.IO.Path.GetFullPath(System.IO.Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            "src", "LMP.Optimizers", "BootstrapRandomSearch.cs"));
+        if (System.IO.File.Exists(sourcePath))
+        {
+            var source = System.IO.File.ReadAllText(sourcePath);
+            Assert.DoesNotContain("NotSupportedException", source);
+            Assert.DoesNotContain("GetService<LmpModule>()", source);
+        }
+    }
+
+    [Fact]
+    public async Task CompileAsync_DoesNotMutateInputModule()
+    {
+        // Back-compat regression for Amendment B: input module must never be mutated;
+        // CompileAsync returns a clone whose predictor demos may be populated.
+        var (module, inputPredictor) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"in_{i}", $"in_{i}"))
+            .ToList();
+
+        var optimizer = new BootstrapRandomSearch(numTrials: 2, maxDemos: 3, seed: 99);
+        var result = await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        Assert.NotSame(module, result);
+        Assert.Empty(inputPredictor.TypedDemos);
+        // Returned clone should have demos applied.
+        Assert.True(result.GetPredictors()[0].Predictor.Demos.Count > 0,
+            "Returned clone should carry the best candidate's demos.");
     }
 
     #endregion

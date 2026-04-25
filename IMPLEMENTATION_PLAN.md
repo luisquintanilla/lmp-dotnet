@@ -1,6 +1,6 @@
 # LMP Implementation Plan
 
-> **Status:** Phase 9 in progress — Doc spec freshness audit + CostAwareSampler. 991 tests passing.
+> **Status:** ALL TASKS COMPLETE — Phases A–M done. 1,626 tests passing.
 > **Target:** .NET 10 / C# 14
 > **Authoritative specs:** `docs/01-architecture/`, `docs/02-specs/`, `AGENTS.md`
 > **Last updated:** 2026-04-10
@@ -1573,3 +1573,493 @@ Commit with `chore: verify all 4 benchmark samples run successfully`.
 
 All tasks 10.1–10.10 complete. `dotnet build --no-restore && dotnet test` passes with 0 errors,
 0 warnings. All 4 benchmark samples verified running with improvement. Branch is ready to merge.
+
+
+---
+
+## Phase J — Calibration Unlock
+
+> **Baseline state entering Phase J:** Phases A–I complete. 1,551 tests passing. Key types available:
+> - `IOptimizationTarget`, `OptimizationContext`, `OptimizationPipeline`, `TypedParameterSpace`, `ParameterKind` (Continuous/Integer/Categorical/StringValued/Subset), `ParameterAssignment`, `ISearchStrategy`, `ISampler`, `CategoricalTpeSampler`, `SmacSampler`, `LmpTraceMiddleware` (internal to LMP.Core), `ChatClientTarget`, `ModuleTarget`, `Trial`, `TrialHistory`, `LmpPipelines.Auto(module, client, goal)`, `BayesianCalibration` does NOT exist yet.
+> - `CategoricalTpeSampler.Propose()` returns `Dictionary<string,int>` (ISampler), `.Update(Dict<string,int>, float)` stores categorical indices.
+> - `ParameterAssignment.With(name, double)` stores a double value. `ChatClientTarget.WithParameters` handles `TryGet<double>("temperature")` correctly.
+> - Build/test commands: `dotnet build --no-restore` and `dotnet test` (both from repo root).
+
+### Task J.1: ContinuousDiscretizer ✅
+
+**File to create:** `src/LMP.Optimizers/Internal/ContinuousDiscretizer.cs`
+
+Create an `internal sealed class ContinuousDiscretizer` in namespace `LMP.Optimizers` that converts numeric/categorical parameter kinds into categorical index space for TPE sampling, and provides decode/encode round-trips.
+
+**Purpose:** `BayesianCalibration` needs to optimize `Continuous` (e.g., temperature 0–2) and `Integer` parameters using `CategoricalTpeSampler` (which works with `Dictionary<string,int>` indices). `ContinuousDiscretizer` handles the mapping.
+
+**API:**
+
+```csharp
+internal sealed class ContinuousDiscretizer
+{
+    // Maps param name → number of discrete steps. Feed to CategoricalTpeSampler constructor.
+    public Dictionary<string, int> Cardinalities { get; }
+
+    // Creates a discretizer from a TypedParameterSpace.
+    // Only processes Continuous, Integer, and Categorical params.
+    // Skips StringValued, Subset, Composite.
+    // continuousSteps: number of grid points for Continuous params (must be >= 2)
+    public static ContinuousDiscretizer From(TypedParameterSpace space, int continuousSteps = 8);
+
+    // Decodes a categorical-index config to actual typed values.
+    // Continuous → double (grid value), Integer → int (grid value), Categorical → int (index)
+    public ParameterAssignment Decode(Dictionary<string, int> catConfig);
+
+    // Encodes an actual-value assignment back to nearest categorical indices.
+    // Used to update the sampler after evaluating a decoded assignment.
+    public Dictionary<string, int> Encode(ParameterAssignment assignment);
+}
+```
+
+**Grid construction rules:**
+- `Continuous(min, max, Scale.Linear)`: `continuousSteps` evenly-spaced values from min to max inclusive. E.g., 8 steps from 0 to 2 → [0.0, 0.286, 0.571, 0.857, 1.143, 1.429, 1.714, 2.0].
+- `Continuous(min, max, Scale.Log)`: `continuousSteps` log-uniformly spaced values. Requires `min > 0 && max > 0`; throw `ArgumentException` if violated.
+- `Integer(min, max)`: `min(max-min+1, 20)` evenly-spaced integer values covering the range, deduped. E.g., Integer(1,100) → 20 unique integers. Integer(1,5) → all 5 values.
+- `Categorical(count)`: no grid needed; appears in Cardinalities with cardinality = count. Decode returns index as int, Encode extracts int directly from assignment.
+- Validate `continuousSteps >= 2`; throw `ArgumentOutOfRangeException` if < 2.
+- Integer grid deduplication: after generating candidates, deduplicate and use the deduplicated list as the grid.
+
+**Encode logic:** Find nearest grid index by absolute distance (for Continuous: distance between doubles; for Integer: distance between ints). For Categorical, extract the int value directly.
+
+**File location:** `src/LMP.Optimizers/Internal/` (create the folder). No `Internal/` subfolder needed if it complicates things — place in `src/LMP.Optimizers/` directly but mark `internal sealed`.
+
+**Test file to create:** `test/LMP.Optimizers.Tests/ContinuousDiscretizerTests.cs`
+
+Tests (~10):
+- Linear grid has correct count, min/max endpoints present
+- Log grid has correct count, values are log-spaced (ratio between consecutive values is approximately constant)
+- Log grid with min <= 0 throws ArgumentException
+- continuousSteps < 2 throws ArgumentOutOfRangeException
+- Integer grid: small range (1..5) → all 5 values; large range (1..100) → 20 deduped values
+- Decode returns double for Continuous param (not int index)
+- Decode returns int for Integer param
+- Decode returns int for Categorical param
+- Encode(Decode(catConfig)) produces same or equal-distance catConfig (round-trip invariant)
+- From() skips StringValued and Subset params (not in Cardinalities)
+
+**Commit message:** `feat(optimizers): add ContinuousDiscretizer for numeric parameter discretization`
+
+---
+
+### Task J.2: BayesianCalibration optimizer ✅
+
+**File to create:** `src/LMP.Optimizers/BayesianCalibration.cs`
+
+Create `public sealed class BayesianCalibration : IOptimizer` in namespace `LMP.Optimizers`.
+
+**Constructor:**
+```csharp
+/// <param name="numRefinements">Number of TPE refinement iterations. Default is 10.</param>
+/// <param name="continuousSteps">Grid resolution for Continuous parameters. Default is 8.</param>
+/// <param name="seed">Optional random seed for reproducibility.</param>
+public BayesianCalibration(int numRefinements = 10, int continuousSteps = 8, int? seed = null)
+```
+
+**`OptimizeAsync` algorithm:**
+
+1. `space = ctx.Target.GetParameterSpace()` — the target's own hyperparameter space.
+   - **NOT** `ctx.SearchSpace` — that belongs to MIPROv2/BFS instruction search.
+   - `ModuleTarget.GetParameterSpace()` always returns `TypedParameterSpace.Empty` — this is a safe no-op path.
+
+2. Build `calibrationSpace`: iterate `space.Parameters`, keep only `Continuous`, `Integer`, `Categorical` kinds. Skip `StringValued`, `Subset`, `Composite`. Build a new `TypedParameterSpace` with only those params. If `calibrationSpace.IsEmpty` → return immediately (no-op).
+
+3. `discretizer = ContinuousDiscretizer.From(calibrationSpace, _continuousSteps)`
+
+4. `strategy = new CategoricalTpeSampler(discretizer.Cardinalities, seed: _seed)`
+   - **Important:** use `ISampler` interface (`Propose()` returns `Dictionary<string,int>`, `Update(dict, float)` takes indices). This keeps the sampler in pure index space and avoids `ToCategoricalDictionary()` dropping double values.
+
+5. Determine `evalSet`:
+   - `evalSet = ctx.DevSet.Count > 0 ? ctx.DevSet : ctx.TrainSet`
+   - If `evalSet.Count == 0` → return (nothing to evaluate against).
+
+6. `incumbentScore = await ScoreOnSetAsync(ctx.Target, evalSet, ctx.Metric, ct)`
+
+7. `samplePool = ctx.TrainSet.Count > 0 ? ctx.TrainSet : evalSet`
+   `sampleSet = RandomSubsample(samplePool, max: 16, seed: _seed)` — if `samplePool.Count <= 16`, use all.
+
+8. Loop `_numRefinements` iterations:
+   a. `catConfig = ((ISampler)strategy).Propose()` → `Dictionary<string,int>` of indices
+   b. `decodedAssignment = discretizer.Decode(catConfig)`
+   c. `candidate = ctx.Target.WithParameters(decodedAssignment)`
+   d. `(score, cost) = await ScoreOnSetAsync(candidate, sampleSet, ctx.Metric, ct)`
+   e. `((ISampler)strategy).Update(catConfig, score)` — feed indices back (NOT decoded values)
+   f. `ctx.TrialHistory.Add(new Trial(score, cost, "BayesianCalibration"))`
+   g. Track `(bestScore, bestCatConfig)` — record the best categorical config seen
+
+9. **Confirmation** (incumbent protection):
+   - If `bestScore > incumbentScore` AND `bestCatConfig != null`:
+     a. `bestAssignment = discretizer.Decode(bestCatConfig)`
+     b. `confirmedTarget = ctx.Target.WithParameters(bestAssignment)`
+     c. `(confirmedScore, confirmCost) = await ScoreOnSetAsync(confirmedTarget, evalSet, ctx.Metric, ct)`
+     d. `ctx.TrialHistory.Add(new Trial(confirmedScore, confirmCost, "BayesianCalibration:confirmation"))`
+     e. If `confirmedScore > incumbentScore`:
+        `ctx.Target.ApplyState(ctx.Target.WithParameters(bestAssignment).GetState())`
+
+**Private `ScoreOnSetAsync` helper:**
+```csharp
+private static async Task<(float Score, TrialCost Cost)> ScoreOnSetAsync(
+    IOptimizationTarget target,
+    IReadOnlyList<Example> examples,
+    Func<Example, object, float> metric,
+    CancellationToken ct)
+{
+    // For each example: (output, _) = await target.ExecuteAsync(example.WithInputs(), ct)
+    // Score = metric(example, output)
+    // Accumulate TrialCost from each Trace (use TrialCost.Zero and + operator if available,
+    // or just sum InputTokens, OutputTokens, ApiCalls manually)
+    // Return (average score, total cost)
+}
+```
+
+Check what `TrialCost` looks like in `src/LMP.Abstractions/TrialCost.cs` before implementing.
+
+**`CategoricalTpeSampler` ISampler casting:** `CategoricalTpeSampler` implements both `ISampler` and `ISearchStrategy`. Cast to `ISampler` explicitly: `var sampler = (ISampler)strategy`. Call `sampler.Propose()` and `sampler.Update(catConfig, score)`.
+
+**XML doc comments** on class and constructor.
+
+**Test file to create:** `test/LMP.Optimizers.Tests/BayesianCalibrationTests.cs`
+
+Tests (~20):
+- Returns immediately (no trials added) when `target.GetParameterSpace()` is empty (use `ModuleTarget` via `new FakeModule().AsTarget()` or mock `IOptimizationTarget`)
+- Returns immediately when calibration space has only StringValued+Subset (no numeric/categorical)
+- Returns immediately when evalSet is empty
+- Adds exactly `numRefinements` trials to `ctx.TrialHistory` (with Notes = "BayesianCalibration") when search runs
+- Adds confirmation trial with Notes = "BayesianCalibration:confirmation" when a better config is found
+- Does NOT apply state when all candidates score lower than incumbent
+- Applies state when best candidate beats incumbent on screening AND confirms on full evalSet
+- Does NOT apply state when best beats on screening but fails confirmation on full evalSet
+- Uses DevSet for evaluation when provided
+- Uses TrainSet for evaluation when DevSet is empty
+- samplePool falls back to evalSet when TrainSet is empty
+- Temperature Continuous param: decoded assignment has double value in [0.0, 2.0]
+- Works end-to-end with a mock `IOptimizationTarget` that has Continuous parameter space
+
+Use `Moq` or create minimal `FakeOptimizationTarget : IOptimizationTarget` implementations. Score the target with a simple deterministic metric (e.g., score = 1.0f for specific temperature range, 0.0f otherwise).
+
+**Commit message:** `feat(optimizers): add BayesianCalibration optimizer`
+
+---
+
+### Task J.3: UseLmpTrace + AutoSampler doc + LmpPipelines update ✅
+
+**Three small changes in one commit:**
+
+**1. `ChatClientBuilder.UseLmpTrace(Trace trace)` — add to `src/LMP.Core/ChatClientOptimizationExtensions.cs`**
+
+`LmpTraceMiddleware` is `internal` to `LMP.Core`. `ChatClientOptimizationExtensions` is also in `LMP.Core`. Same assembly — access is valid.
+
+```csharp
+/// <summary>
+/// Adds trace-recording middleware that captures per-call token usage and messages
+/// into <paramref name="trace"/> for every <c>GetResponseAsync</c> call on the built client.
+/// Composes naturally with other M.E.AI middleware (function invocation, logging, retry).
+/// </summary>
+/// <param name="builder">The chat client builder to augment.</param>
+/// <param name="trace">The trace container to append records to. Must not be null.</param>
+/// <returns>The updated builder for chaining.</returns>
+/// <exception cref="ArgumentNullException">
+/// Thrown when <paramref name="builder"/> or <paramref name="trace"/> is null.
+/// </exception>
+public static ChatClientBuilder UseLmpTrace(
+    this ChatClientBuilder builder,
+    Trace trace)
+{
+    ArgumentNullException.ThrowIfNull(builder);
+    ArgumentNullException.ThrowIfNull(trace);
+    return builder.Use(inner => new LmpTraceMiddleware(inner, trace));
+}
+```
+
+**2. Update `AutoSampler.For()` doc comment** in `src/LMP.Optimizers/AutoSampler.cs`:
+
+Replace the existing paragraph:
+> "Phase D will add SmacSampler selection when the space contains Continuous parameters, once real token-cost tracking is available via ChatClientBuilder.UseLmpTrace(ctx)."
+
+With:
+> "Callers that need to optimize Continuous or Integer parameters (e.g., temperature calibration) should use BayesianCalibration directly, which manages its own ContinuousDiscretizer internally. AutoSampler intentionally stays in the categorical domain to serve ctx.SearchSpace (populated by BFS/GEPA with Categorical+StringValued params)."
+
+No behavior change — doc comment only.
+
+**3. Update `LmpPipelines.Auto` in `src/LMP.Optimizers/LmpPipelines.cs`:**
+
+Add `.Use(new BayesianCalibration())` as the final step in `Goal.Accuracy` and `Goal.Balanced` pipelines:
+
+```csharp
+Goal.Accuracy => module.AsOptimizationPipeline()
+    .Use(new BootstrapFewShot())
+    .Use(new GEPA(client))
+    .Use(new MIPROv2(client))
+    .Use(new BayesianCalibration()),    // ← ADD: safe no-op for ModuleTarget
+
+Goal.Balanced => module.AsOptimizationPipeline()
+    .Use(new BootstrapFewShot())
+    .Use(new GEPA(client))
+    .Use(new BayesianCalibration()),    // ← ADD: safe no-op for ModuleTarget
+```
+
+Update doc comment pipeline descriptions to match.
+
+**Tests to add:**
+
+Add to `test/LMP.Core.Tests/ChatClientOptimizationExtensionsTests.cs`:
+- `UseLmpTrace(trace)` returns a builder (not null)
+- `UseLmpTrace(null, trace)` throws `ArgumentNullException`
+- `UseLmpTrace(builder, null)` throws `ArgumentNullException`
+
+Add to `test/LMP.Optimizers.Tests/LmpPipelinesTests.cs`:
+- `Auto(Accuracy)` pipeline has 4 steps (BFS → GEPA → MIPROv2 → BayesianCalibration)
+- `Auto(Balanced)` pipeline has 3 steps (BFS → GEPA → BayesianCalibration)
+
+**Commit message:** `feat: UseLmpTrace middleware, AutoSampler doc update, BayesianCalibration in Auto pipelines`
+
+---
+
+## Phase K — Source-gen [Tool] + Diagnostics
+
+> **Baseline state entering Phase K:** Phase J complete. Tests pass. Key facts:
+> - `ToolAttribute` already exists in `src/LMP.Core/ToolAttribute.cs` (or `src/LMP.Modules/ToolAttribute.cs` — verify with `grep -r "class ToolAttribute"`)
+> - `ToolPoolExtensions` (AddToolPool/WithToolPool) exists
+> - `Z3FeasibilityOptimizer` prunes tool pools via Z3 SAT checks
+> - Source-gen project: `src/LMP.SourceGen/LmpSourceGenerator.cs` — `IIncrementalGenerator` with multiple pipelines (Pipeline 1: LmpSignature types, Pipeline 2: Predictor fields, Pipeline 3: [AutoOptimize], Pipeline 4-6: [Skill])
+> - `ILmpModule` source-gen pipeline currently processes `[Skill]` attribute (Pipeline 8) for `GetSkills()` override
+
+### Task K.1: Source-gen Pipeline 7 — [Tool] registration ✅
+
+**Goal:** When a method on an `LmpModule` subclass is decorated with `[Tool]`, the source generator should emit code that calls `AddToolPool(...)` on the module to register the method as an `AIFunction` in the module's parameter space.
+
+**Implementation approach:**
+
+1. Read `src/LMP.SourceGen/LmpSourceGenerator.cs` to understand the existing pipeline structure. Look at Pipeline 8 (`[Skill]`) for the pattern.
+
+2. Add **Pipeline 7** (new `RegisterSource` call in `Initialize`):
+   - Syntax predicate: method declaration node within a class that inherits from `LmpModule`
+   - Semantic filter: method has `[Tool]` attribute
+   - For each such method: emit a `partial void RegisterTools()` call in the generated `GetPredictors()` or emit a `partial class` extension that calls `AddToolPool(AIFunctionFactory.Create(this.MethodName, this, ...))`
+
+3. **Emitted code structure** — similar to `[Skill]` → `GetSkills()` pattern. For `[Tool]`:
+   - Emit `partial void RegisterTools()` override on the module class
+   - In the generated implementation: call `this.AddToolPool(AIFunctionFactory.Create(this.MethodName))`
+   - Or: emit a `protected override IReadOnlyList<AITool> GetTools() => [...]` if that method pattern is cleaner
+
+4. Check if `AddToolPool` / `WithToolPool` in `ToolPoolExtensions` is the right target. Read `src/LMP.Core/ToolPoolExtensions.cs` to confirm the API.
+
+5. If `GetPredictors()` is the right place to inject tool registration, look at how `[Skill]` does it via `GetSkills()` and replicate for tools.
+
+**Test file:** Add tests to `test/LMP.SourceGen.Tests/` — verify that a class with `[Tool]`-decorated method generates the expected `AIFunction` registration code.
+
+**Commit message:** `feat(sourcegen): Pipeline 7 - [Tool] attribute registers AIFunction in tool pool`
+
+---
+
+### Task K.2: GEPA tool description evolution ✅
+
+**Goal:** When `ctx.SearchSpace` contains a `Subset` parameter whose pool items are `AIFunction` instances, `GEPA` should automatically add `StringValued` parameters for each tool's description, allowing GEPA to evolve tool descriptions as part of instruction optimization.
+
+**Implementation:**
+
+1. Read `src/LMP.Optimizers/GEPA.cs` — specifically the `OptimizeAsync` method and how it populates/reads `ctx.SearchSpace`.
+
+2. After GEPA's instruction optimization loop, add a pass:
+   - Scan `ctx.SearchSpace.Parameters` for any `Subset` parameters whose pool items include `AIFunction` instances
+   - For each such `AIFunction`, add a `StringValued(tool.Description)` to `ctx.SearchSpace` under the key `"{subsetParamName}.{tool.Name}.description"`
+   - Run GEPA's instruction reflection loop on these description parameters (same mechanism as instruction evolution — propose new description, evaluate, update)
+
+3. **Simpler alternative (if the above is complex):** Just add the `StringValued` params to `ctx.SearchSpace` for downstream optimizers (e.g., MIPROv2) to search over, without GEPA actively evolving them. This is still valuable as it enables MIPROv2 to find better tool descriptions.
+
+**Test:** Add a test where `ctx.SearchSpace` has a Subset with AIFunction items; verify that after GEPA runs, `ctx.SearchSpace` contains StringValued params for each tool description.
+
+**Commit message:** `feat(optimizers): GEPA adds StringValued params for AIFunction descriptions in tool pool`
+
+---
+
+### Task K.3: LMP020–LMP025 diagnostics ✅
+
+**Goal:** Add 6 new Roslyn diagnostics for misuse of the `[Tool]` attribute.
+
+Read `src/LMP.SourceGen/LmpSourceGenerator.cs` (or dedicated `LmpDiagnostics.cs`) to see how existing diagnostics (LMP001, LMP002, etc.) are defined and reported.
+
+**New diagnostics:**
+- `LMP020`: `[Tool]` on a non-async method. Message: "Method '{0}' decorated with [Tool] must be async (return Task or Task<T>)."
+- `LMP021`: `[Tool]` on a static method. Message: "Method '{0}' decorated with [Tool] must be an instance method."
+- `LMP022`: `[Tool]` return type not awaitable or void. Message: "Method '{0}' decorated with [Tool] must return Task or Task<T>."
+- `LMP023`: Duplicate tool name within same module. Message: "Module '{0}' has duplicate [Tool] name '{1}'."
+- `LMP024`: `[Tool]` on a method outside an `LmpModule` subclass. Message: "Method '{0}' decorated with [Tool] must be in a class that inherits from LmpModule."
+- `LMP025`: `[Tool]` method has more than 10 parameters. Message: "Method '{0}' decorated with [Tool] has {1} parameters; maximum is 10 for AIFunction compatibility."
+
+Add these in the generator's semantic analysis pass (alongside existing diagnostic emission). Add tests in `test/LMP.SourceGen.Tests/` verifying each diagnostic is reported.
+
+**Commit message:** `feat(sourcegen): LMP020-LMP025 diagnostics for [Tool] attribute misuse`
+
+---
+
+## Phase L — Multi-turn Complete (Trajectory Wiring)
+
+> **Baseline state entering Phase L:** Phases J-K complete. Key facts:
+> - `Trajectory`, `Turn`, `TurnKind`, `ITrajectoryMetric`, `TrajectoryMetric` exist in `src/LMP.Core/`
+> - `IOptimizationTarget.ExecuteTrajectoryAsync` default method exists (Phase F seam)
+> - `OptimizationContext.TrajectoryMetric` field exists
+> - `GEPA.OptimizeAsync` and `SIMBA.OptimizeAsync` use `ctx.Target.ExecuteAsync(...)` for scoring — they do NOT currently check `ctx.TrajectoryMetric`
+
+### Task L.1: GEPA trajectory-aware optimization ✅
+
+**Goal:** When `ctx.TrajectoryMetric != null`, GEPA should score examples using `ExecuteTrajectoryAsync` and `TrajectoryMetric.Evaluate` instead of `ExecuteAsync` and `ctx.Metric`.
+
+**Implementation:**
+
+1. Read `src/LMP.Optimizers/GEPA.cs` and `src/LMP.Optimizers/Internal/InstructionReflector.cs`.
+
+2. In GEPA's scoring loop (where it calls `ExecuteAsync` on each example):
+   - Add a check: `if (ctx.TrajectoryMetric != null)`
+   - If true: call `await ctx.Target.ExecuteTrajectoryAsync(example.WithInputs(), ct)` → `Trajectory`
+   - Score with `ctx.TrajectoryMetric.Evaluate(example, trajectory)` → float
+   - If false: existing path (ExecuteAsync + ctx.Metric)
+
+3. The reflection input for GEPA should include trajectory spans when available:
+   - Pass trajectory string summary (e.g., `string.Join("\n", trajectory.Turns.Select(t => $"[{t.Kind}] {t.Content}"))`) as observation context to `InstructionReflector.ReflectAsync`
+   - `InstructionReflector` already accepts `externalObservations` parameter (added in Phase H)
+
+**Tests:** Add tests to `test/LMP.Optimizers.Tests/GEPATests.cs` (or new file):
+- When `ctx.TrajectoryMetric` is null, GEPA uses `ExecuteAsync` path (existing behavior)
+- When `ctx.TrajectoryMetric` is set, GEPA calls `ExecuteTrajectoryAsync`
+- GEPA reflection prompt includes trajectory content when trajectory path is used
+
+**Commit message:** `feat(optimizers): GEPA trajectory-aware scoring via ExecuteTrajectoryAsync`
+
+---
+
+### Task L.2: SIMBA trajectory-aware optimization ✅
+
+**Goal:** When `ctx.TrajectoryMetric != null`, SIMBA should score mini-batches using trajectory metric.
+
+**Implementation:**
+
+1. Read `src/LMP.Optimizers/SIMBA.cs` — find the mini-batch scoring loop.
+
+2. Same pattern as GEPA:
+   - Check `ctx.TrajectoryMetric != null`
+   - If true: use `ExecuteTrajectoryAsync` + `TrajectoryMetric.Evaluate`
+   - If false: existing `ExecuteAsync` + `ctx.Metric`
+
+3. SIMBA's reflection prompt (for `InstructionReflector`) should include trajectory spans when available.
+
+**Tests:** Add tests to `test/LMP.Optimizers.Tests/SimbaTests.cs`:
+- When `ctx.TrajectoryMetric` is null, SIMBA uses `ExecuteAsync` path
+- When `ctx.TrajectoryMetric` is set, SIMBA calls `ExecuteTrajectoryAsync`
+
+**Commit message:** `feat(optimizers): SIMBA trajectory-aware scoring via ExecuteTrajectoryAsync`
+
+---
+
+### Task L.3: AgentThread → Trajectory conversion ✅ (stub — AgentThread not available in MEAI 10.4.1)
+
+**Goal:** Provide an extension method to convert `AgentThread` (from `Microsoft.Extensions.AI.Agents`) to a `Trajectory`.
+
+**First:** Check if `Microsoft.Extensions.AI.Agents` is available in the project. Look at `Directory.Packages.props` for the package. If not present, check if `Microsoft.Extensions.AI` 10.4.1+ includes `AgentThread` in the base package. Run `dotnet build` to see if `AgentThread` is available.
+
+**If AgentThread is available:**
+
+Create `src/LMP.Core/AgentThreadExtensions.cs`:
+```csharp
+/// <summary>Extension methods for converting agent thread types to LMP optimization types.</summary>
+public static class AgentThreadExtensions
+{
+    /// <summary>
+    /// Converts an <see cref="AgentThread"/> to a <see cref="Trajectory"/> for use with
+    /// LMP trajectory-aware optimizers such as GEPA and SIMBA.
+    /// </summary>
+    public static Trajectory ToTrajectory(this AgentThread thread);
+}
+```
+
+Map `AgentThread` messages to `Turn` instances:
+- User messages → `TurnKind.UserToAgent`
+- Assistant messages → `TurnKind.AgentToUser`
+- Tool call messages → `TurnKind.ToolCall`
+- Tool result messages → `TurnKind.ToolResult`
+- Agent-to-agent messages → `TurnKind.AgentToAgent`
+
+**If AgentThread is NOT available:** Create the extension method with a `// TODO: requires Microsoft.Extensions.AI.Agents package` comment, and mark the task complete with a note in IMPLEMENTATION_PLAN.md.
+
+**Tests:** Add tests in `test/LMP.Core.Tests/AgentThreadExtensionsTests.cs` (or skip with a TODO if AgentThread is unavailable).
+
+**Commit message:** `feat(core): AgentThread.ToTrajectory() conversion extension`
+
+---
+
+## Phase M — Documentation + Acceptance Criteria
+
+> **Baseline state entering Phase M:** All code phases complete. All tests pass.
+
+### Task M.1: Update architecture documentation ✅
+
+**Goal:** Bring the architecture docs up to date with the full unified optimization pipeline (Phases A–J).
+
+**Files to update:**
+
+1. `docs/01-architecture/optimization-pipeline.md` — create or overwrite with:
+   - Four-tier architecture diagram (Tier 1 Primitives → Tier 2 Pipeline → Tier 3 Adapters → Tier 4 Façade)
+   - The Invariant: Auto() is reproducible from Tier 2 .Use() calls
+   - Two extensibility seams: IOptimizer (horizontal) + IOptimizationTarget (vertical)
+   - Algorithm table: BootstrapFewShot, GEPA, SIMBA, MIPROv2, BayesianCalibration, Z3Feasibility, EvaluationCritique, MultiFidelity, ContextualBandit, ModelSelector
+   - Five optimization axes: Instructions, Tools, Skills, Model, Multi-turn
+   - Research anchors: DSPy 2023, GEPA 2025, SIMBA 2025, MIPROv2 2024, FrugalGPT 2023, Hyperband 2018
+
+2. `docs/02-specs/optimization-api.md` — create or overwrite with:
+   - Full public API surface: `IOptimizer`, `IOptimizationTarget`, `OptimizationPipeline`, `OptimizationContext`, `TypedParameterSpace`, `ParameterKind` hierarchy, `ISearchStrategy`, `MetricVector`, `Goal`, `CostBudget`, `BayesianCalibration`
+   - Three entry points (Novice, Practitioner, Researcher)
+   - Goal → algorithm sequence mapping table
+
+3. `docs/01-architecture/phased-plan.md` — add Phase A–J completion summary.
+
+**Note:** The source code in `src/` is the ground truth. Docs should describe what the code actually does.
+
+**Commit message:** `docs: update architecture documentation for unified optimization pipeline (Phases A-J)`
+
+---
+
+### Task M.2: Invariant + axis acceptance tests ✅
+
+**Goal:** Write tests verifying the core acceptance criteria from the plan. Use mock/fake targets and clients (no real LLM calls needed).
+
+**File to create:** `test/LMP.Optimizers.Tests/AcceptanceCriteriaTests.cs`
+
+Tests to write:
+
+1. **Invariant test**: `LmpPipelines.Auto(module, client, Goal.Accuracy)` produces a pipeline with the same step count and step types as manually constructed `module.AsOptimizationPipeline().Use(new BootstrapFewShot()).Use(new GEPA(client)).Use(new MIPROv2(client)).Use(new BayesianCalibration())`. Access pipeline steps via `OptimizationPipeline.Steps` property (check if it exists; if not, verify via trial count during a dry run).
+
+2. **Novice test**: `LmpPipelines.Auto(module, client)` with no special setup produces a non-null `OptimizationPipeline` that can be invoked with `OptimizeAsync(trainSet: [], devSet: [], metric: (e,o) => 1f, ct)` without throwing (safe no-op on empty train set).
+
+3. **Practitioner test**: Swapping `MIPROv2` → `SIMBA` in a pipeline requires no changes to other steps. Create: `module.AsOptimizationPipeline().Use(new BootstrapFewShot()).Use(new SIMBA(client))` — verify it builds and can optimize.
+
+4. **Researcher test**: A custom 10-line `IOptimizer` implementation (`class CountingOptimizer : IOptimizer { int callCount; Task OptimizeAsync(ctx, ct) { callCount++; return Task.CompletedTask; } }`) can be inserted into any pipeline and is called during `OptimizeAsync`.
+
+5. **BayesianCalibration no-op test**: `BayesianCalibration` in a `ModuleTarget` pipeline leaves `ctx.TrialHistory.Count == 0` (or minimal) since ModuleTarget has empty parameter space.
+
+6. **UseLmpTrace integration test**: Create a `ChatClientTarget` wrapped with `UseLmpTrace(trace)` middleware; after calling `ExecuteAsync`, verify `trace.Entries.Count > 0`.
+
+**Commit message:** `test: acceptance criteria tests for invariant, axis, and UseLmpTrace`
+
+---
+
+### Task M.3: Final — mark ALL TASKS COMPLETE ✅
+
+**Goal:** Verify all phases are complete, run the full test suite, and mark completion.
+
+Steps:
+1. Run `dotnet build --no-restore` — must pass with 0 errors, 0 warnings.
+2. Run `dotnet test` — must pass with 0 failures.
+3. Update the **Status line** (line 3) of `IMPLEMENTATION_PLAN.md` to read:
+   ```
+   > **Status:** ALL TASKS COMPLETE — Phases A–M done. Tests passing.
+   ```
+   (The ralph loop checks the first line for the completion sentinel, but since the status is on line 3, also add `ALL TASKS COMPLETE` as the very first line temporarily — or just update the status line and the next ralph iteration will see 0 ❌ tasks.)
+4. Commit.
+
+**Commit message:** `chore: mark ALL TASKS COMPLETE - Phases A-M implementation done`
+

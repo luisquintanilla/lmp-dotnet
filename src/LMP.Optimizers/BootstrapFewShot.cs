@@ -1,12 +1,45 @@
-using System.Collections.Concurrent;
-
 namespace LMP.Optimizers;
 
 /// <summary>
-/// Runs a teacher module on training data, collects traces from successful examples,
-/// and fills the student module's predictors with those traces as few-shot demos.
+/// Runs a teacher target on training data, collects traces from successful examples,
+/// and fills the student's <c>demos</c> slots with those traces as few-shot demos.
 /// This is the core compile step — the heart of DSPy-style optimization.
 /// </summary>
+/// <remarks>
+/// <para>
+/// BFS discovers its work through <see cref="IOptimizationTarget.GetParameterSpace"/>:
+/// any parameter keyed <c>"demos"</c> (root) or <c>"{predictorName}.demos"</c> (module
+/// leaf) with kind <see cref="Subset"/> becomes a demo slot. Demos are applied via
+/// <see cref="IOptimizationTarget.WithParameters"/> using cumulative
+/// <see cref="ParameterAssignment"/> values across rounds.
+/// </para>
+/// <para>
+/// Supported target shapes:
+/// <list type="bullet">
+/// <item><description>
+/// <b>Standalone <see cref="Predictor{TInput,TOutput}"/></b> — emits a single root <c>"demos"</c> slot.
+/// </description></item>
+/// <item><description>
+/// <b><see cref="LmpModule"/> fractal tree</b> — emits <c>"{predictorName}.demos"</c> slots, one per
+/// <see cref="IOptimizationTarget"/>-implementing child predictor.
+/// </description></item>
+/// <item><description>
+/// <b><c>ChainTarget</c> / <c>Pipeline</c> of <see cref="LmpModule"/> children</b> — emits
+/// <c>"child_{i}.{predictorName}.demos"</c> slots. Trace entries carry the symmetric
+/// <c>"child_{i}.{predictorName}"</c> prefix (see <see cref="IOptimizationTarget.ExecuteAsync"/>),
+/// so demos are routed to the correct stage. Nesting composes (e.g.,
+/// <c>"child_0.child_1.{predictorName}.demos"</c>).
+/// </description></item>
+/// </list>
+/// </para>
+/// <para>
+/// Explicitly NOT supported: <see cref="Predictor{TInput,TOutput}"/> inside a bare
+/// <c>ChainTarget</c>/<c>Pipeline</c> (without an enclosing <see cref="LmpModule"/>). A bare
+/// <see cref="Predictor{TInput,TOutput}"/> exposes a root <c>"demos"</c> slot, so composite
+/// prefixing produces <c>"child_{i}.demos"</c> slot keys that do not collide across children
+/// but are not routed back into the predictor's root slot. Tracked as future work (T2d.6).
+/// </para>
+/// </remarks>
 public sealed class BootstrapFewShot : IOptimizer
 {
     private readonly int _maxDemos;
@@ -35,6 +68,13 @@ public sealed class BootstrapFewShot : IOptimizer
         _metricThreshold = metricThreshold;
     }
 
+    /// <inheritdoc />
+    public async Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        await RunAsync(ctx.Target, ctx.TrainSet, ctx.Metric, ct).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Optimizes the module by running a teacher copy on the training set,
     /// collecting traces from successful examples, and filling the student's
@@ -44,8 +84,9 @@ public sealed class BootstrapFewShot : IOptimizer
     /// <param name="module">The student module whose predictors will be filled with demos.</param>
     /// <param name="trainSet">Training examples to bootstrap from.</param>
     /// <param name="metric">Scoring function: (example, module output) → score in [0, 1].</param>
+    /// <param name="options">Optional compile options controlling artifact emission.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The student module with predictors filled with demos from successful traces.</returns>
+    /// <returns>The same <paramref name="module"/> instance with predictors filled with demos.</returns>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="module"/>, <paramref name="trainSet"/>, or <paramref name="metric"/> is null.
     /// </exception>
@@ -61,75 +102,8 @@ public sealed class BootstrapFewShot : IOptimizer
         ArgumentNullException.ThrowIfNull(trainSet);
         ArgumentNullException.ThrowIfNull(metric);
 
-        if (trainSet.Count == 0)
-            return module;
+        await RunAsync(module, trainSet, metric, cancellationToken).ConfigureAwait(false);
 
-        // Successful traces keyed by predictor name
-        var successfulTraces = new ConcurrentDictionary<string, ConcurrentBag<TraceEntry>>();
-
-        // Initialize bags for each predictor in the student
-        foreach (var (name, _) in module.GetPredictors())
-            successfulTraces[name] = new ConcurrentBag<TraceEntry>();
-
-        for (int round = 0; round < _maxRounds; round++)
-        {
-            // Clone module to create a teacher for this round.
-            // The teacher generates traces; the student receives demos.
-            var teacher = module.Clone<TModule>();
-
-            // If multi-round, teacher inherits demos from previous rounds.
-            if (round > 0)
-            {
-                CopyDemos(module, teacher);
-            }
-
-            // Process training examples sequentially to ensure trace isolation.
-            // Each ForwardAsync uses teacher.Trace, which is a shared property,
-            // so we create a fresh Trace per example.
-            foreach (var example in trainSet)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                teacher.Trace = new Trace();
-                try
-                {
-                    var output = await teacher.ForwardAsync(example.WithInputs(), cancellationToken);
-                    var score = metric(example, output);
-
-                    if (score >= _metricThreshold)
-                    {
-                        foreach (var entry in teacher.Trace.Entries)
-                        {
-                            if (successfulTraces.TryGetValue(entry.PredictorName, out var bag))
-                            {
-                                bag.Add(entry);
-                            }
-                        }
-                    }
-                }
-                catch (OperationCanceledException) { throw; }
-                catch
-                {
-                    // Skip failed examples — DSPy does the same.
-                    // A few failures in the training set are expected.
-                }
-            }
-        }
-
-        // Fill student predictors with successful demos
-        foreach (var (name, predictor) in module.GetPredictors())
-        {
-            if (successfulTraces.TryGetValue(name, out var traces) && !traces.IsEmpty)
-            {
-                predictor.Demos.Clear();
-                foreach (var entry in traces.Take(_maxDemos))
-                {
-                    predictor.AddDemo(entry.Input, entry.Output);
-                }
-            }
-        }
-
-        // Auto-emit .g.cs artifact
         string? outputDir = options?.OutputDir;
         if (outputDir is not null)
         {
@@ -143,30 +117,78 @@ public sealed class BootstrapFewShot : IOptimizer
         return module;
     }
 
-    /// <summary>
-    /// Copies demos from source module's predictors to target module's predictors.
-    /// Used in multi-round bootstrapping so the teacher inherits previous demos.
-    /// </summary>
-    private static void CopyDemos<TModule>(TModule source, TModule target)
-        where TModule : LmpModule
+    private async Task RunAsync(
+        IOptimizationTarget target,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken ct)
     {
-        var sourcePredictors = source.GetPredictors();
-        var targetPredictors = target.GetPredictors();
+        if (trainSet.Count == 0) return;
 
-        var targetMap = new Dictionary<string, IPredictor>();
-        foreach (var (name, predictor) in targetPredictors)
-            targetMap[name] = predictor;
-
-        foreach (var (name, sourcePredictor) in sourcePredictors)
+        // 1. Discover demo slots from the parameter space.
+        //    Root "demos" and per-predictor "{prefix}.demos" are both supported.
+        var space = target.GetParameterSpace();
+        var demoSlots = new List<string>();
+        foreach (var (key, kind) in space.Parameters)
         {
-            if (targetMap.TryGetValue(name, out var targetPredictor))
+            if (kind is not Subset) continue;
+            if (key == "demos" || key.EndsWith(".demos", StringComparison.Ordinal))
+                demoSlots.Add(key);
+        }
+        if (demoSlots.Count == 0) return;
+
+        // 2. Initialize one bucket per slot, keyed by the slot key itself.
+        var buckets = new Dictionary<string, List<TraceEntry>>();
+        foreach (var slotKey in demoSlots)
+            buckets[slotKey] = new List<TraceEntry>();
+
+        // 3. Round loop with cumulative assignment.
+        var cumulative = ParameterAssignment.Empty;
+        for (int round = 0; round < _maxRounds; round++)
+        {
+            var teacher = target.WithParameters(cumulative);
+
+            foreach (var example in trainSet)
             {
-                targetPredictor.Demos.Clear();
-                foreach (var demo in sourcePredictor.Demos)
+                ct.ThrowIfCancellationRequested();
+                try
                 {
-                    targetPredictor.Demos.Add(demo);
+                    var (output, trace) = await teacher.ExecuteAsync(example.WithInputs(), ct)
+                        .ConfigureAwait(false);
+                    var score = metric(example, output);
+                    if (score >= _metricThreshold)
+                    {
+                        foreach (var entry in trace.Entries)
+                        {
+                            if (buckets.TryGetValue("demos", out var rootBucket))
+                                rootBucket.Add(entry);
+                            if (buckets.TryGetValue($"{entry.PredictorName}.demos", out var namedBucket))
+                                namedBucket.Add(entry);
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch
+                {
+                    // Skip failed examples — DSPy does the same.
                 }
             }
+
+            // 4. Rebuild cumulative assignment from current buckets.
+            cumulative = ParameterAssignment.Empty;
+            foreach (var slotKey in demoSlots)
+            {
+                var bucket = buckets[slotKey];
+                if (bucket.Count == 0) continue;
+                var demos = bucket.Take(_maxDemos)
+                    .Select(e => (object)(e.Input, e.Output))
+                    .ToList();
+                cumulative = cumulative.With(slotKey, (IReadOnlyList<object>)demos);
+            }
         }
+
+        // 5. Apply final assignment back to the original target via state round-trip.
+        var optimized = target.WithParameters(cumulative);
+        target.ApplyState(optimized.GetState());
     }
 }

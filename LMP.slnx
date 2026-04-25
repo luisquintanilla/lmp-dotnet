@@ -16,18 +16,27 @@
     <Project Path="test/LMP.Aspire.Hosting.Tests/LMP.Aspire.Hosting.Tests.csproj" />
     <Project Path="test/LMP.Cli.Tests/LMP.Cli.Tests.csproj" />
     <Project Path="test/LMP.Core.Tests/LMP.Core.Tests.csproj" />
+    <Project Path="test/LMP.Extensions.Evaluation.Tests/LMP.Extensions.Evaluation.Tests.csproj" />
     <Project Path="test/LMP.Extensions.Z3.Tests/LMP.Extensions.Z3.Tests.csproj" />
     <Project Path="test/LMP.Modules.Tests/LMP.Modules.Tests.csproj" />
     <Project Path="test/LMP.Optimizers.Tests/LMP.Optimizers.Tests.csproj" />
     <Project Path="test/LMP.SourceGen.Tests/LMP.SourceGen.Tests.csproj" />
   </Folder>
   <Folder Name="/samples/">
-    <Project Path="samples/LMP.Samples.AutoOptimize/LMP.Samples.AutoOptimize.csproj" />
-    <Project Path="samples/LMP.Samples.Evaluation/LMP.Samples.Evaluation.csproj" />
-    <Project Path="samples/LMP.Samples.GEPA/LMP.Samples.GEPA.csproj" />
-    <Project Path="samples/LMP.Samples.Middleware/LMP.Samples.Middleware.csproj" />
     <Project Path="samples/LMP.Samples.AdvancedOptimizers/LMP.Samples.AdvancedOptimizers.csproj" />
+    <Project Path="samples/LMP.Samples.AdvancedRag/LMP.Samples.AdvancedRag.csproj" />
+    <Project Path="samples/LMP.Samples.Agent/LMP.Samples.Agent.csproj" />
+    <Project Path="samples/LMP.Samples.AutoOptimize/LMP.Samples.AutoOptimize.csproj" />
+    <Project Path="samples/LMP.Samples.ChatClientTarget/LMP.Samples.ChatClientTarget.csproj" />
+    <Project Path="samples/LMP.Samples.Evaluation/LMP.Samples.Evaluation.csproj" />
+    <Project Path="samples/LMP.Samples.FacilitySupport/LMP.Samples.FacilitySupport.csproj" />
+    <Project Path="samples/LMP.Samples.GEPA/LMP.Samples.GEPA.csproj" />
+    <Project Path="samples/LMP.Samples.IntentClassification/LMP.Samples.IntentClassification.csproj" />
+    <Project Path="samples/LMP.Samples.MathReasoning/LMP.Samples.MathReasoning.csproj" />
+    <Project Path="samples/LMP.Samples.Middleware/LMP.Samples.Middleware.csproj" />
     <Project Path="samples/LMP.Samples.MIPROv2/LMP.Samples.MIPROv2.csproj" />
+    <Project Path="samples/LMP.Samples.Modules/LMP.Samples.Modules.csproj" />
+    <Project Path="samples/LMP.Samples.Rag/LMP.Samples.Rag.csproj" />
     <Project Path="samples/LMP.Samples.TicketTriage/LMP.Samples.TicketTriage.csproj" />
     <Project Path="samples/LMP.Samples.Z3/LMP.Samples.Z3.csproj" />
   </Folder>

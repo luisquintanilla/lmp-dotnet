@@ -180,7 +180,8 @@ internal static class OptimizeCommand
 
         try
         {
-            module = await opt.CompileAsync(module, trainSet, metric, CompileOptions.RuntimeOnly, cancellationToken);
+            var optCtx = new OptimizationContext { Target = module, TrainSet = trainSet, Metric = metric };
+            await opt.OptimizeAsync(optCtx, cancellationToken);
         }
         catch (Exception ex)
         {

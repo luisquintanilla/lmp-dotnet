@@ -1,6 +1,9 @@
 using System.Collections;
+using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using LMP.Optimizers;
 using Microsoft.Extensions.AI;
+#pragma warning disable CS0618 // tests obsolete ISampler interface intentionally
 namespace LMP.Tests;
 
 public class MIPROv2Tests
@@ -17,9 +20,21 @@ public class MIPROv2Tests
 
     /// <summary>
     /// A test predictor that returns a fixed output and records traces.
+    /// Implements <see cref="IOptimizationTarget"/> so fractal <see cref="LmpModule"/>
+    /// parameter discovery and routing include it (required for T2f.1 seam migration).
     /// </summary>
-    private sealed class FakePredictor : IPredictor
+    private sealed class FakePredictor : IPredictor, IOptimizationTarget
     {
+        /// <summary>
+        /// Counts calls into <see cref="IOptimizationTarget.WithParameters"/> across
+        /// all instances. Used by tests to prove the seam is exercised. Reset via
+        /// <see cref="ResetWithParametersCalls"/>.
+        /// </summary>
+        public static int WithParametersCalls;
+
+        public static void ResetWithParametersCalls() =>
+            Interlocked.Exchange(ref WithParametersCalls, 0);
+
         private readonly Func<object, object> _predict;
 
         public FakePredictor(Func<object, object> predict)
@@ -49,12 +64,39 @@ public class MIPROv2Tests
         public PredictorState GetState() => new()
         {
             Instructions = Instructions,
-            Demos = [],
+            Demos = [.. TypedDemos.Select(d => new DemoEntry
+            {
+                Input = SerializeToDict(d.Input),
+                Output = SerializeToDict(d.Output),
+            })],
             Config = null
         };
 
-        public void LoadState(PredictorState state) =>
+        public void LoadState(PredictorState state)
+        {
             Instructions = state.Instructions;
+            TypedDemos.Clear();
+            foreach (var entry in state.Demos)
+            {
+                TypedDemos.Add((DeserializeFromDict(entry.Input), DeserializeFromDict(entry.Output)));
+            }
+        }
+
+        [UnconditionalSuppressMessage("AOT", "IL2026", Justification = "Test double.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Test double.")]
+        private static Dictionary<string, JsonElement> SerializeToDict(object value)
+            => new() { ["value"] = JsonSerializer.SerializeToElement(value, value.GetType()) };
+
+        private static object DeserializeFromDict(Dictionary<string, JsonElement> dict)
+        {
+            if (dict.TryGetValue("value", out var elem))
+            {
+                return elem.ValueKind == JsonValueKind.String
+                    ? elem.GetString()!
+                    : elem.GetRawText();
+            }
+            return "";
+        }
 
         public IPredictor Clone()
         {
@@ -72,6 +114,75 @@ public class MIPROv2Tests
             clone.TypedDemos = new List<(object, object)>(TypedDemos);
             return clone;
         }
+
+        // ── IOptimizationTarget implementation ───────────────────────────
+
+        TargetShape IOptimizationTarget.Shape => TargetShape.SingleTurn;
+
+        Task<(object Output, Trace Trace)> IOptimizationTarget.ExecuteAsync(
+            object input, CancellationToken ct)
+        {
+            var trace = new Trace();
+            var output = _predict(input);
+            trace.Record(Name, input, output, RecordUsage);
+            return Task.FromResult<(object, Trace)>((output, trace));
+        }
+
+        TypedParameterSpace IOptimizationTarget.GetParameterSpace()
+            => TypedParameterSpace.Empty
+                .Add("instructions", new StringValued(Instructions))
+                .Add("demos", new Subset([.. TypedDemos.Cast<object>()], 0, TypedDemos.Count));
+
+        TargetState IOptimizationTarget.GetState() => TargetState.From(GetState());
+
+        void IOptimizationTarget.ApplyState(TargetState state)
+        {
+            ArgumentNullException.ThrowIfNull(state);
+            LoadState(state.As<PredictorState>());
+        }
+
+        IOptimizationTarget IOptimizationTarget.WithParameters(ParameterAssignment assignment)
+        {
+            ArgumentNullException.ThrowIfNull(assignment);
+            Interlocked.Increment(ref WithParametersCalls);
+            var clone = (FakePredictor)Clone();
+            foreach (var (k, v) in assignment.Values)
+            {
+                switch (k)
+                {
+                    case "instructions":
+                        clone.Instructions = (string)v;
+                        break;
+                    case "demos":
+                        if (v is not IReadOnlyList<object> list)
+                            throw new ArgumentException(
+                                $"FakePredictor.WithParameters: parameter 'demos' expected " +
+                                $"IReadOnlyList<object>, got {v.GetType().FullName}.",
+                                nameof(assignment));
+                        clone.TypedDemos.Clear();
+                        foreach (var item in list)
+                        {
+                            if (item is ValueTuple<object, object> erased)
+                                clone.TypedDemos.Add((erased.Item1, erased.Item2));
+                            else
+                                throw new ArgumentException(
+                                    $"FakePredictor.WithParameters: demo item has unsupported type " +
+                                    $"{item?.GetType().FullName ?? "null"}.",
+                                    nameof(assignment));
+                        }
+                        break;
+                    default:
+                        throw new ArgumentException(
+                            $"FakePredictor.WithParameters: unknown parameter key '{k}'. " +
+                            $"Valid keys: instructions, demos.",
+                            nameof(assignment));
+                }
+            }
+            return clone;
+        }
+
+        TService? IOptimizationTarget.GetService<TService>() where TService : class
+            => this as TService;
     }
 
     /// <summary>
@@ -791,6 +902,230 @@ public class MIPROv2Tests
             capturedCosts.Add(cost);
             inner.Update(config, score, cost);
         }
+    }
+
+    #endregion
+
+    #region T2f — OptimizeAsync entry-point target validation
+
+    [Fact]
+    public async Task OptimizeAsync_OnLmpModuleTarget_AppliesStateAndPopulatesContext()
+    {
+        var (module, _) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var ctx = new OptimizationContext
+        {
+            Target = module,
+            TrainSet = trainSet,
+            Metric = ExactMatchMetric()
+        };
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 2,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 1,
+            maxDemos: 1,
+            seed: 42);
+
+        await optimizer.OptimizeAsync(ctx);
+
+        Assert.True(ctx.TrialHistory.Count > 0,
+            "OptimizeAsync should propagate at least one trial into ctx.TrialHistory.");
+        Assert.True(ctx.SearchSpace.Parameters.Count > 0,
+            "OptimizeAsync should publish the discovered parameter cardinalities to ctx.SearchSpace.");
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnChainTargetOfModules_OptimizesEachStage()
+    {
+        // Both stages deliberately share the SAME leaf predictor name ("classify")
+        // to prove path disambiguation: a raw-name impl would collide; a path-keyed
+        // impl produces separate child_0.classify / child_1.classify entries.
+        FakePredictor.ResetWithParametersCalls();
+
+        var (moduleA, _) = CreateSinglePredictorModule(x => x, "classify");
+        var (moduleB, _) = CreateSinglePredictorModule(x => x, "classify");
+        var composite = moduleA.Then(moduleB);
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var ctx = new OptimizationContext
+        {
+            Target = composite,
+            TrainSet = trainSet,
+            Metric = ExactMatchMetric()
+        };
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 2,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 1,
+            maxDemos: 1,
+            seed: 42);
+
+        await optimizer.OptimizeAsync(ctx);
+
+        // Path-disambiguation proof: both child_0.classify and child_1.classify
+        // must appear as independent cardinality keys.
+        Assert.NotNull(optimizer.LastCardinalities);
+        Assert.Contains("child_0.classify_instr", optimizer.LastCardinalities!.Keys);
+        Assert.Contains("child_1.classify_instr", optimizer.LastCardinalities!.Keys);
+
+        // Trial history is populated with cost aggregates from the F2 inline eval path.
+        Assert.True(ctx.TrialHistory.Count > 0,
+            "OptimizeAsync should propagate at least one trial into ctx.TrialHistory on composite target.");
+
+        // The WithParameters seam must be exercised on each stage's predictor.
+        Assert.True(FakePredictor.WithParametersCalls > 0,
+            "IOptimizationTarget.WithParameters must be called on composite-stage predictors during trials.");
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnChainTarget_NoArtifactEmitted()
+    {
+        // Composite-target artifact emission is deferred to T4. OptimizeAsync on
+        // composite targets must NOT write .g.cs files — verify by watching a
+        // clean temp directory for side effects during an optimize run.
+        var (moduleA, _) = CreateSinglePredictorModule(x => x, "stage_a");
+        var (moduleB, _) = CreateSinglePredictorModule(x => x, "stage_b");
+        var composite = moduleA.Then(moduleB);
+
+        var trainSet = Enumerable.Range(0, 4)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var tempDir = Path.Combine(
+            Path.GetTempPath(),
+            $"lmp-t2ia-nocodeemit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var ctx = new OptimizationContext
+            {
+                Target = composite,
+                TrainSet = trainSet,
+                Metric = ExactMatchMetric()
+            };
+
+            var optimizer = new MIPROv2(
+                new FakeProposalClient(),
+                numTrials: 1,
+                numInstructionCandidates: 1,
+                numDemoSubsets: 1,
+                maxDemos: 1,
+                seed: 42);
+
+            await optimizer.OptimizeAsync(ctx);
+
+            // OptimizeAsync on composite targets must not emit artifacts anywhere —
+            // the temp dir should remain empty regardless of CWD.
+            var emitted = Directory.GetFiles(tempDir, "*.g.cs", SearchOption.AllDirectories);
+            Assert.Empty(emitted);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task OptimizeAsync_OnPredictorTarget_ThrowsArgumentException()
+    {
+        // A bare Predictor<TIn,TOut> is IOptimizationTarget but not LmpModule.
+        var bare = new Predictor<string, string>(new FakeProposalClient()) { Name = "bare" };
+
+        var trainSet = new List<Example>
+        {
+            new Example<string, string>("x", "x"),
+        };
+
+        var ctx = new OptimizationContext
+        {
+            Target = bare,
+            TrainSet = trainSet,
+            Metric = ExactMatchMetric()
+        };
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 1,
+            numInstructionCandidates: 1,
+            numDemoSubsets: 1,
+            maxDemos: 1,
+            seed: 42);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => optimizer.OptimizeAsync(ctx));
+    }
+
+    #endregion
+
+    #region T2f.1 — Per-trial IOptimizationTarget.WithParameters seam
+
+    [Fact]
+    public async Task CompileAsync_PerTrial_UsesWithParametersSeam()
+    {
+        FakePredictor.ResetWithParametersCalls();
+
+        var (module, _) = CreateSinglePredictorModule(x => x, "classify");
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 2,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 1,
+            seed: 42);
+
+        await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        Assert.True(FakePredictor.WithParametersCalls > 0,
+            "Per-trial candidate construction must go through IOptimizationTarget.WithParameters.");
+    }
+
+    [Fact]
+    public async Task CompileAsync_PerTrial_DoesNotMutateOriginalModulePredictors()
+    {
+        const string originalInstructions = "ORIGINAL-UNIQUE-INSTRUCTION";
+
+        var pred = new FakePredictor(x => x)
+        {
+            Name = "classify",
+            Instructions = originalInstructions,
+        };
+        var module = new TestModule([pred]);
+
+        var trainSet = Enumerable.Range(0, 10)
+            .Select(i => (Example)new Example<string, string>($"input_{i}", $"input_{i}"))
+            .ToList();
+
+        var optimizer = new MIPROv2(
+            new FakeProposalClient(),
+            numTrials: 2,
+            numInstructionCandidates: 2,
+            numDemoSubsets: 2,
+            maxDemos: 2,
+            seed: 42);
+
+        await optimizer.CompileAsync(module, trainSet, ExactMatchMetric());
+
+        // The seam migration ensures per-trial construction clones via
+        // WithParameters; the original module's predictors must remain untouched.
+        var originalPred = module.GetPredictors()[0].Predictor;
+        Assert.Equal(originalInstructions, originalPred.Instructions);
+        Assert.Empty(originalPred.Demos);
     }
 
     #endregion

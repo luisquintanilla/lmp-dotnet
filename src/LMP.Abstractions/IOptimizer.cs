@@ -1,34 +1,18 @@
 namespace LMP;
 
 /// <summary>
-/// Compiles (optimizes) a module by running it against training data,
-/// scoring with a metric, and filling in learnable parameters (demos, instructions).
-/// By default, compilation also writes a typed C# artifact (<c>.g.cs</c>) to the
-/// output directory — just like <c>dotnet build</c> produces a <c>.dll</c>.
+/// Single-algorithm optimization step in an <c>OptimizationPipeline</c>.
+/// Implementations read from and write to <see cref="OptimizationContext"/> fields,
+/// mutating <see cref="OptimizationContext.Target"/> in-place.
 /// </summary>
 public interface IOptimizer
 {
     /// <summary>
-    /// Optimizes the module's learnable parameters using the provided
-    /// training set and metric function. Returns the optimized module.
-    /// By default, writes a <c>.g.cs</c> artifact to <c>Generated/</c>.
-    /// Pass <see cref="CompileOptions.RuntimeOnly"/> to suppress file output.
+    /// Runs one optimization pass. Reads from and writes to <paramref name="ctx"/> in-place.
+    /// After completion, <see cref="OptimizationContext.Target"/> reflects the best state found.
     /// </summary>
-    /// <typeparam name="TModule">The module type.</typeparam>
-    /// <param name="module">The module to optimize.</param>
-    /// <param name="trainSet">Training examples.</param>
-    /// <param name="metric">Scoring function: (example, actual output) → score in [0, 1].</param>
-    /// <param name="options">
-    /// Compilation options. <c>null</c> uses defaults (emit to <c>Generated/</c>).
-    /// Use <see cref="CompileOptions.RuntimeOnly"/> to suppress artifact generation.
-    /// </param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The optimized module with learnable parameters filled in.</returns>
-    Task<TModule> CompileAsync<TModule>(
-        TModule module,
-        IReadOnlyList<Example> trainSet,
-        Func<Example, object, float> metric,
-        CompileOptions? options = null,
-        CancellationToken cancellationToken = default)
-        where TModule : LmpModule;
+    /// <param name="ctx">The optimization context shared among all pipeline steps.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default);
 }
+

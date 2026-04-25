@@ -5,6 +5,31 @@
 > **Target:** .NET 10 / C# 14
 >
 > **Audience:** Developers implementing the LMP framework, phase by phase.
+>
+> **Current status:** Phases 1–10 (original) + Phases A–L (unified optimization) — all complete.
+> See [IMPLEMENTATION_PLAN.md](../../IMPLEMENTATION_PLAN.md) for task-level tracking.
+
+---
+
+## Unified Optimization Pipeline — Phases A–L ✅
+
+All phases complete as of the `feat/unified-optimization` branch.
+See [optimization-pipeline.md](optimization-pipeline.md) and [optimization-api.md](../02-specs/optimization-api.md) for API reference.
+
+| Phase | Title | Key Deliverables |
+|-------|-------|-----------------|
+| **A** | Seams | `IOptimizer.OptimizeAsync`, `IOptimizationTarget`, `OptimizationContext`, `OptimizationPipeline`, `LmpPipelines.Auto`, `LmpModule` (its own optimization target), `DelegateTarget` |
+| **B** | Context-ify Algorithms | `SIMBA`, `InstructionReflector`, refactored `GEPA`, `AutoSampler` |
+| **C** | TypedParameterSpace | `TypedParameterSpace`, `ParameterKind` hierarchy, `ISearchStrategy`, `ISampler [Obsolete]` |
+| **D** | Vertical Targets | `ChatClientTarget`, `DelegateTarget`, `.UseOptimized()` MEAI middleware |
+| **E** | Tools Axis | `[Tool]` attribute, `ToolPoolExtensions`, `Z3FeasibilityOptimizer`, `ReActAgent(IEnumerable<AITool>)` |
+| **F** | Trajectory + Multi-turn | `Turn`, `Trajectory`, `ITrajectoryMetric`, `ExecuteTrajectoryAsync` seam, `OptimizationContext.TrajectoryMetric` |
+| **G** | Skills Axis | `[Skill]` attribute, `SkillManifest`, `ContextualBandit` (Thompson Sampling), source-gen Pipeline 8 |
+| **H** | Cost as Metric | `MetricVector`, `IMetric` upgrade, `ParetoFrontier`, `ReflectionLog`, `EvaluationCritique`, `MultiFidelity`, `ModelSelector` |
+| **I** | Deferred Items | `LmpTraceMiddleware`, `ChainTarget`, `LmpPipelines.ForAxis` |
+| **J** | Calibration Unlock | `BayesianCalibration`, `ContinuousDiscretizer`, `ChatClientBuilder.UseLmpTrace`, wired into `LmpPipelines.Auto(Accuracy/Balanced)` |
+| **K** | Source-gen [Tool] | Source-gen Pipeline 7 (`[Tool]` → `GetTools()`), `GEPA` tool description params, `AddToolDescriptionParams` |
+| **L** | Trajectory Wiring | GEPA trajectory observations → `ReflectionLog`, SIMBA trajectory baseline/acceptance scoring, `AgentThreadExtensions` stub |
 
 ---
 
@@ -506,6 +531,141 @@ var result = await pot.PredictAsync(new MathInput("What is the 10th Fibonacci nu
 | 6 | Advanced Optimization | ✅ Complete | ISampler abstraction complexity (CategoricalTpeSampler, SmacSampler) | 4, 5 |
 | 7 | Tooling | ✅ Complete | CLI ergonomics; Aspire API surface stability | 4 |
 | 8 | Advanced | ✅ Complete | C# 14 interceptor API newness; `[Predict]` partial method sugar | 2 |
+| A | Unified Pipeline Seams | 🔄 In Progress | `IOptimizer` breaking change migration across 6 impls | 1–8 |
+| B | Context-ify Algorithms | ⬜ Pending | SIMBA architecture; `UseLmpTrace()` MEAI middleware | A |
+| C | TypedParameterSpace + ISearchStrategy | ⬜ Pending | `ISampler` → `ISearchStrategy` breaking change; source-gen `SearchSpaceDescriptor` | A |
+| D | Vertical Targets + MEAI Middleware | ⬜ Pending | `ChatClientTarget`; `.UseOptimized()` | C |
+| E | Tools Axis (AITool-native) | ⬜ Pending | `AITool` pool; Breaking E.1 `ReActAgent` | C |
+| F | Trajectory + Multi-turn | ⬜ Pending | `Trajectory` type; `AgentThread` conversion | C |
+| G | Skills Axis | ⬜ Pending | Source-gen skill manifests; `.NET-unique differentiator | C |
+| H | Cost as Metric Dimension | ⬜ Pending | `MetricVector`; `EvaluationCritique` + GEPA bridge | D, E, F, G |
+
+---
+
+## Phase A: Unified Pipeline Seams
+
+> **Status:** 🔄 In Progress
+> **Branch:** `feat/unified-optimization`
+
+Introduce the unified optimization pipeline scaffolding without changing existing optimizer behavior.
+
+### New in `LMP.Abstractions`
+
+- `IOptimizationTarget` — vertical seam; `ExecuteAsync`, `WithParameters`, `GetParameterSpace`
+- `TargetShape` (SingleTurn | MultiTurn), `TargetState`
+- `OptimizationContext` — pipeline carrier: target, train/dev sets, metric, budget, spaces, history, logs
+- `CostBudget` — multi-dimensional: `MaxTokens`, `MaxTurns`, `MaxWallClock`, `Custom(Func<TrialCost, bool>)`
+- `TrialHistory`, `ReflectionLog` (stub), `TypedParameterSpace` (stub — empty record)
+- `OptimizationAxis` enum, `Goal` enum, `OptimizationProgress` record
+
+### Breaking A.1 — `IOptimizer` refactor
+
+- Remove `CompileAsync<TModule>` from `IOptimizer` interface
+- Add `Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct)` as the new required method
+- Add `OptimizerExtensions.CompileAsync<TModule>()` as extension method in `LMP.Core`
+- All 6 implementations add `OptimizeAsync` wrapping existing logic (mechanical migration)
+- `IOptimizerTests.cs` stub updated (1 file, ~10 lines) — ONLY test file needing changes
+
+### New in `LMP.Core`
+
+- `LmpModule : IOptimizationTarget` (T1: direct implementation, no adapter)
+- `OptimizationPipeline : IOptimizer` — fluent builder
+- `OptimizationResult` record
+- `LmpModuleOptimizationExtensions` — `.OptimizeAsync()`, `.AsOptimizationPipeline()`
+- `OptimizerExtensions` — backward-compat `CompileAsync<TModule>()`
+- `Lmp` static class — `Lmp.Optimize.AutoAsync()` Tier 4 façade
+
+---
+
+## Phase B: Context-ify Algorithms
+
+> **Status:** ⬜ Pending
+
+Wire all existing algorithms to read/write `OptimizationContext` fields.
+
+1. `BootstrapFewShot` — reads `TrainSet`/`Target` → writes `SearchSpace` (demo pools)
+2. `GEPA` — reads `Trace`/`ReflectionLog`/`TrainSet` → writes `SearchSpace`, `ReflectionLog`, `ParetoFrontier`
+3. `MIPROv2` — injectable `ISearchStrategy`; reads `SearchSpace`/`TrialHistory`/`Budget` → writes `TrialHistory`/`Target`
+4. `Z3Feasibility` — reads `SearchSpace` → writes constrained `SearchSpace`
+5. `SIMBA` (new) — mini-batch stochastic ascent + self-reflection; inline updates `Target`
+6. `BayesianCalibration` (new) — reads `TrialHistory` → writes refined `Target`
+7. `AutoSampler` wired as default for `MIPROv2`
+8. `ChatClientBuilder.UseLmpTrace(ctx)` middleware — replaces manual `trace?.Record()` in `Predictor.PredictAsync()`
+
+---
+
+## Phase C: TypedParameterSpace + ISearchStrategy
+
+> **Status:** ⬜ Pending
+
+**Breaking C.1**: `ISampler` → `ISearchStrategy` (one version window with `LegacyCategoricalAdapter`).
+
+Full `TypedParameterSpace` (6 kinds: Categorical, Integer, Continuous, StringValued, Subset, Composite).
+`ParameterAssignment` strongly-typed.
+
+Source-gen additions:
+- `[Hyperparameter(Min, Max)]`, `[Instruction]` → emit `TypedParameterSpace` entries
+- `SearchSpaceDescriptor` — compile-time cardinality hints from `[LmpSignature]` enum members,
+  cross-predictor dependency graph, stable parameter-name schema for Z3 and samplers
+
+---
+
+## Phase D: Vertical Targets + MEAI Middleware
+
+> **Status:** ⬜ Pending
+
+- `ChatClientTarget` — wraps `IChatClient`; system prompt = `StringValued`; temperature = `Continuous`; tools = `Subset(Pool: IReadOnlyList<AITool>)`
+- `DelegateTarget` — wraps `Func<TIn, Task<TOut>>`
+- `ChainTarget` — ordered composition
+- `.UseOptimized(study)` MEAI middleware — optimization result as `IChatClient` wrapper
+
+---
+
+## Phase E: Tools Axis (AITool-native)
+
+> **Status:** ⬜ Pending
+
+**Breaking E.1**: `ReActAgent(IEnumerable<AITool>)` — backward compat: `AIFunction IS-A AITool`.
+
+- `[Tool]` on `LmpModule` methods → source-gen Pipeline 7 → `Subset(Pool: IReadOnlyList<AITool>)`
+- `GEPA` evolves `AIFunction.Description`
+- `Z3Feasibility` constraints over `AITool` pool
+- `MIPROv2` optimizes tool subset selection
+
+---
+
+## Phase F: Trajectory + Multi-turn
+
+> **Status:** ⬜ Pending
+
+- `Trajectory` type: ordered `Turn[]`, per-turn rewards, attribution metadata
+- `ITrajectoryMetric` (sibling to `IMetric`)
+- `[Trajectory]` source-gen
+- `AgentThread` (Agent Framework) → `Trajectory` conversion
+- `GEPA` and `SIMBA` extended to operate on trajectories
+
+---
+
+## Phase G: Skills Axis (.NET Differentiator)
+
+> **Status:** ⬜ Pending
+
+- `[Skill]` attribute, `SKILL.md` spec
+- Source-gen Pipeline 8: typed skill manifest + `Subset` in `TypedParameterSpace`
+- Skill compatibility graph → Z3 constraints
+- `ContextualBandit` for per-request routing
+
+---
+
+## Phase H: Cost as Metric Dimension
+
+> **Status:** ⬜ Pending
+
+- `MetricVector` + `IMetric` upgrade (non-breaking default interface method)
+- `ParetoFrontier<TTarget>` multi-objective-native
+- `RouteLLM`, `MultiFidelity`, `EvaluationCritique` optimizers
+- `EvaluationCritique`: M.E.AI evaluator rationale text → `ReflectionLog` → GEPA free reflection signal
+- Budget enforcement: advisory per-step, mandatory at pipeline
 
 ---
 
@@ -523,3 +683,9 @@ Concepts from earlier drafts that have been dropped — see [System Architecture
 | 7+ diagnostics + code fixes | Start with 2–3; add more based on real usage |
 | MSBuild targets / Three-layer build | One source generator, `dotnet build` does everything |
 | TPL Dataflow graph execution | Sequential `await` in `ForwardAsync()` — compose with normal C# |
+| Infer.NET statistical layer | Too heavy for general use; future opt-in package |
+| Interceptor-inlined optimized prompts | Post-Phase-H; `[EmbeddedModuleParams]` future |
+| Aspire fan-out for parallel MIPROv2 trials | Future distributed capability |
+| Visual pipeline designer | Every framework that built one regretted it |
+| ArCHer RL | Research still consolidating; deferred 2026+ |
+

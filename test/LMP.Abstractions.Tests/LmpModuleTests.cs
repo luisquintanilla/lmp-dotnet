@@ -678,4 +678,60 @@ public class LmpModuleTests
     }
 
     #endregion
+
+    #region Trace AsyncLocal Concurrency Tests
+
+    private sealed class TraceRecordingModule : LmpModule
+    {
+        public override Task<object> ForwardAsync(object input, CancellationToken cancellationToken = default)
+        {
+            var s = (string)input;
+            Trace?.Record("recorder", s, $"out:{s}");
+            return Task.FromResult<object>($"out:{s}");
+        }
+    }
+
+    private sealed class NestedModule : LmpModule
+    {
+        private readonly TraceRecordingModule _inner;
+        public NestedModule(TraceRecordingModule inner) => _inner = inner;
+
+        public override async Task<object> ForwardAsync(object input, CancellationToken cancellationToken = default)
+        {
+            var (innerOut, _) = await _inner.ExecuteAsync(input, cancellationToken);
+            Trace?.Record("outer:nested", input, innerOut);
+            return innerOut;
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ConcurrentCallsOnSameInstance_ProduceIsolatedTraces()
+    {
+        var module = new TraceRecordingModule();
+
+        var tasks = Enumerable.Range(0, 10)
+            .Select(i => module.ExecuteAsync($"input_{i}"))
+            .ToArray();
+        var results = await Task.WhenAll(tasks);
+
+        for (int i = 0; i < 10; i++)
+        {
+            Assert.Single(results[i].Trace.Entries);
+            Assert.Equal($"input_{i}", results[i].Trace.Entries[0].Input);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NestedOnDifferentInstances_OuterTracePreserved()
+    {
+        var inner = new TraceRecordingModule();
+        var outer = new NestedModule(inner);
+
+        var (_, outerTrace) = await outer.ExecuteAsync("x");
+
+        Assert.Single(outerTrace.Entries);
+        Assert.StartsWith("outer:", outerTrace.Entries[0].PredictorName);
+    }
+
+    #endregion
 }

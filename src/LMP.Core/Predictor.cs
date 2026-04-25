@@ -12,7 +12,7 @@ namespace LMP;
 /// </summary>
 /// <typeparam name="TInput">The input type for the predictor.</typeparam>
 /// <typeparam name="TOutput">The output type for the predictor. Must be a reference type.</typeparam>
-public class Predictor<TInput, TOutput> : IPredictor
+public class Predictor<TInput, TOutput> : IPredictor, IOptimizationTarget
     where TOutput : class
 {
     private readonly IChatClient _client;
@@ -277,6 +277,136 @@ public class Predictor<TInput, TOutput> : IPredictor
         };
         return clone;
     }
+
+    // ── IOptimizationTarget implementation ──────────────────────────────
+
+    /// <inheritdoc />
+    TargetShape IOptimizationTarget.Shape => TargetShape.SingleTurn;
+
+    /// <inheritdoc />
+    async Task<(object Output, Trace Trace)> IOptimizationTarget.ExecuteAsync(
+        object input,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        if (input is not TInput typed)
+            throw new ArgumentException(
+                $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.ExecuteAsync: " +
+                $"expected input of type {typeof(TInput).FullName}, got {input.GetType().FullName}.",
+                nameof(input));
+
+        var trace = new Trace();
+        var output = await PredictAsync(typed, trace, cancellationToken: ct).ConfigureAwait(false);
+        return (output, trace);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Emits exactly two parameters: <c>instructions</c> (<see cref="StringValued"/>)
+    /// and <c>demos</c> (<see cref="Subset"/> over the current demo list, snapshot by value).
+    /// The <c>demos</c> parameter accepts a list of either typed
+    /// <c>(TInput, TOutput)</c> tuples or erased <c>(object, object)</c> tuples; the latter
+    /// is produced naturally by trace-based optimizers where entry inputs/outputs are
+    /// object-typed.
+    /// </remarks>
+    TypedParameterSpace IOptimizationTarget.GetParameterSpace()
+    {
+        return TypedParameterSpace.Empty
+            .Add("instructions", new StringValued(InitialValue: Instructions))
+            .Add("demos", new Subset<(TInput, TOutput)>(TypedPool: [.. Demos], 0, Demos.Count));
+    }
+
+    /// <inheritdoc />
+    TargetState IOptimizationTarget.GetState() => TargetState.From(GetState());
+
+    /// <inheritdoc />
+    void IOptimizationTarget.ApplyState(TargetState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        LoadState(state.As<PredictorState>());
+    }
+
+    /// <inheritdoc />
+    IOptimizationTarget IOptimizationTarget.WithParameters(ParameterAssignment assignment)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+
+        var clone = (Predictor<TInput, TOutput>)Clone();
+        if (assignment.IsEmpty)
+            return clone;
+
+        foreach (var (key, value) in assignment.Values)
+        {
+            switch (key)
+            {
+                case "instructions":
+                    if (value is not string s)
+                        throw new ArgumentException(
+                            $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                            $"parameter 'instructions' expected string, got {value.GetType().FullName}.",
+                            nameof(assignment));
+                    clone.Instructions = s;
+                    break;
+
+                case "demos":
+                    if (value is not IReadOnlyList<object> list)
+                        throw new ArgumentException(
+                            $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                            $"parameter 'demos' expected IReadOnlyList<object>, got {value.GetType().FullName}.",
+                            nameof(assignment));
+                    clone.Demos.Clear();
+                    foreach (var item in list)
+                    {
+                        // Accept both already-typed tuples (what library users and older optimizers
+                        // construct) and erased (object, object) tuples (what trace-based optimizers
+                        // naturally produce — TraceEntry.Input/Output are object).
+                        if (item is ValueTuple<TInput, TOutput> typed)
+                        {
+                            clone.Demos.Add((typed.Item1, typed.Item2));
+                        }
+                        else if (item is ValueTuple<object, object> erased)
+                        {
+                            if (erased.Item1 is not TInput tin)
+                                throw new ArgumentException(
+                                    $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                                    $"demo.Input is {erased.Item1?.GetType().FullName ?? "null"}, expected {typeof(TInput).FullName}.",
+                                    nameof(assignment));
+                            if (erased.Item2 is not TOutput tout)
+                                throw new ArgumentException(
+                                    $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                                    $"demo.Output is {erased.Item2?.GetType().FullName ?? "null"}, expected {typeof(TOutput).FullName}.",
+                                    nameof(assignment));
+                            clone.Demos.Add((tin, tout));
+                        }
+                        else
+                        {
+                            throw new ArgumentException(
+                                $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                                $"demo item is {item?.GetType().FullName ?? "null"}; expected " +
+                                $"ValueTuple<{typeof(TInput).Name},{typeof(TOutput).Name}> or ValueTuple<object,object>.",
+                                nameof(assignment));
+                        }
+                    }
+                    break;
+
+                default:
+                    throw new ArgumentException(
+                        $"Predictor<{typeof(TInput).Name},{typeof(TOutput).Name}>.WithParameters: " +
+                        $"unknown parameter key '{key}'. Valid keys: instructions, demos.",
+                        nameof(assignment));
+            }
+        }
+
+        return clone;
+    }
+
+    /// <inheritdoc />
+    TService? IOptimizationTarget.GetService<TService>() where TService : class
+        => this as TService;
+
+    /// <inheritdoc />
+    Task IOptimizationTarget.WriteArtifactAsync(CompileOptions options, CancellationToken ct)
+        => Task.CompletedTask;
 
     [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
         Justification = "SerializerOptions is set by source-generated module code with proper type info for AOT scenarios.")]

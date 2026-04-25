@@ -22,7 +22,7 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
     where TOutput : class
 {
     private readonly IChatClient _wrappedClient;
-    private readonly IReadOnlyList<AIFunction> _tools;
+    private readonly IReadOnlyList<AITool> _tools;
     private readonly int _maxSteps;
 
     /// <summary>
@@ -31,7 +31,11 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
     /// <see cref="FunctionInvokingChatClient"/> for automatic tool dispatch.
     /// </summary>
     /// <param name="client">The underlying chat client.</param>
-    /// <param name="tools">Available tools as <see cref="AIFunction"/> instances.</param>
+    /// <param name="tools">
+    /// Available tools. Any <see cref="AIFunction"/> instances are automatically invoked
+    /// by <see cref="FunctionInvokingChatClient"/>; non-function <see cref="AITool"/> instances
+    /// are forwarded to the model for model-side dispatch.
+    /// </param>
     /// <param name="maxSteps">Maximum Think→Act→Observe iterations (default: 5).</param>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="client"/> or <paramref name="tools"/> is null.
@@ -39,7 +43,7 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="maxSteps"/> is less than 1.
     /// </exception>
-    public ReActAgent(IChatClient client, IEnumerable<AIFunction> tools, int maxSteps = 5)
+    public ReActAgent(IChatClient client, IEnumerable<AITool> tools, int maxSteps = 5)
         : base(client)
     {
         ArgumentNullException.ThrowIfNull(tools);
@@ -62,7 +66,7 @@ public class ReActAgent<TInput, TOutput> : Predictor<TInput, TOutput>
     /// <summary>
     /// Gets the tools available to this agent.
     /// </summary>
-    public IReadOnlyList<AIFunction> Tools => _tools;
+    public IReadOnlyList<AITool> Tools => _tools;
 
     /// <summary>
     /// Executes the ReAct loop: builds a prompt from instructions and input,

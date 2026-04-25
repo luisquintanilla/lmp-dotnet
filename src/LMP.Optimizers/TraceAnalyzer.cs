@@ -1,6 +1,7 @@
 using System.Numerics.Tensors;
 using System.Runtime.InteropServices;
 
+#pragma warning disable CS0618 // uses ISampler intentionally for backward compat
 namespace LMP.Optimizers;
 
 /// <summary>

@@ -31,11 +31,15 @@
 │   LMP.Extensions.Evaluation — M.E.AI IEvaluator → LMP metric bridge│
 │   LMP.Extensions.Z3 — Z3 SMT constraint-based demo selection        │
 ├─────────────────────────────────────────────────────────────────────┤
-│ Layer 3 — Optimization                           LMP.Optimizers     │
-│   Evaluator · BootstrapFewShot · BootstrapRandomSearch · MIPROv2    │
-│   ISampler: CategoricalTpeSampler · SmacSampler                     │
-│   GEPA · TraceAnalyzer · ParetoFrontier                             │
-│   IOptimizer — all return same module with params filled             │
+│ Layer 3 — Unified Optimization Pipeline          LMP.Optimizers     │
+│   ┌ Tier 4 AutoML façade ─ Lmp.Optimize.AutoAsync(app, data, goal) ┐ │
+│   │ Tier 3 Target adapters ─ LmpModule (self) · ChatClientTarget    │ │
+│   │ Tier 2 Pipeline ─ OptimizationPipeline · IOptimizer             │ │
+│   │   BootstrapFewShot · GEPA · MIPROv2 · SIMBA · BayesianCalibration│ │
+│   │   Z3Feasibility · RouteLLM · MultiFidelity · EvaluationCritique  │ │
+│   │ Tier 1 Primitives ─ ISearchStrategy · TypedParameterSpace        │ │
+│   │   CategoricalTpeSampler · SmacSampler · CostAwareSampler         │ │
+│   └─ Evaluator · TraceAnalyzer · ParetoFrontier · ReflectionLog ────┘ │
 │   (TensorPrimitives used internally for statistical computation)    │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Layer 2 — Reasoning Strategies                   LMP.Modules        │

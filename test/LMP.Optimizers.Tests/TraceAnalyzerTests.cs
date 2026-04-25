@@ -1,5 +1,5 @@
 using LMP.Optimizers;
-
+#pragma warning disable CS0618 // uses ISampler via TraceAnalyzer intentionally
 namespace LMP.Tests;
 
 public class TraceAnalyzerTests

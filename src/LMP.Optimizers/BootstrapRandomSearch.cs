@@ -4,6 +4,19 @@ namespace LMP.Optimizers;
 /// Runs <see cref="BootstrapFewShot"/> N times with different random training-set shuffles,
 /// evaluates each candidate on a held-out validation split, and returns the best by average score.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Operates on any <see cref="IOptimizationTarget"/> — standalone <see cref="Predictor{TInput,TOutput}"/>,
+/// <see cref="LmpModule"/>, <c>ChainTarget</c>, or <c>Pipeline</c>. Composes
+/// <see cref="BootstrapFewShot"/> internally per trial.
+/// </para>
+/// <para>
+/// BRS isolates predictor state across trials by cloning the target via
+/// <c>WithParameters(ParameterAssignment.Empty)</c>; modules with non-predictor mutable
+/// instance state are the user's responsibility (see the <see cref="IOptimizationTarget.WithParameters"/>
+/// contract).
+/// </para>
+/// </remarks>
 public sealed class BootstrapRandomSearch : IOptimizer
 {
     private readonly int _numTrials;
@@ -44,17 +57,75 @@ public sealed class BootstrapRandomSearch : IOptimizer
         _maxConcurrency = maxConcurrency;
     }
 
+    /// <inheritdoc />
+    public async Task OptimizeAsync(OptimizationContext ctx, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        var bestState = await RunAsync(ctx.Target, ctx.TrainSet, ctx.Metric, ct).ConfigureAwait(false);
+        if (bestState is not null)
+            ctx.Target.ApplyState(bestState);
+    }
+
+    private async Task<TargetState?> RunAsync(
+        IOptimizationTarget target,
+        IReadOnlyList<Example> trainSet,
+        Func<Example, object, float> metric,
+        CancellationToken ct)
+    {
+        if (trainSet.Count == 0) return null;
+
+        var rng = _seed.HasValue ? new Random(_seed.Value) : Random.Shared;
+        var (trainSplit, valSplit) = SplitDataset(trainSet, trainFraction: 0.8, rng);
+
+        // If validation split is empty (very small dataset), use trainSplit for both
+        if (valSplit.Count == 0)
+            valSplit = trainSplit;
+
+        // Bootstrap N candidates with different random training-set orderings
+        var candidates = new List<IOptimizationTarget>(_numTrials);
+        for (int i = 0; i < _numTrials; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var shuffled = trainSplit.OrderBy(_ => rng.Next()).ToList();
+            // Empty-assignment clone idiom (per IOT XML doc).
+            var candidate = target.WithParameters(ParameterAssignment.Empty);
+            var subCtx = new OptimizationContext { Target = candidate, TrainSet = shuffled, Metric = metric };
+            var bfs = new BootstrapFewShot(_maxDemos, metricThreshold: _metricThreshold);
+            await bfs.OptimizeAsync(subCtx, ct).ConfigureAwait(false);
+            candidates.Add(candidate);
+        }
+
+        // Evaluate all candidates on validation set in parallel via the IOT overload.
+        var evaluationTasks = candidates.Select(candidate =>
+            Evaluator.EvaluateAsync(candidate, valSplit, metric,
+                maxConcurrency: _maxConcurrency,
+                cancellationToken: ct));
+        var results = await Task.WhenAll(evaluationTasks);
+
+        // Pick best-performing candidate
+        var bestIndex = 0;
+        for (int i = 1; i < results.Length; i++)
+        {
+            if (results[i].AverageScore > results[bestIndex].AverageScore)
+                bestIndex = i;
+        }
+
+        return candidates[bestIndex].GetState();
+    }
+
     /// <summary>
     /// Optimizes the module by running <see cref="BootstrapFewShot"/> N times with
     /// different random training-set orderings, evaluating each candidate on a held-out
     /// validation split, and returning the candidate with the highest average score.
     /// </summary>
     /// <typeparam name="TModule">The module type.</typeparam>
-    /// <param name="module">The module to optimize. Cloned for each trial.</param>
+    /// <param name="module">The module to optimize. Cloned for each trial; the input is never mutated.</param>
     /// <param name="trainSet">Training examples — split 80/20 into train/validation internally.</param>
     /// <param name="metric">Scoring function: (example, module output) → score in [0, 1].</param>
+    /// <param name="options">Optional compile options controlling artifact emission.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The best-performing candidate module after N trials.</returns>
+    /// <returns>The best-performing candidate module after N trials. Always a clone of the input.</returns>
     /// <exception cref="ArgumentNullException">
     /// Thrown when <paramref name="module"/>, <paramref name="trainSet"/>, or <paramref name="metric"/> is null.
     /// </exception>
@@ -73,53 +144,24 @@ public sealed class BootstrapRandomSearch : IOptimizer
         if (trainSet.Count == 0)
             return module;
 
-        var rng = _seed.HasValue ? new Random(_seed.Value) : Random.Shared;
-        var (trainSplit, valSplit) = SplitDataset(trainSet, trainFraction: 0.8, rng);
-
-        // If validation split is empty (very small dataset), use trainSplit for both
-        if (valSplit.Count == 0)
-            valSplit = trainSplit;
-
-        // Bootstrap N candidates with different random training-set orderings
-        var candidates = new List<TModule>(_numTrials);
-        for (int i = 0; i < _numTrials; i++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var shuffled = trainSplit.OrderBy(_ => rng.Next()).ToList();
-            var bootstrap = new BootstrapFewShot(_maxDemos, metricThreshold: _metricThreshold);
-            var candidate = await bootstrap.CompileAsync(
-                module.Clone<TModule>(), shuffled, metric, CompileOptions.RuntimeOnly, cancellationToken);
-            candidates.Add(candidate);
-        }
-
-        // Evaluate all candidates on validation set in parallel
-        var evaluationTasks = candidates.Select(candidate =>
-            Evaluator.EvaluateAsync(candidate, valSplit, metric,
-                maxConcurrency: _maxConcurrency,
-                cancellationToken: cancellationToken));
-        var results = await Task.WhenAll(evaluationTasks);
-
-        // Return best-performing candidate
-        var bestIndex = 0;
-        for (int i = 1; i < results.Length; i++)
-        {
-            if (results[i].AverageScore > results[bestIndex].AverageScore)
-                bestIndex = i;
-        }
-
-        var best = candidates[bestIndex];
+        // Clone first so input module is never mutated (back-compat invariant).
+        var clone = module.Clone<TModule>();
+        var bestState = await RunAsync(clone, trainSet, metric, cancellationToken).ConfigureAwait(false);
+        if (bestState is not null)
+            clone.ApplyState(bestState);
 
         // Auto-emit .g.cs artifact
         string? outputDir = options?.OutputDir;
         if (outputDir is not null)
         {
+            var evalResult = await Evaluator.EvaluateAsync(
+                clone, trainSet, metric, cancellationToken: cancellationToken);
             await CSharpArtifactWriter.WriteAsync(
-                best, outputDir, results[bestIndex].AverageScore, nameof(BootstrapRandomSearch),
+                clone, outputDir, evalResult.AverageScore, nameof(BootstrapRandomSearch),
                 options?.TrainDataPath, options?.Baseline, cancellationToken);
         }
 
-        return best;
+        return clone;
     }
 
     /// <summary>

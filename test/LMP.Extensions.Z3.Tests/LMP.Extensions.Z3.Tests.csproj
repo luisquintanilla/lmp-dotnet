@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\LMP.Extensions.Z3\LMP.Extensions.Z3.csproj" />
+    <ProjectReference Include="..\..\src\LMP.Core\LMP.Core.csproj" />
     <ProjectReference Include="..\..\src\LMP.SourceGen\LMP.SourceGen.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />
